@@ -5,7 +5,7 @@ metadata:
   version: 0.2.0-draft
   name: 星擎内容交付
 spec:
-  ownerAgent: makaron
+  ownerAgentRole: content-operator
   concurrency:
     perInstance: 1
     maxActiveInstances: 3

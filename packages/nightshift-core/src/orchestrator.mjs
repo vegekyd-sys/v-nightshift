@@ -80,10 +80,15 @@ export function planNextActions({ release, instance, runs = [], now = new Date()
 
 function cardPayload(release, instance, stage, status) {
   const inputHash = instance.inputHash ?? hashJson(instance.inputs ?? {});
+  const agentRole = stage.agentRole ?? release.spec.ownerAgentRole;
+  const assignedAgent = stage.actor === "agent" ? instance.agentBindings?.[agentRole] : null;
+  if (stage.actor === "agent" && !assignedAgent) {
+    throw new Error(`Missing agent binding for role ${agentRole}`);
+  }
   return {
     title: `${instance.name ?? instance.id}｜${stage.title}`,
     status,
-    assignedAgent: stage.actor === "agent" ? release.spec.ownerAgent : null,
+    assignedAgent,
     labels: [
       `workflow:${release.metadata.id}`,
       `release:${release.metadata.workflowSha256.slice(0, 12)}`,
@@ -94,6 +99,7 @@ function cardPayload(release, instance, stage, status) {
       workflowId: release.metadata.id,
       workflowVersion: release.metadata.version,
       workflowSha256: release.metadata.workflowSha256,
+      agentRole,
       instanceId: instance.id,
       stageId: stage.id,
       inputHash,

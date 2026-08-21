@@ -106,6 +106,11 @@ the installed OpenClaw bundle. It owns:
 
 It delegates execution lifecycle to native Workboard and OpenClaw Worker.
 
+Workflow files name logical agent roles rather than environment-specific Agent
+IDs. A deployment binding maps a role such as `content-operator` to VLab
+`main` or production `makaron`, so the accepted workflow SHA is identical in
+both environments.
+
 The first VLab spike must verify whether the current OpenClaw release supports
 a safe external Control UI route. If not, serve the UI as a separate loopback
 application behind the VLab administration tunnel. Do not patch the bundled
@@ -196,4 +201,3 @@ The first product release is accepted only when VLab proves:
 - external readback and proof are visible from the card;
 - a real new Xingqing input reaches a real new deliverable without reusing a
   historical output as the primary acceptance evidence.
-

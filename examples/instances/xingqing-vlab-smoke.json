@@ -1,0 +1,18 @@
+{
+  "id": "NS-LAB-XINGQING-001",
+  "name": "VLab 星擎 Workflow Smoke",
+  "status": "active",
+  "agentBindings": {
+    "content-operator": "main"
+  },
+  "inputs": {
+    "customerId": "synthetic-customer",
+    "briefUrl": "https://example.invalid/nightshift/brief",
+    "targetCount": 1,
+    "authorizationScope": {
+      "paidProduction": false,
+      "externalPublication": false
+    }
+  },
+  "approvals": []
+}

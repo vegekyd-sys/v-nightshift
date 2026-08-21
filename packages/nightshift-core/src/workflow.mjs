@@ -69,7 +69,7 @@ export function validateWorkflow(document) {
     issues.push(issue("spec.required", "spec", "spec is required"));
     return issues;
   }
-  requiredString(spec.ownerAgent, "spec.ownerAgent", issues);
+  validateIdentifier(spec.ownerAgentRole, "spec.ownerAgentRole", issues);
 
   const stages = Array.isArray(spec.stages) ? spec.stages : [];
   if (stages.length === 0) {

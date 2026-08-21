@@ -50,6 +50,7 @@ test("plans only the first runnable card for a serial instance", async () => {
   assert.equal(actions.length, 1);
   assert.equal(actions[0].type, "create_workboard_card");
   assert.equal(actions[0].stageId, "plan");
+  assert.equal(actions[0].card.assignedAgent, "main");
   assert.match(actions[0].idempotencyKey, /:run:/);
 });
 
@@ -116,12 +117,23 @@ test("refuses to schedule an instance pinned to another workflow release", async
   );
 });
 
+test("blocks scheduling when an environment agent role is not bound", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const instance = activeInstance(release);
+  delete instance.agentBindings;
+  assert.throws(
+    () => planNextActions({ release, instance }),
+    /Missing agent binding for role content-operator/,
+  );
+});
+
 function activeInstance(release) {
   return {
     id: "NS-LAB-001",
     name: "VLab 星擎试验",
     status: "active",
     workflowSha256: release.metadata.workflowSha256,
+    agentBindings: { "content-operator": "main" },
     inputs: {
       customerId: "fixture-customer",
       briefUrl: "https://example.invalid/brief",
