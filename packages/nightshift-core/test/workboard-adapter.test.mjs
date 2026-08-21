@@ -11,6 +11,7 @@ test("creates a native Workboard card with a stable idempotency label", async ()
   };
   const adapter = new WorkboardCliAdapter({ board: "nightshift-lab", runner });
   const action = workAction();
+  assert.ok(idempotencyLabel(action.idempotencyKey).length <= 40);
   const result = await adapter.applyAction(action);
   assert.equal(result.status, "created");
   assert.equal(calls.length, 2);

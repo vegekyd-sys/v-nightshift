@@ -105,7 +105,7 @@ export class WorkboardCliAdapter {
 }
 
 export function idempotencyLabel(key) {
-  const digest = createHash("sha256").update(key).digest("hex").slice(0, 24);
+  const digest = createHash("sha256").update(key).digest("hex").slice(0, 20);
   return `nightshift-action:${digest}`;
 }
 
