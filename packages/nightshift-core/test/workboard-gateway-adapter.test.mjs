@@ -11,8 +11,8 @@ test("creates and reuses native cards through Gateway RPC", async () => {
   await writeFile(configPath, JSON.stringify({ gateway: { auth: { token: "test-token" } } }));
   const calls = [];
   let cards = [];
-  const runner = async (_command, args) => {
-    calls.push(args);
+  const runner = async (_command, args, env) => {
+    calls.push({ args, env });
     const method = args[2];
     const params = JSON.parse(args[args.indexOf("--params") + 1]);
     if (method === "workboard.cards.list") return JSON.stringify({ cards });
@@ -47,6 +47,8 @@ test("creates and reuses native cards through Gateway RPC", async () => {
   assert.equal(first.status, "created");
   assert.equal(second.status, "reused");
   assert.equal(first.card.metadata.automation.boardId, "nightshift-lab");
-  assert.ok(calls.every((args) => args.includes("--token")));
-  assert.ok(calls.every((args) => args.join(" ").includes("test-token")));
+  assert.ok(calls.every(({ args }) => !args.includes("--token")));
+  assert.ok(calls.every(({ args }) => !args.join(" ").includes("test-token")));
+  assert.ok(calls.every(({ env }) => env.OPENCLAW_GATEWAY_TOKEN === "test-token"));
+  assert.ok(calls.every(({ env }) => env.OPENCLAW_GATEWAY_URL === "ws://127.0.0.1:23793"));
 });

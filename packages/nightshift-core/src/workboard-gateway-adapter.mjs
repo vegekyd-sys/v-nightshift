@@ -91,17 +91,17 @@ export class WorkboardGatewayAdapter {
       "gateway",
       "call",
       method,
-      "--url",
-      this.gatewayUrl,
-      "--token",
-      token,
       "--params",
       JSON.stringify(params),
       "--json",
       "--timeout",
       "10000",
     ];
-    const output = await this.runner(this.command, args, this.env);
+    const output = await this.runner(this.command, args, {
+      ...this.env,
+      OPENCLAW_GATEWAY_TOKEN: token,
+      OPENCLAW_GATEWAY_URL: this.gatewayUrl,
+    });
     return typeof output === "string" ? JSON.parse(output) : output;
   }
 }
@@ -125,10 +125,17 @@ function approvalCard(action) {
 }
 
 async function defaultRunner(command, args, env) {
-  const { stdout } = await execFileAsync(command, args, {
-    encoding: "utf8",
-    env,
-    maxBuffer: 8 * 1024 * 1024,
-  });
-  return stdout;
+  try {
+    const { stdout } = await execFileAsync(command, args, {
+      encoding: "utf8",
+      env,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    return stdout;
+  } catch (error) {
+    const detail = String(error?.stderr ?? "").trim().slice(0, 2000);
+    throw new Error(
+      `OpenClaw Gateway RPC failed${error?.code ? ` (exit ${error.code})` : ""}${detail ? `: ${detail}` : ""}`,
+    );
+  }
 }
