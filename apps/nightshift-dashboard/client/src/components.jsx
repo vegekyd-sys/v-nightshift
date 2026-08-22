@@ -141,13 +141,13 @@ export function Drawer({ card, delivery, deliveryState, deliveryError, onClose, 
       {automation.contentItemId && <section><h3>视频任务</h3><Detail label="ContentItem" value={automation.contentItemId} mono /><Detail label="Route" value={automation.contentRoute ?? findLabel(card, "route")} /></section>}
       <section><h3>Live timeline</h3><ol className="timeline"><li className="done"><span />Card materialized in native Workboard</li><li className={card.status === "running" ? "active" : ""}><span />Waiting for the next runtime event</li></ol></section>
       <section><h3>Evidence & safety</h3><Detail label="Workflow SHA" value={automation.workflowSha256?.slice(0, 12) ?? "—"} mono /><Detail label="Input hash" value={automation.inputHash?.slice(0, 12) ?? "—"} mono /><Detail label="Idempotency" value={automation.nightshiftActionKey ? "protected" : "native card"} /></section>
-      {publicationApproval && <section className="publication-approval"><h3>发布授权</h3><p>视频已经审核通过。这里是独立的外部发布授权，不会把“通过视频”当成“批准发布”。</p><Detail label="权限" value="外部发布" /><Detail label="范围" value={approval.scope ?? "asset-and-account"} /></section>}
+      {approval && <section className="publication-approval"><h3>执行确认</h3><p>{publicationApproval ? "本次确认包含外部发布授权；确认后任务才会进入发布步骤。" : "这个阶段需要明确授权后才能继续；确认后任务会进入执行队列。"}</p><Detail label="权限" value={publicationApproval ? "外部发布" : approval.effect} /><Detail label="范围" value={approval.scope ?? "stage"} /></section>}
       {card.notes && <section><h3>Operator notes</h3><pre>{card.notes}</pre></section>}
       {(card.status === "review" || approval) && <div className="review-zone">
-        {!reviewAction && (publicationApproval ? <div className="approval-actions approval-actions-two"><button className="primary" onClick={() => setReviewAction("approve")}>批准外部发布</button><button className="danger" onClick={() => setReviewAction("reject")}>暂不发布</button></div> : <div className="approval-actions"><button className="primary" onClick={() => setReviewAction("approve")}>通过</button><button onClick={() => setReviewAction("request-changes")}>要求修改</button><button className="danger" onClick={() => setReviewAction("reject")}>拒绝</button></div>)}
+        {!reviewAction && (approval ? <div className="approval-actions approval-actions-two"><button className="primary" onClick={() => setReviewAction("approve")}>确认执行</button><button className="danger" onClick={() => setReviewAction("reject")}>暂不执行</button></div> : <div className="approval-actions"><button className="primary" onClick={() => setReviewAction("approve")}>通过</button><button onClick={() => setReviewAction("request-changes")}>要求修改</button><button className="danger" onClick={() => setReviewAction("reject")}>拒绝</button></div>)}
         {reviewAction && <div className={`review-composer action-${reviewAction}`}>
-          <div><strong>{publicationApproval ? publicationDecisionTitle(reviewAction) : decisionTitle(reviewAction)}</strong><span>{publicationApproval ? publicationDecisionHint(reviewAction) : decisionHint(reviewAction)}</span></div>
-          <textarea aria-label="审核意见" value={evidence} onChange={(event) => setEvidence(event.target.value)} placeholder={publicationApproval ? "填写发布账号、渠道或暂不发布的原因" : reviewAction === "approve" ? "审核备注（可选）" : "请写清楚需要修改或拒绝的原因"} />
+          <div><strong>{approval ? executionDecisionTitle(reviewAction) : decisionTitle(reviewAction)}</strong><span>{approval ? executionDecisionHint(reviewAction, publicationApproval) : decisionHint(reviewAction)}</span></div>
+          <textarea aria-label="审核意见" value={evidence} onChange={(event) => setEvidence(event.target.value)} placeholder={approval ? "执行备注（可选）" : reviewAction === "approve" ? "审核备注（可选）" : "请写清楚需要修改或拒绝的原因"} />
           {submitError && <p className="decision-error">{submitError}</p>}
           <div className="review-confirm"><button onClick={() => { setReviewAction(null); setEvidence(""); }}>取消</button><button className={reviewAction === "reject" ? "danger" : "primary"} disabled={!canSubmit || submitting} onClick={submitDecision}>{submitting ? "提交中…" : "确认提交"}</button></div>
         </div>}
@@ -226,10 +226,11 @@ function decisionHint(action) {
   return "任务将进入 Blocked，保留全部交付证据。";
 }
 
-function publicationDecisionTitle(action) {
-  return action === "approve" ? "确认授权外部发布" : "保留成片，暂不发布";
+function executionDecisionTitle(action) {
+  return action === "approve" ? "确认继续执行这个阶段" : "暂不执行这个阶段";
 }
 
-function publicationDecisionHint(action) {
-  return action === "approve" ? "确认后 Agent 才能进入指定账号的发布步骤。" : "不会删除成片，后续可以重新发起发布授权。";
+function executionDecisionHint(action, publicationApproval = false) {
+  if (action !== "approve") return "任务继续保持阻塞，交付内容不会被删除。";
+  return publicationApproval ? "确认包含外部发布授权，任务随后重新进入执行队列。" : "确认后任务会重新进入执行队列。";
 }

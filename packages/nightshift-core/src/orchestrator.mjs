@@ -41,7 +41,22 @@ export function planNextActions({
         if (actions.length + activeCount >= limit) break;
         const key = contentItemRunKey(contentItem.id, stage.id);
         const existing = latestItemRuns.get(key);
-        if (existing && PRESENT_STATUSES.has(existing.status)) continue;
+        if (existing && PRESENT_STATUSES.has(existing.status)) {
+          const missingApproval = existing.status === "blocked"
+            ? requiredApproval(stage, instance, now, contentItem.id)
+            : null;
+          if (missingApproval) {
+            actions.push({
+              type: "request_approval",
+              instanceId: instance.id,
+              contentItemId: contentItem.id,
+              stageId: stage.id,
+              approval: missingApproval,
+              idempotencyKey: actionKey(release, instance, stage, "approval", contentItem),
+            });
+          }
+          continue;
+        }
         if (stage.requiresRoute !== false && !contentItem.route) continue;
         if (!dependenciesDoneForContentItem(stage, stageById, latestRuns, latestItemRuns, contentItem.id)) continue;
 
@@ -71,7 +86,21 @@ export function planNextActions({
       continue;
     }
     const existing = latestRuns.get(stage.id);
-    if (existing && PRESENT_STATUSES.has(existing.status)) continue;
+    if (existing && PRESENT_STATUSES.has(existing.status)) {
+      const missingApproval = existing.status === "blocked"
+        ? requiredApproval(stage, instance, now)
+        : null;
+      if (missingApproval) {
+        actions.push({
+          type: "request_approval",
+          instanceId: instance.id,
+          stageId: stage.id,
+          approval: missingApproval,
+          idempotencyKey: actionKey(release, instance, stage, "approval"),
+        });
+      }
+      continue;
+    }
     if (!dependenciesDone(stage, latestRuns)) continue;
 
     if (stage.waitUntil && !timerReady(stage.waitUntil, instance, now)) {
@@ -242,7 +271,7 @@ function actionKey(release, instance, stage, action, contentItem = null) {
   return `${release.metadata.workflowSha256}:${action}:${logicalKey}`;
 }
 
-function requiredApproval(stage, instance, now, contentItemId = null) {
+export function requiredApproval(stage, instance, now, contentItemId = null) {
   if (!stage.approval?.before) return null;
   const approvals = Array.isArray(instance.approvals) ? instance.approvals : [];
   const requiredScope = stage.approval.scope ?? "stage";

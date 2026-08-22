@@ -34,6 +34,7 @@ export function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [projectReleaseSha, setProjectReleaseSha] = useState(null);
   const refreshInFlight = useRef(null);
+  const selectedForDecision = useMemo(() => withDecisionContext(selected, data), [selected, data]);
 
   function refresh(force = false) {
     if (refreshInFlight.current) return refreshInFlight.current;
@@ -83,12 +84,14 @@ export function App() {
   }, [selected?.id]);
 
   async function decide(card, status, evidence) {
-    const instanceId = cardLabel(card, "instance");
-    const contentItemId = card.metadata?.automation?.contentItemId ?? label(card, "content-item");
-    const stageId = card.metadata?.automation?.stageId ?? label(card, "stage");
-    const approval = card.metadata?.automation?.approval;
+    const automation = card.metadata?.automation ?? {};
+    const instanceId = automation.instanceId ?? cardLabel(card, "instance");
+    const contentItemId = automation.contentItemId ?? label(card, "content-item");
+    const stageId = automation.stageId ?? label(card, "stage");
+    const approval = automation.approval;
+    const decisionCardId = automation.decisionCardId ?? card.id;
     try {
-      await api(`/api/cards/${card.id}/${status}`, {
+      await api(`/api/cards/${decisionCardId}/${status}`, {
         method: "POST",
         body: JSON.stringify({ actor: "Workboard operator", contentItemId, effect: approval?.effect, evidence, instanceId, scope: approval?.scope, stageId }),
       });
@@ -117,8 +120,8 @@ export function App() {
       <Sidebar active={active} onChange={setActive} />
       <main className="main-shell">
         {error && <div className="error-banner">{error}</div>}
-        {active === "board" && <LiveBoard data={data} query={query} setQuery={setQuery} selected={selected} setSelected={setSelected} refreshing={refreshing} refresh={refresh} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} />}
-        {active === "workflows" && <WorkflowStudio data={data} refresh={refresh} setSelected={setSelected} selected={selected} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} onNewProject={(release) => setProjectReleaseSha(release?.workflowSha256 ?? data?.workflows?.[0]?.workflowSha256)} />}
+        {active === "board" && <LiveBoard data={data} query={query} setQuery={setQuery} selected={selectedForDecision} setSelected={setSelected} refreshing={refreshing} refresh={refresh} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} />}
+        {active === "workflows" && <WorkflowStudio data={data} refresh={refresh} setSelected={setSelected} selected={selectedForDecision} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} onNewProject={(release) => setProjectReleaseSha(release?.workflowSha256 ?? data?.workflows?.[0]?.workflowSha256)} />}
         {active === "projects" && <Projects data={data} onNewProject={() => setProjectReleaseSha(data?.workflows?.[0]?.workflowSha256)} />}
         {active === "agents" && <Agents data={data} />}
       </main>
@@ -199,7 +202,7 @@ function StageLane({ stage, index, tasks, onSelect }) {
   return <section className="stage-lane">
     <header><span className="stage-index">{String(index + 1).padStart(2, "0")}</span><div><strong>{stage.title}</strong><small>{stage.scope === "content-item" ? "每条内容" : "整个项目"} · {stage.actor === "human" ? "人工" : "Agent"}</small></div></header>
     <div className="stage-counts">{Object.entries(summary).map(([status, count]) => <span className={`state-${status}`} key={status}>{statusLabel(status)} {count}</span>)}{tasks.length === 0 && <span>尚未开始</span>}</div>
-    <div className="stage-tasks">{tasks.map((task) => <button key={`${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}-${task.card?.id ?? task.attempt}`} className={`stage-task state-${task.status}`} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}><span className="task-state" /><div><strong>{task.contentTitle ?? task.projectName}</strong><small>{task.contentTitle ? task.projectName : task.projectId}</small></div><span className="task-action">{task.stageId === "publish-feedback" && (task.status === "blocked" || task.isApproval) ? "等待发布授权" : statusLabel(task.status)}</span></button>)}</div>
+    <div className="stage-tasks">{tasks.map((task) => <button key={`${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}-${task.card?.id ?? task.attempt}`} className={`stage-task state-${task.status}`} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}><span className="task-state" /><div><strong>{task.contentTitle ?? task.projectName}</strong><small>{task.contentTitle ? task.projectName : task.projectId}</small></div><span className="task-action">{task.requiresApproval ? "等待确认执行" : statusLabel(task.status)}</span></button>)}</div>
   </section>;
 }
 
@@ -486,6 +489,7 @@ function groupWorkflowReleases(releases) {
 function indexStageTasks(stages, projects, cards) {
   const cardById = new Map(cards.map((card) => [card.id, card]));
   const result = new Map(stages.map((stage) => [stage.id, []]));
+  const stageById = new Map(stages.map((stage) => [stage.id, stage]));
   const projectsById = new Map(projects.map((project) => [project.id, project]));
   for (const project of projects) {
     const contentById = new Map((project.contentItems ?? []).map((item) => [item.id, item]));
@@ -503,6 +507,7 @@ function indexStageTasks(stages, projects, cards) {
         contentTitle: content?.title,
         projectId: project.id,
         projectName: project.name,
+        requiresApproval: missingApprovalFor(project, stageById.get(run.stageId), run.contentItemId),
         status: card?.status ?? run.status,
       });
     }
@@ -524,6 +529,7 @@ function indexStageTasks(stages, projects, cards) {
       isApproval: true,
       projectId,
       projectName: project.name,
+      requiresApproval: true,
       stageId,
       status: card.status,
     });
@@ -538,6 +544,59 @@ function indexStageTasks(stages, projects, cards) {
     result.set(stageId, [...latest.values()].sort((left, right) => statusOrder(left.status) - statusOrder(right.status) || left.projectName.localeCompare(right.projectName)));
   }
   return result;
+}
+
+function withDecisionContext(card, data) {
+  if (!card || !data) return card;
+  const fresh = (data.cards ?? []).find((entry) => entry.id === card.id) ?? card;
+  const instanceId = cardLabel(fresh, "instance");
+  const stageId = fresh.metadata?.automation?.stageId ?? label(fresh, "stage");
+  const contentItemId = fresh.metadata?.automation?.contentItemId ?? label(fresh, "content-item") ?? null;
+  const instance = (data.instances ?? []).find((entry) => entry.id === instanceId);
+  const release = (data.workflows ?? []).find((entry) => entry.workflowSha256 === instance?.workflowSha256);
+  const stage = release?.manifest?.spec?.stages?.find((entry) => entry.id === stageId);
+  const required = stage?.approval?.before
+    ? { effect: stage.approval.before, scope: stage.approval.scope ?? "stage" }
+    : null;
+  const approvalCard = (data.cards ?? []).find((entry) => {
+    if (!(entry.labels ?? []).includes("nightshift:approval")) return false;
+    if (cardLabel(entry, "instance") !== instanceId || label(entry, "stage") !== stageId) return false;
+    return (label(entry, "content-item") ?? null) === contentItemId && entry.status === "review";
+  });
+  const isApprovalCard = (fresh.labels ?? []).includes("nightshift:approval");
+  const missingApproval = required && missingApprovalFor(instance, stage, contentItemId);
+  const pendingExecutionApproval = fresh.status === "blocked" && !isApprovalCard && missingApproval && approvalCard;
+  if (!isApprovalCard && !pendingExecutionApproval) return fresh;
+  const decisionCard = isApprovalCard ? fresh : approvalCard;
+  return {
+    ...fresh,
+    metadata: {
+      ...(fresh.metadata ?? {}),
+      automation: {
+        ...(fresh.metadata?.automation ?? {}),
+        approval: required,
+        contentItemId,
+        decisionCardId: decisionCard.id,
+        instanceId,
+        pendingExecutionApproval: Boolean(pendingExecutionApproval),
+        stageId,
+        workflowSha256: release?.workflowSha256,
+      },
+    },
+  };
+}
+
+function missingApprovalFor(instance, stage, contentItemId = null) {
+  if (!stage?.approval?.before) return false;
+  const requiredScope = stage.approval.scope ?? "stage";
+  return !(instance?.approvals ?? []).some((approval) =>
+    approval.status === "approved" &&
+    approval.stageId === stage.id &&
+    (approval.contentItemId ?? null) === (contentItemId ?? null) &&
+    approval.effect === stage.approval.before &&
+    approval.scope === requiredScope &&
+    (!approval.expiresAt || new Date(approval.expiresAt) > new Date())
+  );
 }
 
 function summarizeStatuses(tasks) {

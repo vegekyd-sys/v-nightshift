@@ -72,6 +72,110 @@ test("approval card completion does not skip the guarded agent stage", async () 
   store.close();
 });
 
+test("reopens a completed approval card when exact authorization is still missing", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard });
+  const release = runtime.publish(source);
+  runtime.startInstance({
+    id: "NS-RUNTIME-APPROVAL-RECOVERY",
+    workflowSha256: release.workflowSha256,
+    agentBindings: { "content-operator": "main" },
+    contentItems: [{ id: "video-1", title: "First video", route: "SCENE_EDIT" }],
+  });
+  store.upsertStageRun({ instanceId: "NS-RUNTIME-APPROVAL-RECOVERY", stageId: "plan", status: "done" });
+  for (const stageId of ["route", "materials", "brief", "produce", "review"]) {
+    store.upsertContentItemRun({ instanceId: "NS-RUNTIME-APPROVAL-RECOVERY", contentItemId: "video-1", stageId, status: "done" });
+  }
+  const staleApprovalCard = {
+    id: "approval-stale",
+    labels: [
+      "instance:NS-RUNTIME-APPROVAL-RECOVERY",
+      "content-item:video-1",
+      "stage:publish-feedback",
+      "nightshift:approval",
+    ],
+    status: "done",
+  };
+  workboard.cards.push(staleApprovalCard);
+  workboard.applyPlan = async (actions) => actions.map((action) => ({ action, card: staleApprovalCard, status: "reused" }));
+
+  const result = await runtime.tick("NS-RUNTIME-APPROVAL-RECOVERY");
+
+  assert.equal(result.actions[0].type, "request_approval");
+  assert.deepEqual(result.actions[0].approval, { effect: "external-publication", scope: "asset-and-account" });
+  assert.equal(staleApprovalCard.status, "review");
+  assert.ok(store.listEvents("NS-RUNTIME-APPROVAL-RECOVERY").some((event) => event.type === "approval.reopened"));
+  store.close();
+});
+
+test("confirmation resumes a blocked guarded stage and retry cannot bypass approval", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard });
+  const release = runtime.publish(source);
+  runtime.startInstance({
+    id: "NS-RUNTIME-CONFIRM-EXECUTION",
+    workflowSha256: release.workflowSha256,
+    agentBindings: { "content-operator": "main" },
+    contentItems: [{ id: "video-1", title: "First video", route: "SCENE_EDIT" }],
+  });
+  store.upsertContentItemRun({
+    instanceId: "NS-RUNTIME-CONFIRM-EXECUTION",
+    contentItemId: "video-1",
+    stageId: "publish-feedback",
+    cardId: "execution-blocked",
+    status: "blocked",
+  });
+  workboard.cards.push({
+    id: "execution-blocked",
+    labels: [
+      "instance:NS-RUNTIME-CONFIRM-EXECUTION",
+      "content-item:video-1",
+      "stage:publish-feedback",
+    ],
+    status: "blocked",
+  });
+  workboard.cards.push({
+    id: "approval-review",
+    labels: [
+      "instance:NS-RUNTIME-CONFIRM-EXECUTION",
+      "content-item:video-1",
+      "stage:publish-feedback",
+      "nightshift:approval",
+    ],
+    status: "review",
+  });
+
+  await assert.rejects(
+    runtime.retry({
+      actor: "tester",
+      cardId: "execution-blocked",
+      contentItemId: "video-1",
+      instanceId: "NS-RUNTIME-CONFIRM-EXECUTION",
+      stageId: "publish-feedback",
+    }),
+    /confirmation is required/i,
+  );
+  await runtime.approve({
+    actor: "tianyi",
+    cardId: "approval-review",
+    contentItemId: "video-1",
+    effect: "external-publication",
+    evidence: "Confirmed in Workboard",
+    instanceId: "NS-RUNTIME-CONFIRM-EXECUTION",
+    scope: "asset-and-account",
+    stageId: "publish-feedback",
+  });
+
+  assert.equal(workboard.cards.find((card) => card.id === "approval-review").status, "done");
+  assert.equal(workboard.cards.find((card) => card.id === "execution-blocked").status, "ready");
+  assert.equal(store.listContentItemRuns("NS-RUNTIME-CONFIRM-EXECUTION")[0].status, "ready");
+  store.close();
+});
+
 test("request changes records a distinct decision and blocks the stage", async () => {
   const source = await readFile(workflowPath, "utf8");
   const store = new NightShiftStore();
@@ -218,6 +322,15 @@ test("rejects a done card when its declared delivery fails validation", async ()
   assert.ok(store.listContentItemRuns("NS-RUNTIME-INVALID-DELIVERY").every((run) => run.status === "blocked"));
   assert.ok(store.listEvents("NS-RUNTIME-INVALID-DELIVERY").some((event) => event.type === "stage.completion.rejected"));
   assert.ok(store.listEvents("NS-RUNTIME-INVALID-DELIVERY").some((event) => event.type === "stage.downstream.blocked"));
+  store.recordApproval({
+    actor: "tester",
+    contentItemId: "video-1",
+    effect: "paid-production",
+    instanceId: "NS-RUNTIME-INVALID-DELIVERY",
+    scope: "content-item",
+    stageId: "produce",
+    status: "approved",
+  });
   await runtime.retry({
     actor: "tester",
     cardId: "card-produce-done",

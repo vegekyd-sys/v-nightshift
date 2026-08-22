@@ -4,7 +4,7 @@ import {
   validateWorkflow,
   WorkflowValidationError,
 } from "./workflow.mjs";
-import { buildAgentBrief, planNextActions } from "./orchestrator.mjs";
+import { buildAgentBrief, planNextActions, requiredApproval } from "./orchestrator.mjs";
 
 export class NightShiftRuntime {
   constructor({ board = "nightshift", completionValidator = null, store, workboard }) {
@@ -196,6 +196,8 @@ export class NightShiftRuntime {
     const release = this.store.getRelease(instance.workflowSha256)?.manifest;
     const stage = release?.spec?.stages?.find((entry) => entry.id === stageId);
     if (!stage || !["agent", "system"].includes(stage.actor)) throw new Error("Only blocked executable stages can be retried");
+    const missingApproval = requiredApproval(stage, instance, new Date(), contentItemId ?? null);
+    if (missingApproval) throw new Error("Execution confirmation is required before this stage can be retried");
     const cards = await this.workboard.listCards();
     const card = cards.find((entry) => entry.id === cardId);
     if (!card || card.status !== "blocked") throw new Error("Retry requires a blocked Workboard card");
@@ -245,6 +247,20 @@ export class NightShiftRuntime {
         const card = result.card;
         if (!card) continue;
         if (result.action.type === "request_approval") {
+          if (card.status === "done") {
+            await this.workboard.moveCard(card.id, "review");
+            card.status = "review";
+            this.store.appendEvent({
+              instanceId,
+              type: "approval.reopened",
+              payload: {
+                cardId: card.id,
+                contentItemId: result.action.contentItemId ?? null,
+                stageId: result.action.stageId,
+                approval: result.action.approval,
+              },
+            });
+          }
           this.store.appendEvent({
             instanceId,
             type: "approval.requested",
@@ -325,6 +341,30 @@ export class NightShiftRuntime {
     if (run) contentItemId
       ? this.store.upsertContentItemRun({ ...run, status: "done" })
       : this.store.upsertStageRun({ ...run, status: "done" });
+    const instance = this.store.getInstance(instanceId);
+    const release = instance ? this.store.getRelease(instance.workflowSha256)?.manifest : null;
+    const stage = release?.spec?.stages?.find((entry) => entry.id === stageId);
+    const requiredScope = stage?.approval?.scope ?? "stage";
+    if (stage?.approval?.before === effect && requiredScope === scope) {
+      const cards = await this.workboard.listCards();
+      const blockedExecutionCard = cards.find((card) => {
+        const labels = card.labels ?? [];
+        if (card.status !== "blocked" || labels.includes("nightshift:approval")) return false;
+        if (!labels.includes(`instance:${instanceId}`) || !labels.includes(`stage:${stageId}`)) return false;
+        const cardContentItemId = labels.find((label) => label.startsWith("content-item:"))?.slice("content-item:".length) ?? null;
+        return cardContentItemId === (contentItemId ?? null);
+      });
+      if (blockedExecutionCard) {
+        await this.retry({
+          actor,
+          cardId: blockedExecutionCard.id,
+          contentItemId,
+          evidence: `Execution confirmed by ${actor}: ${evidence ?? "no evidence"}`,
+          instanceId,
+          stageId,
+        });
+      }
+    }
     return approval;
   }
 

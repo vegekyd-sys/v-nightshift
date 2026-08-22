@@ -130,6 +130,16 @@ test("approval without the exact effect and scope never unlocks a side effect", 
   const action = planNextActions({ release, instance, runs: [{ stageId: "plan", status: "done" }], contentItems, contentItemRuns })[0];
   assert.equal(action.type, "request_approval");
   assert.deepEqual(action.approval, { effect: "external-publication", scope: "asset-and-account" });
+
+  const blockedAction = planNextActions({
+    release,
+    instance,
+    runs: [{ stageId: "plan", status: "done" }],
+    contentItems,
+    contentItemRuns: [...contentItemRuns, { contentItemId: "video-scene-01", stageId: "publish-feedback", status: "blocked" }],
+  })[0];
+  assert.equal(blockedAction.type, "request_approval");
+  assert.deepEqual(blockedAction.approval, { effect: "external-publication", scope: "asset-and-account" });
 });
 
 test("refuses another release and requires an Agent binding", async () => {
