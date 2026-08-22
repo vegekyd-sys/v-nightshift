@@ -159,9 +159,34 @@ test("updates persisted instance inputs before a downstream side effect", async 
   store.close();
 });
 
+test("re-dispatches a previously ready content-item card", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard });
+  const release = runtime.publish(source);
+  runtime.startInstance({
+    id: "NS-RUNTIME-READY",
+    workflowSha256: release.workflowSha256,
+    agentBindings: { "content-operator": "main" },
+    contentItems: [{ id: "video-1", title: "Ready video", route: "SCENE_EDIT" }],
+  });
+  store.upsertStageRun({ instanceId: "NS-RUNTIME-READY", stageId: "plan", status: "done" });
+  workboard.cards.push({
+    id: "card-ready",
+    labels: ["instance:NS-RUNTIME-READY", "content-item:video-1", "stage:route"],
+    status: "ready",
+  });
+  const result = await runtime.tick("NS-RUNTIME-READY", { dispatch: true });
+  assert.deepEqual(result.actions, []);
+  assert.deepEqual(workboard.dispatchCalls, [1]);
+  store.close();
+});
+
 class FakeWorkboard {
   constructor() {
     this.cards = [];
+    this.dispatchCalls = [];
   }
 
   async listCards() {
@@ -192,7 +217,8 @@ class FakeWorkboard {
     return card;
   }
 
-  async dispatch() {
+  async dispatch(maxStarts) {
+    this.dispatchCalls.push(maxStarts);
     return { started: [] };
   }
 }

@@ -89,7 +89,8 @@ export class NightShiftRuntime {
   }
 
   async tick(instanceId, { cards = null, dispatch = false, dryRun = false } = {}) {
-    await this.reconcile(instanceId, cards);
+    const currentCards = cards ?? await this.workboard.listCards();
+    await this.reconcile(instanceId, currentCards);
     const instance = this.store.getInstance(instanceId);
     if (!instance) throw new Error(`Unknown instance ${instanceId}`);
     const savedRelease = this.store.getRelease(instance.workflowSha256);
@@ -139,20 +140,20 @@ export class NightShiftRuntime {
           payload: { cardId: card.id, stageId: result.action.stageId, contentItemId: result.action.contentItemId ?? null },
         });
       }
-      if (
-        dispatch &&
-        applied.some(
-          (result) =>
-            result.card?.status === "ready" &&
-            result.action.type === "create_workboard_card",
-        )
-      ) {
-        const maxStarts = applied.filter(
+      if (dispatch) {
+        const existingReady = currentCards.filter(
+          (card) => card.status === "ready" && (card.labels ?? []).includes(`instance:${instanceId}`),
+        ).length;
+        const newlyReady = applied.filter(
           (result) =>
             result.card?.status === "ready" &&
             result.action.type === "create_workboard_card",
         ).length;
-        await this.workboard.dispatch(maxStarts);
+        const maxStarts = Math.min(
+          savedRelease.manifest.spec.concurrency?.perInstance ?? 1,
+          existingReady + newlyReady,
+        );
+        if (maxStarts > 0) await this.workboard.dispatch(maxStarts);
       }
       if (actions.length === 0 && workflowComplete(savedRelease.manifest, runs, contentItems, contentItemRuns)) {
         this.store.updateInstanceStatus(instanceId, "done");
