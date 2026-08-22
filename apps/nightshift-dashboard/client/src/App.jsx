@@ -32,15 +32,24 @@ export function App() {
   const [deliveryState, setDeliveryState] = useState("idle");
   const [deliveryError, setDeliveryError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
+  const refreshInFlight = useRef(null);
 
-  async function refresh(force = false) {
+  function refresh(force = false) {
+    if (refreshInFlight.current) return refreshInFlight.current;
     setRefreshing(true);
-    try { setData(await api(force ? "/api/bootstrap?refresh=1" : "/api/bootstrap")); setError(""); }
-    catch (reason) { setError(reason.message); }
-    finally { setRefreshing(false); }
+    const request = api(force ? "/api/bootstrap?refresh=1" : "/api/bootstrap")
+      .then((result) => { setData(result); setError(""); return result; })
+      .catch((reason) => { setError(reason.message); throw reason; })
+      .finally(() => { setRefreshing(false); refreshInFlight.current = null; });
+    refreshInFlight.current = request;
+    return request;
   }
 
-  useEffect(() => { refresh(false); const timer = setInterval(() => refresh(false), 5000); return () => clearInterval(timer); }, []);
+  useEffect(() => {
+    refresh(false).catch(() => undefined);
+    const timer = setInterval(() => refresh(false).catch(() => undefined), 10000);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     const instanceId = selected ? cardLabel(selected, "instance") : null;
