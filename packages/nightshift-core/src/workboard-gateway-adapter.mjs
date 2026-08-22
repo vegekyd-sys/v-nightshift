@@ -83,6 +83,11 @@ export class WorkboardGatewayAdapter {
     });
   }
 
+  async getSession(sessionKey, { limit = 300 } = {}) {
+    if (!sessionKey) throw new Error("A native Workboard session key is required");
+    return this.call("sessions.get", { key: sessionKey, limit });
+  }
+
   async call(method, params) {
     if (!this.gatewayUrl) throw new Error("NIGHTSHIFT_GATEWAY_URL is required");
     if (!this.configPath) throw new Error("OPENCLAW_CONFIG_PATH is required");

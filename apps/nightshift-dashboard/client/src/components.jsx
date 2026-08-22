@@ -15,12 +15,15 @@ import {
   GitBranch,
   LayoutDashboard,
   Play,
+  RefreshCw,
   Search,
   ShieldCheck,
   Sparkles,
+  Wrench,
   Workflow,
   X,
 } from "lucide-react";
+import { api } from "./api.js";
 
 export const Icons = {
   Activity,
@@ -38,9 +41,11 @@ export const Icons = {
   GitBranch,
   LayoutDashboard,
   Play,
+  RefreshCw,
   Search,
   ShieldCheck,
   Sparkles,
+  Wrench,
   Workflow,
   X,
 };
@@ -108,12 +113,52 @@ export function Drawer({ card, delivery, deliveryState, deliveryError, onClose, 
   const [evidence, setEvidence] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
+  const [sessionRunId, setSessionRunId] = useState(null);
+  const [sessionData, setSessionData] = useState(null);
+  const [sessionState, setSessionState] = useState("idle");
+  const [sessionError, setSessionError] = useState("");
+  const [sessionExpanded, setSessionExpanded] = useState(true);
+  const attempts = nativeCardAttempts(card);
+  const selectedAttempt = attempts.find((attempt) => attempt.runId === sessionRunId) ?? attempts.at(-1);
   useEffect(() => {
     setReviewAction(null);
     setEvidence("");
     setSubmitting(false);
     setSubmitError("");
+    const latestAttempt = nativeCardAttempts(card).at(-1);
+    setSessionRunId(latestAttempt?.runId ?? null);
+    setSessionData(null);
+    setSessionState(latestAttempt ? "loading" : "idle");
+    setSessionError("");
+    setSessionExpanded(true);
   }, [card?.id]);
+  useEffect(() => {
+    if (!card?.id || !selectedAttempt?.runId || !sessionExpanded) return undefined;
+    let active = true;
+    const load = async (quiet = false) => {
+      if (!quiet) {
+        setSessionData(null);
+        setSessionState("loading");
+      }
+      try {
+        const result = await api(`/api/cards/${encodeURIComponent(card.id)}/session?runId=${encodeURIComponent(selectedAttempt.runId)}`);
+        if (!active) return;
+        setSessionData(result);
+        setSessionError("");
+        setSessionState("ready");
+      } catch (reason) {
+        if (!active) return;
+        setSessionError(reason.message);
+        setSessionState("error");
+      }
+    };
+    load();
+    const timer = selectedAttempt.status === "running" ? setInterval(() => load(true), 5000) : null;
+    return () => {
+      active = false;
+      if (timer) clearInterval(timer);
+    };
+  }, [card?.id, selectedAttempt?.runId, selectedAttempt?.status, sessionExpanded]);
   if (!card) return null;
   const automation = card.metadata?.automation ?? {};
   const approval = automation.approval;
@@ -139,7 +184,34 @@ export function Drawer({ card, delivery, deliveryState, deliveryError, onClose, 
       <DeliveryPanel delivery={delivery} state={deliveryState} error={deliveryError} showPlaceholder={card.status === "review"} />
       <section><h3>Execution</h3><Detail label="Agent" value={card.agentId ?? automation.agentRole ?? "—"} /><Detail label="Stage" value={automation.stageId ?? findLabel(card, "stage")} /><Detail label="Runtime" value={automation.maxRuntime ?? "—"} /><Detail label="Attempts" value={automation.maxAttempts ?? 1} /></section>
       {automation.contentItemId && <section><h3>视频任务</h3><Detail label="ContentItem" value={automation.contentItemId} mono /><Detail label="Route" value={automation.contentRoute ?? findLabel(card, "route")} /></section>}
-      <section><h3>Live timeline</h3><ol className="timeline"><li className="done"><span />Card materialized in native Workboard</li><li className={card.status === "running" ? "active" : ""}><span />Waiting for the next runtime event</li></ol></section>
+      <NativeWorkboardActivity card={card} />
+      {attempts.length > 0 && <AgentSessionPanel
+        attempts={attempts}
+        data={sessionData}
+        error={sessionError}
+        expanded={sessionExpanded}
+        onExpandedChange={setSessionExpanded}
+        onRefresh={async () => {
+          if (!selectedAttempt?.runId || sessionState === "loading") return;
+          setSessionState("loading");
+          try {
+            const result = await api(`/api/cards/${encodeURIComponent(card.id)}/session?runId=${encodeURIComponent(selectedAttempt.runId)}`);
+            setSessionData(result);
+            setSessionError("");
+            setSessionState("ready");
+          } catch (reason) {
+            setSessionError(reason.message);
+            setSessionState("error");
+          }
+        }}
+        onSelect={(runId) => {
+          setSessionRunId(runId);
+          setSessionData(null);
+          setSessionError("");
+        }}
+        selected={selectedAttempt}
+        state={sessionState}
+      />}
       <section><h3>Evidence & safety</h3><Detail label="Workflow SHA" value={automation.workflowSha256?.slice(0, 12) ?? "—"} mono /><Detail label="Input hash" value={automation.inputHash?.slice(0, 12) ?? "—"} mono /><Detail label="Idempotency" value={automation.nightshiftActionKey ? "protected" : "native card"} /></section>
       {approval && <section className="publication-approval"><h3>执行确认</h3><p>{publicationApproval ? "本次确认包含外部发布授权；确认后任务才会进入发布步骤。" : "这个阶段需要明确授权后才能继续；确认后任务会进入执行队列。"}</p><Detail label="权限" value={publicationApproval ? "外部发布" : approval.effect} /><Detail label="范围" value={approval.scope ?? "stage"} /></section>}
       {card.notes && <section><h3>Operator notes</h3><pre>{card.notes}</pre></section>}
@@ -155,6 +227,38 @@ export function Drawer({ card, delivery, deliveryState, deliveryError, onClose, 
       {card.status === "blocked" && !approval && <div className="review-zone"><button className="primary" disabled={submitting} onClick={async () => { setSubmitting(true); try { await onRetry(card); } catch (reason) { setSubmitError(reason.message); setSubmitting(false); } }}>{submitting ? "重新排队中…" : "修正后重新执行"}</button>{submitError && <p className="decision-error">{submitError}</p>}</div>}
     </aside>
   );
+}
+
+function NativeWorkboardActivity({ card }) {
+  const items = nativeActivityItems(card);
+  return <section className="native-activity"><div className="native-section-head"><div><h3>Workboard Activity</h3><span>原生卡片事件</span></div><span>{items.length}</span></div>{items.length > 0 ? <ol>{items.slice(-24).map((item) => <li key={item.key}><span className={`activity-dot tone-${item.tone}`} /><div><strong>{item.title}</strong><small>{formatDateTime(item.timestamp)}</small>{item.body && <p>{item.body}</p>}</div></li>)}</ol> : <p className="native-empty">这张卡尚无运行事件。</p>}</section>;
+}
+
+function AgentSessionPanel({ attempts, data, error, expanded, onExpandedChange, onRefresh, onSelect, selected, state }) {
+  return <section className="agent-session-panel"><div className="native-section-head"><div><h3>Agent Session</h3><span>来自 OpenClaw 原生 Session Store</span></div><button className="session-toggle" onClick={() => onExpandedChange(!expanded)}>{expanded ? "收起" : "查看"}</button></div>{expanded && <>
+    <div className="attempt-tabs" role="tablist" aria-label="Session attempts">{attempts.map((attempt) => <button role="tab" aria-selected={attempt.runId === selected?.runId} className={attempt.runId === selected?.runId ? "selected" : ""} key={attempt.runId} onClick={() => onSelect(attempt.runId)}><span>Attempt {attempt.index}</span><small>{sessionStatusLabel(attempt.status)}</small></button>)}</div>
+    {selected && <div className="session-meta"><span><b>{selected.engine}</b> · {selected.model}</span><span>{formatAttemptDuration(selected)}</span><button aria-label="刷新 Agent Session" disabled={state === "loading"} onClick={onRefresh}><RefreshCw size={12} /></button></div>}
+    <div className={`session-transcript state-${state}`}>
+      {state === "loading" && !data && <div className="session-loading"><span className="delivery-skeleton" />正在读取 Agent Session…</div>}
+      {error && <div className="session-error">{error}</div>}
+      {state !== "loading" && !error && (data?.messages?.length ?? 0) === 0 && <div className="native-empty">这个 Attempt 尚无可显示的消息。</div>}
+      {(data?.messages ?? []).map((message, index) => <SessionMessage key={`${message.timestamp ?? "message"}-${index}`} message={message} />)}
+    </div>
+    {selected?.error && <details className="attempt-error"><summary>本次阻塞原因</summary><p>{selected.error}</p></details>}
+  </>}</section>;
+}
+
+function SessionMessage({ message }) {
+  const parts = Array.isArray(message.content) ? message.content : [{ type: "text", text: String(message.content ?? "") }];
+  const roleLabel = message.role === "assistant" ? "Agent" : message.role === "toolResult" ? `Tool · ${message.toolName ?? "result"}` : message.role === "user" ? "Task" : message.role;
+  return <article className={`session-message role-${message.role} ${message.isError ? "is-error" : ""}`}><header><strong>{roleLabel}</strong><span>{formatDateTime(message.timestamp)}</span></header><div>{parts.map((part, index) => <SessionPart key={`${part?.type ?? "part"}-${index}`} part={part} />)}</div></article>;
+}
+
+function SessionPart({ part }) {
+  if (typeof part === "string") return <p>{part}</p>;
+  if (part?.type === "toolCall") return <details className="session-tool-call"><summary><Wrench size={12} />{part.name ?? "tool"}</summary>{part.arguments && <pre>{JSON.stringify(part.arguments, null, 2)}</pre>}</details>;
+  if (part?.type === "text" || part?.text) return <p>{part.text}</p>;
+  return <div className="session-structured"><span>{part?.type ?? "content"}</span><pre>{JSON.stringify(part, null, 2)}</pre></div>;
 }
 
 function DeliveryPanel({ delivery, state, error, showPlaceholder }) {
@@ -197,6 +301,74 @@ export function EmptyColumn() {
 
 function findLabel(card, prefix) {
   return card.labels?.find((label) => label.startsWith(`${prefix}:`))?.split(":").slice(1).join(":") ?? "—";
+}
+
+function nativeCardAttempts(card) {
+  if (!card) return [];
+  const attempts = Array.isArray(card.metadata?.attempts) ? card.metadata.attempts : [];
+  const candidates = attempts.length > 0 ? attempts : [card.execution ?? card];
+  return candidates.filter((attempt) => attempt?.sessionKey).map((attempt, index) => ({
+    endedAt: finiteNumber(attempt.endedAt),
+    engine: attempt.engine ?? "openclaw",
+    error: attempt.error ?? null,
+    index: index + 1,
+    model: attempt.model ?? "default",
+    runId: attempt.runId ?? attempt.id ?? card.runId ?? `attempt-${index + 1}`,
+    sessionKey: attempt.sessionKey ?? card.sessionKey,
+    startedAt: finiteNumber(attempt.startedAt),
+    status: attempt.status ?? card.status ?? "unknown",
+  })).sort((left, right) => Number(left.startedAt ?? 0) - Number(right.startedAt ?? 0));
+}
+
+function nativeActivityItems(card) {
+  if (!card) return [];
+  const items = [];
+  const push = (kind, timestamp, title, body = "", tone = "default", id = "") => {
+    if (!timestamp && !title) return;
+    items.push({ body: String(body ?? ""), key: `${kind}-${id || timestamp || items.length}`, timestamp: finiteNumber(timestamp), title, tone });
+  };
+  push("created", card.createdAt, "Card created in native Workboard", "", "done", card.id);
+  const claim = card.metadata?.claim;
+  if (claim?.claimedAt) push("claim", claim.claimedAt, `Claimed by ${claim.ownerId ?? card.agentId ?? "Agent"}`, "", "active", claim.ownerId);
+  if (claim?.lastHeartbeatAt) push("heartbeat", claim.lastHeartbeatAt, "Latest heartbeat", "Claim remains owned by the native Workboard runtime.", "active", "latest");
+  for (const attempt of nativeCardAttempts(card)) {
+    push("attempt-start", attempt.startedAt, `Attempt ${attempt.index} started`, `${attempt.engine} · ${attempt.model}`, "active", attempt.runId);
+    if (attempt.endedAt) push("attempt-end", attempt.endedAt, `Attempt ${attempt.index} ${sessionStatusLabel(attempt.status)}`, attempt.error ?? "", attempt.status === "done" ? "done" : attempt.status === "running" ? "active" : "error", attempt.runId);
+  }
+  for (const entry of card.metadata?.comments ?? []) push("comment", entry.createdAt, "Agent comment", entry.body, "comment", entry.id);
+  for (const entry of card.metadata?.workerLogs ?? []) push("worker", entry.createdAt, `Worker · ${entry.level ?? "info"}`, entry.message, entry.level === "error" ? "error" : "active", entry.id);
+  for (const entry of card.metadata?.notifications ?? []) push("notification", entry.createdAt, `Notification · ${entry.kind ?? "update"}`, entry.message, entry.kind === "failed" ? "error" : "default", entry.id);
+  for (const entry of card.events ?? []) push("event", entry.createdAt ?? entry.timestamp, entry.type ?? entry.kind ?? "Workboard event", entry.message ?? entry.body ?? "", entry.status === "failed" ? "error" : "default", entry.id);
+  const unique = new Map();
+  for (const item of items.sort((left, right) => Number(left.timestamp ?? 0) - Number(right.timestamp ?? 0))) {
+    const key = `${item.timestamp}:${item.title}:${item.body}`;
+    if (!unique.has(key)) unique.set(key, item);
+  }
+  return [...unique.values()];
+}
+
+function sessionStatusLabel(status) {
+  return ({ blocked: "已阻塞", done: "已完成", failed: "失败", running: "运行中", timeout: "超时" })[status] ?? status ?? "未知";
+}
+
+function formatAttemptDuration(attempt) {
+  if (!attempt?.startedAt) return "—";
+  const milliseconds = Math.max(0, Number(attempt.endedAt ?? Date.now()) - Number(attempt.startedAt));
+  const seconds = Math.round(milliseconds / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+function formatDateTime(value) {
+  const timestamp = finiteNumber(value);
+  return timestamp ? new Date(timestamp).toLocaleString() : "—";
+}
+
+function finiteNumber(value) {
+  const number = Number(value);
+  if (Number.isFinite(number) && number > 0) return number;
+  const parsed = typeof value === "string" ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 function formatAge(value) {

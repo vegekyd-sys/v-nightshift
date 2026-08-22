@@ -33,6 +33,28 @@ compiler output, never a second author-maintained truth.
 7. VLab first: development, migration, failure recovery, and real workflow
    acceptance happen in VLab before any production promotion is proposed.
 
+## Native Workboard compatibility contract
+
+Live Board is an upgraded UI for OpenClaw Workboard, not a second task system.
+
+- Cards, status, claim ownership, heartbeat, attempts, comments, worker logs,
+  notifications, `sessionKey`, and `runId` remain native OpenClaw Workboard
+  data and are read through Gateway RPC.
+- Live Board never copies native cards into another card store. Its local
+  `StageRun` records are deterministic workflow projections that reference the
+  native card/run; reconciliation always takes the current Workboard card as
+  execution truth.
+- Opening a card reads its original attempts and activity directly from the
+  card. Agent transcripts are read from the same OpenClaw Session Store through
+  `sessions.get`, scoped to a `sessionKey` already attached to that card.
+- Moves, dispatch, approvals, retry, and recovery continue through native
+  Workboard RPC. Live Board does not implement a parallel claim or worker
+  lifecycle.
+- An OpenClaw upgrade is accepted only after the shared RPC contract passes:
+  card list/create/move/update/dispatch, attempt/session linkage, activity
+  fields, and Session transcript retrieval. This lets native Workboard and Live
+  Board advance together without bundle-level UI coupling.
+
 ## User-facing information architecture
 
 ### 1. Live board

@@ -97,6 +97,39 @@ async function handleApi(request, response, url) {
     });
     return;
   }
+  const cardSessionMatch = url.pathname.match(/^\/api\/cards\/([^/]+)\/session$/);
+  if (request.method === "GET" && cardSessionMatch) {
+    const cardId = decodeURIComponent(cardSessionMatch[1]);
+    const card = cardCache.find((entry) => entry.id === cardId) ?? (await refreshCards()).find((entry) => entry.id === cardId);
+    if (!card) {
+      json(response, 404, { error: "Workboard card not found" });
+      return;
+    }
+    const attempts = nativeCardAttempts(card);
+    const requestedRunId = url.searchParams.get("runId");
+    const attempt = requestedRunId
+      ? attempts.find((entry) => entry.runId === requestedRunId)
+      : attempts.at(-1);
+    if (!attempt?.sessionKey) {
+      json(response, 404, { error: "This Workboard card has no Agent Session" });
+      return;
+    }
+    const result = await workboard.getSession(attempt.sessionKey, { limit: 300 });
+    const nextAttempt = attempts.find((entry) => Number(entry.startedAt) > Number(attempt.startedAt));
+    const rangeStart = Number(attempt.startedAt || 0) - 5000;
+    const rangeEnd = Number(attempt.endedAt || nextAttempt?.startedAt || Number.POSITIVE_INFINITY) + 5000;
+    const messages = (result.messages ?? [])
+      .filter((message) => !message.timestamp || (Number(message.timestamp) >= rangeStart && Number(message.timestamp) <= rangeEnd))
+      .map(presentSessionMessage);
+    json(response, 200, {
+      attempt: presentAttempt(attempt),
+      cardId,
+      messages,
+      runId: attempt.runId,
+      sessionKey: attempt.sessionKey,
+    });
+    return;
+  }
   const deliverablesMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/deliverables$/);
   if (request.method === "GET" && deliverablesMatch) {
     const instanceId = decodeURIComponent(deliverablesMatch[1]);
@@ -529,6 +562,73 @@ function assertInstanceId(instanceId) {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/.test(instanceId)) {
     throw new Error("Invalid instance id");
   }
+}
+
+function nativeCardAttempts(card) {
+  const attempts = Array.isArray(card.metadata?.attempts) ? card.metadata.attempts : [];
+  const candidates = attempts.length > 0 ? attempts : [card.execution ?? card];
+  return candidates
+    .filter((attempt) => attempt?.sessionKey)
+    .map((attempt, index) => ({
+      endedAt: finiteTimestamp(attempt.endedAt),
+      engine: cleanText(attempt.engine ?? "openclaw", 120),
+      error: attempt.error ? cleanText(attempt.error, 12000) : null,
+      index: index + 1,
+      model: cleanText(attempt.model ?? "default", 120),
+      runId: cleanText(attempt.runId ?? attempt.id ?? card.runId ?? `attempt-${index + 1}`, 500),
+      sessionKey: cleanText(attempt.sessionKey ?? card.sessionKey, 1000),
+      startedAt: finiteTimestamp(attempt.startedAt),
+      status: cleanText(attempt.status ?? card.status ?? "unknown", 80),
+    }))
+    .sort((left, right) => Number(left.startedAt ?? 0) - Number(right.startedAt ?? 0));
+}
+
+function presentAttempt(attempt) {
+  return {
+    endedAt: attempt.endedAt,
+    engine: attempt.engine,
+    error: attempt.error,
+    index: attempt.index,
+    model: attempt.model,
+    runId: attempt.runId,
+    startedAt: attempt.startedAt,
+    status: attempt.status,
+  };
+}
+
+function presentSessionMessage(message) {
+  return {
+    content: redactSessionValue(message.content, "content"),
+    isError: message.isError === true,
+    model: cleanText(message.model ?? "", 120) || null,
+    provider: cleanText(message.provider ?? "", 120) || null,
+    role: cleanText(message.role ?? "unknown", 80),
+    stopReason: cleanText(message.stopReason ?? "", 120) || null,
+    timestamp: finiteTimestamp(message.timestamp),
+    toolName: cleanText(message.toolName ?? "", 160) || null,
+    usage: redactSessionValue(message.usage ?? null, "usage"),
+  };
+}
+
+function redactSessionValue(value, key = "") {
+  if (/(authorization|cookie|credential|password|secret|token|api.?key)/i.test(key)) return "[redacted]";
+  if (typeof value === "string") return cleanText(value, 20000)
+    .replace(/(bearer\s+)[a-z0-9._~+/=-]+/gi, "$1[redacted]")
+    .replace(/(["']?(?:token|secret|password|api.?key)["']?\s*[:=]\s*["'])[^"']+(["'])/gi, "$1[redacted]$2");
+  if (Array.isArray(value)) return value.map((entry) => redactSessionValue(entry));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([childKey, child]) => [childKey, redactSessionValue(child, childKey)]));
+  }
+  return value;
+}
+
+function cleanText(value, maxLength) {
+  return String(value ?? "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").slice(0, maxLength);
+}
+
+function finiteTimestamp(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
 }
 
 function parseByteRange(header, size) {

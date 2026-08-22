@@ -21,6 +21,9 @@ test("creates and reuses native cards through Gateway RPC", async () => {
       cards = [card];
       return JSON.stringify({ card });
     }
+    if (method === "sessions.get") {
+      return JSON.stringify({ messages: [{ role: "assistant", content: [{ type: "text", text: params.key }] }] });
+    }
     throw new Error(`unexpected ${method}`);
   };
   const adapter = new WorkboardGatewayAdapter({
@@ -51,4 +54,11 @@ test("creates and reuses native cards through Gateway RPC", async () => {
   assert.ok(calls.every(({ args }) => !args.join(" ").includes("test-token")));
   assert.ok(calls.every(({ env }) => env.OPENCLAW_GATEWAY_TOKEN === "test-token"));
   assert.ok(calls.every(({ env }) => env.OPENCLAW_GATEWAY_URL === "ws://127.0.0.1:23793"));
+  const session = await adapter.getSession("agent:main:subagent:workboard-card-1", { limit: 25 });
+  assert.equal(session.messages[0].content[0].text, "agent:main:subagent:workboard-card-1");
+  const sessionCall = calls.find(({ args }) => args[2] === "sessions.get");
+  assert.deepEqual(JSON.parse(sessionCall.args[sessionCall.args.indexOf("--params") + 1]), {
+    key: "agent:main:subagent:workboard-card-1",
+    limit: 25,
+  });
 });
