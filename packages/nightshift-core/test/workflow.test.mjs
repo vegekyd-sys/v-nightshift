@@ -25,6 +25,11 @@ test("compiles the six-stage Xingqing workflow deterministically", async () => {
     ["plan", "materials", "produce", "review", "publish", "measure"],
   );
   assert.deepEqual(first.spec.stages[1].needs, ["plan"]);
+  assert.deepEqual(first.spec.stages[1].skills, [
+    "shooting-checklist-v2",
+    "scene-cli",
+    "material-verification",
+  ]);
 });
 
 test("rejects duplicate IDs and unsafe side effects", async () => {
@@ -53,6 +58,15 @@ test("plans only the first runnable card for a serial instance", async () => {
   assert.equal(actions[0].stageId, "plan");
   assert.equal(actions[0].card.assignedAgent, "main");
   assert.match(actions[0].card.notes, /Objective: 读取需求/);
+  assert.match(
+    actions[0].card.notes,
+    /Required skills \(load in order\): lark-base, lark-doc, max-qijian-planning-doc/,
+  );
+  assert.deepEqual(actions[0].card.automation.skills, [
+    "lark-base",
+    "lark-doc",
+    "max-qijian-planning-doc",
+  ]);
   assert.match(actions[0].card.notes, /https:\/\/example\.invalid\/brief/);
   assert.match(actions[0].card.notes, /"apiKey":"\[REDACTED\]"/);
   assert.doesNotMatch(actions[0].card.notes, /must-not-appear/);

@@ -105,12 +105,27 @@ export function validateWorkflow(document) {
         ),
       );
     }
-    if (stage.actor === "agent" && !nonEmptyString(stage.skill)) {
+    const declaredSkills = stageSkills(stage);
+    if (stage.actor === "agent" && declaredSkills.length === 0) {
       issues.push(
         issue(
           "stage.skill.required",
-          `${path}.skill`,
-          "Agent stages require a skill",
+          `${path}.skills`,
+          "Agent stages require at least one skill",
+        ),
+      );
+    }
+    if (
+      stage.skills !== undefined &&
+      (!Array.isArray(stage.skills) ||
+        stage.skills.length === 0 ||
+        stage.skills.some((entry) => !nonEmptyString(entry)))
+    ) {
+      issues.push(
+        issue(
+          "stage.skills.invalid",
+          `${path}.skills`,
+          "skills must be a non-empty array of skill names",
         ),
       );
     }
@@ -378,6 +393,13 @@ function stringArray(value) {
   if (Array.isArray(value)) return value.filter((entry) => typeof entry === "string");
   if (typeof value === "string") return [value];
   return [];
+}
+
+export function stageSkills(stage) {
+  if (!isObject(stage)) return [];
+  const skills = stringArray(stage.skills).filter(nonEmptyString);
+  if (skills.length > 0) return [...new Set(skills)];
+  return nonEmptyString(stage.skill) ? [stage.skill] : [];
 }
 
 function nonEmptyString(value) {

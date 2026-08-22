@@ -2,7 +2,7 @@ apiVersion: nightshift.versa.ai/v1alpha1
 kind: Workflow
 metadata:
   id: xingqing-content-delivery
-  version: 0.2.0-draft
+  version: 0.3.0-draft
   name: 星擎内容交付
 spec:
   ownerAgentRole: content-operator
@@ -26,7 +26,10 @@ spec:
     - id: plan
       title: 需求与策划
       actor: agent
-      skill: dynamic:planning-period
+      skills:
+        - lark-base
+        - lark-doc
+        - max-qijian-planning-doc
       description: 读取需求、解决缺失项、生成或复用策划，并确定路线和数量。
       outputs: [requirementSnapshot, planUrl, route, targetCount]
       completeWhen:
@@ -43,7 +46,10 @@ spec:
     - id: materials
       title: 素材准备
       actor: agent
-      skill: material-verification
+      skills:
+        - shooting-checklist-v2
+        - scene-cli
+        - material-verification
       description: 生成拍摄要求；已有素材则直接验真冻结，缺素材时创建人工待办并等待 Scene 就绪。
       needs: [plan]
       outputs: [shootingRequest, sceneProject, frozenMaterialManifest]
@@ -62,7 +68,10 @@ spec:
     - id: produce
       title: 内容生产
       actor: agent
-      skill: makaron
+      skills:
+        - montage-script-writer
+        - makaron
+        - background-worker-contract
       description: 编译生产包，生成样片并机器 QC；样片通过后在同一阶段内完成目标数量和逐条 QC。
       needs: [materials]
       sideEffects: [paid-production]
@@ -94,7 +103,10 @@ spec:
     - id: publish
       title: 文案与发布
       actor: agent
-      skill: geelark-cloud-phone
+      skills:
+        - lark-base
+        - social-search-apify-first
+        - geelark-cloud-phone
       needs: [review]
       description: 生成文案和唯一发布键，按批准范围单次提交并回收真实 TikTok 链接。
       sideEffects: [external-publication]
@@ -114,7 +126,9 @@ spec:
     - id: measure
       title: 数据回收与复盘
       actor: agent
-      skill: apify
+      skills:
+        - social-search-apify-first
+        - lark-base
       needs: [publish]
       description: 到统计窗口后回收数据，明确 UNKNOWN，形成复盘并建议关闭、补救或新建下一轮。
       waitUntil: "${instance.metricsWindow}"

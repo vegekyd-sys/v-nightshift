@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { interpolate } from "./workflow.mjs";
+import { interpolate, stageSkills } from "./workflow.mjs";
 
 const ACTIVE_STATUSES = new Set(["ready", "running"]);
 const PRESENT_STATUSES = new Set([
@@ -104,7 +104,7 @@ function cardPayload(release, instance, stage, status) {
       instanceId: instance.id,
       stageId: stage.id,
       inputHash,
-      skills: stage.skill ? [stage.skill] : [],
+      skills: stageSkills(stage),
       maxRuntime: stage.timeout,
       maxAttempts: stage.retry?.maxAttempts ?? 1,
     },
@@ -118,6 +118,7 @@ function buildAgentBrief(release, instance, stage) {
     `Instance: ${instance.id}`,
     `Stage: ${stage.id} — ${stage.title}`,
     `Objective: ${stage.description ?? "Complete the declared stage."}`,
+    `Required skills (load in order): ${stageSkills(stage).join(", ") || "none"}`,
     `Inputs: ${JSON.stringify(safeInputs)}`,
     `Required outputs: ${(stage.outputs ?? []).join(", ") || "none"}`,
     `Completion checks: ${(stage.completeWhen ?? []).join("; ") || "human decision"}`,
