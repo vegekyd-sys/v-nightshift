@@ -42,9 +42,9 @@ export class NightShiftRuntime {
     return this.store.createInstance(instance);
   }
 
-  async reconcile(instanceId) {
-    const cards = await this.workboard.listCards();
-    for (const card of cards) {
+  async reconcile(instanceId, cards = null) {
+    const currentCards = cards ?? await this.workboard.listCards();
+    for (const card of currentCards) {
       const labels = card.labels ?? [];
       if (!labels.includes(`instance:${instanceId}`)) continue;
       const stageLabel = labels.find((label) => label.startsWith("stage:"));
@@ -62,8 +62,8 @@ export class NightShiftRuntime {
     return this.store.listStageRuns(instanceId);
   }
 
-  async tick(instanceId, { dispatch = false, dryRun = false } = {}) {
-    await this.reconcile(instanceId);
+  async tick(instanceId, { cards = null, dispatch = false, dryRun = false } = {}) {
+    await this.reconcile(instanceId, cards);
     const instance = this.store.getInstance(instanceId);
     if (!instance) throw new Error(`Unknown instance ${instanceId}`);
     const savedRelease = this.store.getRelease(instance.workflowSha256);

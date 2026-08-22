@@ -26,15 +26,20 @@ const runtime = new NightShiftRuntime({ board, store, workboard });
 let cardCache = [];
 let cardsUpdatedAt = null;
 let cardRefreshPromise = null;
+let lastSchedulerAt = null;
+let lastSchedulerError = null;
+let schedulerPromise = null;
 
 await ensureWorkflow();
 await ensureSeedInstance();
-await reconcileSeededInstances();
 await refreshCards();
-const refreshTimer = setInterval(() => {
-  refreshCards().catch((error) => console.error(`Workboard refresh failed: ${error.message}`));
+await reconcileSeededInstances(cardCache);
+const schedulerTimer = setInterval(() => {
+  runScheduler();
 }, 30000);
-refreshTimer.unref();
+schedulerTimer.unref();
+const initialSchedulerTimer = setTimeout(() => runScheduler(), 1000);
+initialSchedulerTimer.unref();
 
 const server = createServer(async (request, response) => {
   try {
@@ -58,6 +63,8 @@ async function handleApi(request, response, url) {
     json(response, 200, {
       board,
       cardsUpdatedAt,
+      lastSchedulerAt,
+      lastSchedulerError,
       ok: true,
       service: "nightshift-workboard",
     });
@@ -149,10 +156,33 @@ async function ensureSeedInstance() {
   runtime.startInstance({ ...seed, workflowSha256: release.workflowSha256 });
 }
 
-async function reconcileSeededInstances() {
+async function reconcileSeededInstances(cards) {
   for (const instance of store.listInstances()) {
-    await runtime.reconcile(instance.id);
+    await runtime.reconcile(instance.id, cards);
   }
+}
+
+function runScheduler() {
+  if (schedulerPromise) return schedulerPromise;
+  schedulerPromise = (async () => {
+    const cards = await refreshCards();
+    let changed = false;
+    for (const instance of store.listInstances()) {
+      if (instance.status !== "active") continue;
+      const result = await runtime.tick(instance.id, { cards, dispatch: true });
+      if (result.applied.length > 0) changed = true;
+    }
+    if (changed) await refreshCards();
+    lastSchedulerAt = new Date().toISOString();
+    lastSchedulerError = null;
+  })().catch((error) => {
+    lastSchedulerAt = new Date().toISOString();
+    lastSchedulerError = error.message;
+    console.error(`Night Shift scheduler failed: ${error.message}`);
+  }).finally(() => {
+    schedulerPromise = null;
+  });
+  return schedulerPromise;
 }
 
 async function refreshCards() {
@@ -215,7 +245,8 @@ function contentType(path) {
 }
 
 function shutdown() {
-  clearInterval(refreshTimer);
+  clearInterval(schedulerTimer);
+  clearTimeout(initialSchedulerTimer);
   server.close(() => {
     store.close();
     process.exit(0);

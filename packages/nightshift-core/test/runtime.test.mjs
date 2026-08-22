@@ -100,6 +100,30 @@ test("request changes records a distinct decision and blocks the stage", async (
   store.close();
 });
 
+test("reconciles a shared Workboard snapshot without another Gateway read", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard });
+  const release = runtime.publish(source);
+  runtime.startInstance({
+    id: "NS-RUNTIME-4",
+    workflowSha256: release.workflowSha256,
+    agentBindings: { "content-operator": "main" },
+  });
+  const cards = [{
+    id: "shared-card",
+    labels: ["instance:NS-RUNTIME-4", "stage:plan"],
+    status: "done",
+  }];
+  workboard.listCards = async () => { throw new Error("unexpected Gateway read"); };
+
+  await runtime.reconcile("NS-RUNTIME-4", cards);
+
+  assert.equal(store.listStageRuns("NS-RUNTIME-4")[0].status, "done");
+  store.close();
+});
+
 class FakeWorkboard {
   constructor() {
     this.cards = [];
