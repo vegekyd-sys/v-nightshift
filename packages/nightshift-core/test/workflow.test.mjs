@@ -46,11 +46,16 @@ test("rejects dependency cycles", async () => {
 test("plans only the first runnable card for a serial instance", async () => {
   const release = compileWorkflow(await loadWorkflow(fixture));
   const instance = activeInstance(release);
+  instance.inputs.apiKey = "must-not-appear";
   const actions = planNextActions({ release, instance });
   assert.equal(actions.length, 1);
   assert.equal(actions[0].type, "create_workboard_card");
   assert.equal(actions[0].stageId, "plan");
   assert.equal(actions[0].card.assignedAgent, "main");
+  assert.match(actions[0].card.notes, /Objective: 读取需求/);
+  assert.match(actions[0].card.notes, /https:\/\/example\.invalid\/brief/);
+  assert.match(actions[0].card.notes, /"apiKey":"\[REDACTED\]"/);
+  assert.doesNotMatch(actions[0].card.notes, /must-not-appear/);
   assert.match(actions[0].idempotencyKey, /:run:/);
 });
 

@@ -89,6 +89,7 @@ function cardPayload(release, instance, stage, status) {
     title: `${instance.name ?? instance.id}｜${stage.title}`,
     status,
     assignedAgent,
+    notes: buildAgentBrief(release, instance, stage),
     labels: [
       `workflow:${release.metadata.id}`,
       `release:${release.metadata.workflowSha256.slice(0, 12)}`,
@@ -108,6 +109,35 @@ function cardPayload(release, instance, stage, status) {
       maxAttempts: stage.retry?.maxAttempts ?? 1,
     },
   };
+}
+
+function buildAgentBrief(release, instance, stage) {
+  const safeInputs = redactSensitiveInputs(instance.inputs ?? {});
+  return [
+    `Night Shift workflow: ${release.metadata.name} (${release.metadata.version})`,
+    `Instance: ${instance.id}`,
+    `Stage: ${stage.id} — ${stage.title}`,
+    `Objective: ${stage.description ?? "Complete the declared stage."}`,
+    `Inputs: ${JSON.stringify(safeInputs)}`,
+    `Required outputs: ${(stage.outputs ?? []).join(", ") || "none"}`,
+    `Completion checks: ${(stage.completeWhen ?? []).join("; ") || "human decision"}`,
+    `Safety: ${(stage.sideEffects ?? []).length ? `requires approved side effects: ${stage.sideEffects.join(", ")}` : "no declared external side effect"}`,
+    "Return a concise result with evidence links or an explicit blocker. Do not invent missing evidence.",
+  ].join("\n").slice(0, 8000);
+}
+
+function redactSensitiveInputs(value, key = "") {
+  if (/(secret|token|password|credential|api.?key)/i.test(key)) return "[REDACTED]";
+  if (Array.isArray(value)) return value.map((entry) => redactSensitiveInputs(entry));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([childKey, child]) => [
+        childKey,
+        redactSensitiveInputs(child, childKey),
+      ]),
+    );
+  }
+  return value;
 }
 
 function actionKey(release, instance, stage, action) {
