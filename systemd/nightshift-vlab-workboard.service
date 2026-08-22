@@ -8,7 +8,8 @@ Type=simple
 User=vlab-browser
 Group=vlab-browser
 WorkingDirectory=/srv/vlab-browser/releases/nightshift-workboard/current
-Environment=HOME=/srv/vlab-browser/home
+Environment=HOME=/srv/vlab-browser
+Environment=OPENCLAW_HOME=/srv/vlab-browser
 Environment=OPENCLAW_STATE_DIR=/srv/vlab-browser/state
 Environment=OPENCLAW_CONFIG_PATH=/srv/vlab-browser/state/openclaw.json
 Environment=NIGHTSHIFT_HOST=100.82.39.107
