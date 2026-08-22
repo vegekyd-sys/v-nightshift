@@ -52,7 +52,7 @@ export function Sidebar({ active, onChange }) {
       </div>
       <nav>
         {items.map(([id, label, Icon]) => (
-          <button key={id} className={active === id ? "active" : ""} onClick={() => onChange(id)}>
+          <button key={id} aria-label={label} title={label} className={active === id ? "active" : ""} onClick={() => onChange(id)}>
             <Icon size={17} /><span>{label}</span>
           </button>
         ))}
