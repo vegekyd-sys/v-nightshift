@@ -29,6 +29,7 @@ let cardRefreshPromise = null;
 let lastSchedulerAt = null;
 let lastSchedulerError = null;
 let schedulerPromise = null;
+let tickQueue = Promise.resolve();
 
 await ensureWorkflow();
 await ensureSeedInstance();
@@ -124,7 +125,7 @@ async function handleApi(request, response, url) {
   if (request.method === "POST" && tickMatch) {
     const body = await bodyJson(request);
     const result =
-      await runtime.tick(decodeURIComponent(tickMatch[1]), {
+      await serializedTick(decodeURIComponent(tickMatch[1]), {
         dispatch: body.dispatch === true,
         dryRun: body.dryRun === true,
       });
@@ -178,11 +179,11 @@ async function reconcileSeededInstances(cards) {
 function runScheduler() {
   if (schedulerPromise) return schedulerPromise;
   schedulerPromise = (async () => {
-    const cards = await refreshCards();
+    await refreshCards();
     let changed = false;
     for (const instance of store.listInstances()) {
       if (instance.status !== "active") continue;
-      const result = await runtime.tick(instance.id, { cards, dispatch: true });
+      const result = await serializedTick(instance.id, { dispatch: true });
       if (result.applied.length > 0) changed = true;
     }
     if (changed) await refreshCards();
@@ -196,6 +197,17 @@ function runScheduler() {
     schedulerPromise = null;
   });
   return schedulerPromise;
+}
+
+function serializedTick(instanceId, options) {
+  const run = tickQueue
+    .catch(() => undefined)
+    .then(async () => {
+      const cards = await workboard.listCards();
+      return runtime.tick(instanceId, { ...options, cards });
+    });
+  tickQueue = run.catch(() => undefined);
+  return run;
 }
 
 async function refreshCards() {
