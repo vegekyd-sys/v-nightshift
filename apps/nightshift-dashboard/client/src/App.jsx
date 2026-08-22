@@ -122,7 +122,7 @@ export function App() {
         {active === "projects" && <Projects data={data} onNewProject={() => setProjectReleaseSha(data?.workflows?.[0]?.workflowSha256)} />}
         {active === "agents" && <Agents data={data} />}
       </main>
-      {projectReleaseSha && <ProjectEditor releases={data?.workflows ?? []} initialReleaseSha={projectReleaseSha} onClose={() => setProjectReleaseSha(null)} onCreated={(result) => { setProjectReleaseSha(null); setActive("workflows"); if (result.initialScheduleError) setError(`项目已创建，首次调度将在下一轮重试：${result.initialScheduleError}`); refresh(true).catch((reason) => setError(reason.message)); }} />}
+      {projectReleaseSha && <ProjectEditor releases={data?.workflows ?? []} initialReleaseSha={projectReleaseSha} onClose={() => setProjectReleaseSha(null)} onCreated={(result) => { setProjectReleaseSha(null); setActive("projects"); if (result.initialScheduleError) setError(`项目已创建，首次调度将在下一轮重试：${result.initialScheduleError}`); refresh(true).catch((reason) => setError(reason.message)); }} />}
     </div>
   );
 }
@@ -164,7 +164,7 @@ function WorkflowStudio({ data, refresh, setSelected, selected, decide, retry, d
   return <div className="workflow-screen workflow-studio">
     <header className="topbar workflow-topbar">
       <div><span className="section-label">Workflow operations</span><h1>{group.name}</h1><p className="topbar-copy">每个项目沿同一条阶段轨道运行；点击任务即可查看证据、处理审核或解除阻塞。</p></div>
-      <div className="top-actions"><button className="primary" onClick={() => onNewProject(pinnedRelease ?? group.releases[0])}><Plus size={15} />新建项目</button><button onClick={() => setEditor({ mode: "import", source: "" })}><Upload size={15} />导入 Workflow</button><button onClick={() => setEditor({ mode: "edit", source: group.releases[0].sourceMarkdown ?? group.releases[0].sourceYaml })}><FilePenLine size={15} />编辑 Workflow</button><button onClick={() => setEditor({ mode: "create", source: newWorkflowSource() })}><Plus size={15} />新建 Workflow</button></div>
+      <div className="top-actions"><button onClick={() => setEditor({ mode: "import", source: "" })}><Upload size={15} />导入 Workflow</button><button onClick={() => setEditor({ mode: "edit", source: group.releases[0].sourceMarkdown ?? group.releases[0].sourceYaml })}><FilePenLine size={15} />编辑 Workflow</button><button className="primary" onClick={() => setEditor({ mode: "create", source: newWorkflowSource() })}><Plus size={15} />新建 Workflow</button></div>
     </header>
     <div className={`workflow-workspace ${selected ? "with-drawer" : ""}`}>
       <aside className="workflow-library" aria-label="Workflow 列表">
@@ -178,7 +178,10 @@ function WorkflowStudio({ data, refresh, setSelected, selected, decide, retry, d
       <main className="workflow-runway">
         <div className="runway-toolbar">
           <div className="release-identity"><span className="mono">{pinnedRelease?.version}</span><strong>{stages.length} 个阶段</strong><small>SHA {pinnedRelease?.workflowSha256.slice(0, 12)}</small></div>
-          <label className="project-filter"><span>查看项目</span><select value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="all">全部项目（{projects.length}）</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><ChevronDown size={14} /></label>
+          <div className="runway-actions">
+            <label className="project-filter"><span>查看项目</span><select value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="all">全部项目（{projects.length}）</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><ChevronDown size={14} /></label>
+            <button className="workflow-project-shortcut" onClick={() => onNewProject(pinnedRelease ?? group.releases[0])}><Plus size={13} />用此 Workflow 新建项目</button>
+          </div>
         </div>
         <div className="stage-runway" style={{ "--stage-count": stages.length }}>
           <div className="stage-rail" />
