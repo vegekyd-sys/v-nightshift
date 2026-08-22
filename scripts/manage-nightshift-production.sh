@@ -37,7 +37,7 @@ case "${1:-}" in
       exit 2
     fi
     echo "$expected_sha  $artifact" | sha256sum -c -
-    if ! tar -tzf "$artifact" | grep -Eq '^\.?/?apps/nightshift-dashboard/dist/index\.html$'; then
+    if ! tar -tzf "$artifact" | grep -Ex '^\.?/?apps/nightshift-dashboard/dist/index\.html$' >/dev/null; then
       echo "Release artifact is missing apps/nightshift-dashboard/dist/index.html" >&2
       exit 1
     fi
