@@ -8,8 +8,9 @@ const execFileAsync = promisify(execFile);
 export class WorkboardGatewayAdapter {
   constructor({
     board = "nightshift",
-    command = "openclaw",
+    command = process.env.NIGHTSHIFT_OPENCLAW_COMMAND ?? "openclaw",
     configPath = process.env.OPENCLAW_CONFIG_PATH,
+    entry = process.env.NIGHTSHIFT_OPENCLAW_ENTRY,
     env = process.env,
     gatewayUrl = process.env.NIGHTSHIFT_GATEWAY_URL,
     runner = defaultRunner,
@@ -17,6 +18,7 @@ export class WorkboardGatewayAdapter {
     this.board = board;
     this.command = command;
     this.configPath = configPath;
+    this.entry = entry;
     this.env = env;
     this.gatewayUrl = gatewayUrl;
     this.runner = runner;
@@ -88,6 +90,7 @@ export class WorkboardGatewayAdapter {
     const token = config.gateway?.auth?.token;
     if (!token) throw new Error("Gateway auth token is missing from the configured file");
     const args = [
+      ...(this.entry ? [this.entry] : []),
       "gateway",
       "call",
       method,
@@ -129,7 +132,9 @@ async function defaultRunner(command, args, env) {
     const { stdout } = await execFileAsync(command, args, {
       encoding: "utf8",
       env,
+      killSignal: "SIGKILL",
       maxBuffer: 8 * 1024 * 1024,
+      timeout: 15000,
     });
     return stdout;
   } catch (error) {

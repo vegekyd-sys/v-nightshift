@@ -13,6 +13,8 @@ Environment=OPENCLAW_HOME=/srv/vlab-browser
 Environment=OPENCLAW_STATE_DIR=/srv/vlab-browser/nightshift/openclaw-state
 Environment=OPENCLAW_CONFIG_PATH=/srv/vlab-browser/state/openclaw.json
 Environment=PATH=/opt/node-v22.23.1/bin:/usr/local/bin:/usr/bin:/bin
+Environment=NIGHTSHIFT_OPENCLAW_COMMAND=/opt/node-v22.23.1/bin/node
+Environment=NIGHTSHIFT_OPENCLAW_ENTRY=/srv/vlab-browser/openclaw-v-browser-0.4.5/node_modules/openclaw/dist/index.js
 Environment=NIGHTSHIFT_HOST=100.82.39.107
 Environment=NIGHTSHIFT_PORT=24880
 Environment=NIGHTSHIFT_DATA_DIR=/srv/vlab-browser/nightshift
@@ -24,6 +26,7 @@ ExecStartPre=/srv/vlab-browser/releases/nightshift-workboard/current/scripts/boo
 ExecStart=/opt/node-v22.23.1/bin/node --no-warnings apps/nightshift-dashboard/server/index.mjs
 Restart=on-failure
 RestartSec=3
+TimeoutStopSec=20
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
