@@ -183,6 +183,41 @@ test("re-dispatches a previously ready content-item card", async () => {
   store.close();
 });
 
+test("rejects a done card when its declared delivery fails validation", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({
+    completionValidator: async () => { throw new Error("invalid delivery manifest"); },
+    store,
+    workboard,
+  });
+  const release = runtime.publish(source);
+  runtime.startInstance({
+    id: "NS-RUNTIME-INVALID-DELIVERY",
+    workflowSha256: release.workflowSha256,
+    agentBindings: { "content-operator": "main" },
+    contentItems: [{ id: "video-1", title: "Invalid delivery", route: "AI_GENERATE" }],
+  });
+  workboard.cards.push({
+    id: "card-produce-done",
+    labels: ["instance:NS-RUNTIME-INVALID-DELIVERY", "content-item:video-1", "stage:produce"],
+    status: "done",
+  });
+  workboard.cards.push({
+    id: "card-review-stale",
+    labels: ["instance:NS-RUNTIME-INVALID-DELIVERY", "content-item:video-1", "stage:review"],
+    status: "review",
+  });
+  await runtime.reconcile("NS-RUNTIME-INVALID-DELIVERY");
+  assert.equal(workboard.cards[0].status, "blocked");
+  assert.equal(workboard.cards[1].status, "blocked");
+  assert.ok(store.listContentItemRuns("NS-RUNTIME-INVALID-DELIVERY").every((run) => run.status === "blocked"));
+  assert.ok(store.listEvents("NS-RUNTIME-INVALID-DELIVERY").some((event) => event.type === "stage.completion.rejected"));
+  assert.ok(store.listEvents("NS-RUNTIME-INVALID-DELIVERY").some((event) => event.type === "stage.downstream.blocked"));
+  store.close();
+});
+
 class FakeWorkboard {
   constructor() {
     this.cards = [];

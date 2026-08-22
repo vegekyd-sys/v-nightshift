@@ -27,7 +27,7 @@ const board = process.env.NIGHTSHIFT_BOARD ?? "nightshift-lab";
 await mkdir(dataDir, { recursive: true });
 const store = new NightShiftStore(join(dataDir, "nightshift.sqlite"));
 const workboard = new WorkboardGatewayAdapter({ board });
-const runtime = new NightShiftRuntime({ board, store, workboard });
+const runtime = new NightShiftRuntime({ board, completionValidator: validateCompletion, store, workboard });
 let cardCache = [];
 let cardsUpdatedAt = null;
 let cardRefreshPromise = null;
@@ -345,6 +345,28 @@ async function loadDeliverables(instanceId, contentItemId = null) {
     : resolve(dataDir, "instances", instanceId, "deliverables.json");
   const source = JSON.parse(await readFile(manifestPath, "utf8"));
   return normalizeDeliverablesManifest(source, { instanceId, contentItemId });
+}
+
+async function validateCompletion({ contentItemId, instance, release, stageId }) {
+  const stage = release?.spec?.stages?.find((entry) => entry.id === stageId);
+  if (!stage?.outputs?.includes("deliveryManifest")) return;
+  if (!contentItemId) throw new Error("deliveryManifest completion requires a content item");
+  const manifest = await loadDeliverables(instance.id, contentItemId);
+  if (!manifest.video.sha256) throw new Error("deliveryManifest video.sha256 is required");
+  for (const relativePath of deliverableArtifactPaths(manifest)) {
+    const filePath = await resolveDeclaredArtifact(manifest, relativePath, contentItemId);
+    const info = await stat(filePath);
+    if (!info.isFile()) throw new Error(`Declared artifact is not a file: ${relativePath}`);
+  }
+  const videoPath = await resolveDeclaredArtifact(manifest, manifest.video.path, contentItemId);
+  const actualSha = await sha256File(videoPath);
+  if (actualSha !== manifest.video.sha256) throw new Error("deliveryManifest video.sha256 does not match the file");
+}
+
+async function sha256File(filePath) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(filePath)) hash.update(chunk);
+  return hash.digest("hex");
 }
 
 async function presentDeliverables(manifest, contentItemId = null) {

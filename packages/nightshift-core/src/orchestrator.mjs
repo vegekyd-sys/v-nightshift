@@ -180,13 +180,36 @@ function buildAgentBrief(release, instance, stage, contentItem = null) {
       : []),
     ...(itemDir ? [`Content item artifact directory: ${itemDir}`] : []),
     ...(stage.outputs?.includes("deliveryManifest") && itemDir
-      ? [`Delivery contract: write the item-scoped manifest to ${itemDir}/deliverables.json and include instanceId=${instance.id}, contentItemId=${contentItem.id}.`]
+      ? [`Delivery contract: write exactly this v1 shape to ${itemDir}/deliverables.json (paths are relative to ${itemDir}): ${JSON.stringify(deliveryManifestExample(instance.id, contentItem))}`]
       : []),
     `Required outputs: ${(stage.outputs ?? []).join(", ") || "none"}`,
     `Completion checks: ${(stage.completeWhen ?? []).join("; ") || "human decision"}`,
     `Safety: ${(stage.sideEffects ?? []).length ? `requires approved side effects: ${stage.sideEffects.join(", ")}` : "no declared external side effect"}`,
     "Return a concise result with evidence links or an explicit blocker. Do not invent missing evidence.",
   ].join("\n").slice(0, 8000);
+}
+
+function deliveryManifestExample(instanceId, contentItem) {
+  return {
+    version: 1,
+    instanceId,
+    contentItemId: contentItem.id,
+    title: contentItem.title,
+    proposal: { title: "策划与执行方案", externalUrl: null, summaryPath: "finishedVideoBrief.md" },
+    video: {
+      title: "最终成片",
+      path: "produce/final.mp4",
+      posterPath: null,
+      mimeType: "video/mp4",
+      durationSeconds: 26,
+      width: 1080,
+      height: 1920,
+      sha256: "actual-sha256",
+      projectUrl: null,
+    },
+    qc: { status: "passed", reportPath: "produce/machineQc.json", summary: ["完整解码通过"] },
+    review: { stageId: "review", status: "review" },
+  };
 }
 
 function redactSensitiveInputs(value, key = "") {

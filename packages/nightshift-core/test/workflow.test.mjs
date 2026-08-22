@@ -43,6 +43,7 @@ test("rejects duplicate IDs, cycles, and unapproved side effects", async () => {
 test("plans the project stage and redacts secrets", async () => {
   const release = compileWorkflow(await loadWorkflow(fixture));
   const instance = activeInstance(release);
+  instance.inputs.nightshift = { instanceDir: "/srv/nightshift/NS-LAB-001" };
   instance.inputs.apiKey = "must-not-appear";
   const actions = planNextActions({ release, instance });
   assert.equal(actions.length, 1);
@@ -88,6 +89,7 @@ test("selects route-specific material skills without creating a second workflow"
 test("paid production approval is isolated per content item", async () => {
   const release = compileWorkflow(await loadWorkflow(fixture));
   const instance = activeInstance(release);
+  instance.inputs.nightshift = { instanceDir: "/srv/nightshift/NS-LAB-001" };
   const contentItems = [twoItems()[0]];
   const contentItemRuns = doneThrough("video-ai-01", "brief");
   const request = planNextActions({ release, instance, runs: [{ stageId: "plan", status: "done" }], contentItems, contentItemRuns });
@@ -98,6 +100,8 @@ test("paid production approval is isolated per content item", async () => {
   const approved = planNextActions({ release, instance, runs: [{ stageId: "plan", status: "done" }], contentItems, contentItemRuns });
   assert.equal(approved[0].type, "create_workboard_card");
   assert.equal(approved[0].stageId, "produce");
+  assert.match(approved[0].card.notes, /Delivery contract: write exactly this v1 shape/);
+  assert.match(approved[0].card.notes, /\{"version":1/);
 });
 
 test("human review and publication remain per-video and idempotent", async () => {
