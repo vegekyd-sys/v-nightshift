@@ -50,7 +50,8 @@ case "${1:-}" in
       cp -a "$state_root" "$backup/state.before"
     fi
     sudo -u openclaw tar -xzf "$artifact" -C "$release"
-    sudo -u openclaw /opt/node-v22.23.1/bin/npm --prefix "$release" ci --omit=dev --ignore-scripts
+    sudo -u openclaw env PATH=/opt/node-v22.23.1/bin:/usr/local/bin:/usr/bin:/bin \
+      /opt/node-v22.23.1/bin/npm --prefix "$release" ci --omit=dev --ignore-scripts
     install -o root -g root -m 644 "$release/systemd/nightshift-workboard.service" "$service_path"
     ln -sfn "$release" "$release_root/current"
     install -d -o openclaw -g openclaw -m 755 "$(dirname "$cli_path")"
