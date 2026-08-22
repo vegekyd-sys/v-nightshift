@@ -23,4 +23,15 @@ test("production deploy waits for the Workboard health endpoint", async () => {
 
   assert.match(script, /^wait_for_health\(\) \{$/m);
   assert.equal((script.match(/^\s+wait_for_health$/gm) ?? []).length, 2);
+  assert.match(script, /Release artifact is missing apps\/nightshift-dashboard\/dist\/index\.html/);
+});
+
+test("release packager builds and includes the dashboard distribution", async () => {
+  const script = await readFile(
+    new URL("../../../scripts/package-nightshift-release.sh", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(script, /npm --prefix "\$stage" run dashboard:build/);
+  assert.match(script, /printf '%s\\n' "\$commit_sha" >"\$stage\/RELEASE_COMMIT"/);
 });

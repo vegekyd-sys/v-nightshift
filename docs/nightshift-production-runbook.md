@@ -13,7 +13,13 @@ Night Shift production is a separate loopback service. It uses the production Op
 
 ## Release
 
-Build the dashboard and package the exact reviewed commit. Transfer the archive, verify its SHA-256, then run:
+Package the exact reviewed commit. The packager builds the dashboard inside a clean archive and prints its SHA-256:
+
+```bash
+scripts/package-nightshift-release.sh <commit> /tmp/nightshift-workboard.tgz
+```
+
+Transfer the archive, verify its SHA-256, then run:
 
 ```bash
 sudo scripts/manage-nightshift-production.sh deploy <artifact.tgz> <sha256> <commit>
@@ -37,4 +43,3 @@ V creates a short-lived branch, runs tests, pushes a Draft PR, and validates in 
 ## Rollback
 
 Use the command printed by deploy. Rollback restores the previous release pointer, service definition, and Night Shift state snapshot, then verifies loopback health. It does not roll back OpenClaw Gateway, Session Store, Memory, or Feishu configuration because Night Shift does not mutate them.
-

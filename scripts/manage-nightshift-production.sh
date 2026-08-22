@@ -37,6 +37,10 @@ case "${1:-}" in
       exit 2
     fi
     echo "$expected_sha  $artifact" | sha256sum -c -
+    if ! tar -tzf "$artifact" | grep -Eq '^\.?/?apps/nightshift-dashboard/dist/index\.html$'; then
+      echo "Release artifact is missing apps/nightshift-dashboard/dist/index.html" >&2
+      exit 1
+    fi
     timestamp=$(date -u +%Y%m%dT%H%M%SZ)
     backup="$backup_root/$timestamp-$release_id"
     release="$release_root/$release_id"
