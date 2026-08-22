@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
+import { normalizeContentItems } from "./content-items.mjs";
 
 export class NightShiftStore {
   constructor(path = ":memory:") {
@@ -49,10 +50,35 @@ export class NightShiftStore {
         updated_at TEXT NOT NULL,
         PRIMARY KEY(instance_id, stage_id, attempt)
       );
+      CREATE TABLE IF NOT EXISTS content_items (
+        instance_id TEXT NOT NULL REFERENCES instances(id),
+        id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        route TEXT,
+        status TEXT NOT NULL,
+        ordinal INTEGER NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(instance_id, id)
+      );
+      CREATE TABLE IF NOT EXISTS content_item_runs (
+        instance_id TEXT NOT NULL,
+        content_item_id TEXT NOT NULL,
+        stage_id TEXT NOT NULL,
+        attempt INTEGER NOT NULL,
+        card_id TEXT,
+        status TEXT NOT NULL,
+        summary TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(instance_id, content_item_id, stage_id, attempt),
+        FOREIGN KEY(instance_id, content_item_id) REFERENCES content_items(instance_id, id)
+      );
       CREATE TABLE IF NOT EXISTS approvals (
         id TEXT PRIMARY KEY,
         instance_id TEXT NOT NULL REFERENCES instances(id),
         stage_id TEXT NOT NULL,
+        content_item_id TEXT,
         effect TEXT,
         scope TEXT,
         status TEXT NOT NULL,
@@ -71,6 +97,10 @@ export class NightShiftStore {
         created_at TEXT NOT NULL
       );
     `);
+    const approvalColumns = this.db.prepare("PRAGMA table_info(approvals)").all();
+    if (!approvalColumns.some((column) => column.name === "content_item_id")) {
+      this.db.exec("ALTER TABLE approvals ADD COLUMN content_item_id TEXT");
+    }
   }
 
   saveDraft(workflowId, sourceYaml, now = new Date()) {
@@ -190,6 +220,51 @@ export class NightShiftStore {
     return this.getInstance(id);
   }
 
+  replaceContentItems(instanceId, items, now = new Date(), maxItems = 50, routes = []) {
+    if (!this.getInstance(instanceId)) throw new Error(`Unknown instance ${instanceId}`);
+    const normalized = normalizeContentItems(items, { maxItems, routes });
+    const timestamp = now.toISOString();
+    const existingIds = new Set(this.listContentItems(instanceId).map((item) => item.id));
+    const nextIds = new Set(normalized.map((item) => item.id));
+    for (const id of existingIds) {
+      if (nextIds.has(id)) continue;
+      const runs = this.db.prepare("SELECT COUNT(*) AS count FROM content_item_runs WHERE instance_id = ? AND content_item_id = ?").get(instanceId, id);
+      if (runs.count > 0) throw new Error(`Cannot remove content item ${id} after execution has started`);
+      this.db.prepare("DELETE FROM content_items WHERE instance_id = ? AND id = ?").run(instanceId, id);
+    }
+    const statement = this.db.prepare(`
+      INSERT INTO content_items(instance_id, id, title, route, status, ordinal, payload_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(instance_id, id) DO UPDATE SET
+        title=excluded.title,
+        route=excluded.route,
+        status=excluded.status,
+        ordinal=excluded.ordinal,
+        payload_json=excluded.payload_json,
+        updated_at=excluded.updated_at
+    `);
+    for (const item of normalized) {
+      const existing = this.db.prepare("SELECT created_at FROM content_items WHERE instance_id = ? AND id = ?").get(instanceId, item.id);
+      const current = this.listContentItems(instanceId).find((entry) => entry.id === item.id);
+      if (current?.route && item.route !== current.route) {
+        const downstream = this.db.prepare("SELECT COUNT(*) AS count FROM content_item_runs WHERE instance_id = ? AND content_item_id = ? AND stage_id <> 'route'").get(instanceId, item.id);
+        if (downstream.count > 0) throw new Error(`Cannot change route for ${item.id} after downstream execution has started`);
+      }
+      statement.run(instanceId, item.id, item.title, item.route, item.status, item.ordinal, JSON.stringify(item), existing?.created_at ?? timestamp, timestamp);
+    }
+    this.db.prepare("UPDATE instances SET updated_at = ? WHERE id = ?").run(timestamp, instanceId);
+    this.appendEvent({ instanceId, type: "content-items.replaced", payload: { count: normalized.length, routes: normalized.map((item) => item.route) }, now });
+    return this.listContentItems(instanceId);
+  }
+
+  listContentItems(instanceId) {
+    return this.db.prepare(`
+      SELECT instance_id AS instanceId, id, title, route, status, ordinal,
+             payload_json AS payloadJson, created_at AS createdAt, updated_at AS updatedAt
+      FROM content_items WHERE instance_id = ? ORDER BY ordinal, id
+    `).all(instanceId).map(contentItemRow);
+  }
+
   upsertStageRun(run, now = new Date()) {
     this.db
       .prepare(`
@@ -225,19 +300,41 @@ export class NightShiftStore {
       .all(instanceId);
   }
 
+  upsertContentItemRun(run, now = new Date()) {
+    this.db.prepare(`
+      INSERT INTO content_item_runs(instance_id, content_item_id, stage_id, attempt, card_id, status, summary, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(instance_id, content_item_id, stage_id, attempt) DO UPDATE SET
+        card_id=excluded.card_id,
+        status=excluded.status,
+        summary=excluded.summary,
+        updated_at=excluded.updated_at
+    `).run(run.instanceId, run.contentItemId, run.stageId, run.attempt ?? 1, run.cardId ?? null, run.status, run.summary ?? null, now.toISOString());
+    return this.listContentItemRuns(run.instanceId).find((entry) => entry.contentItemId === run.contentItemId && entry.stageId === run.stageId && entry.attempt === (run.attempt ?? 1));
+  }
+
+  listContentItemRuns(instanceId) {
+    return this.db.prepare(`
+      SELECT instance_id AS instanceId, content_item_id AS contentItemId, stage_id AS stageId,
+             attempt, card_id AS cardId, status, summary, updated_at AS updatedAt
+      FROM content_item_runs WHERE instance_id = ? ORDER BY rowid
+    `).all(instanceId);
+  }
+
   recordApproval(approval, now = new Date()) {
     const id = approval.id ?? randomUUID();
     this.db
       .prepare(`
         INSERT INTO approvals(
-          id, instance_id, stage_id, effect, scope, status, actor, evidence,
+          id, instance_id, stage_id, content_item_id, effect, scope, status, actor, evidence,
           approval_card_id, expires_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         id,
         approval.instanceId,
         approval.stageId,
+        approval.contentItemId ?? null,
         approval.effect ?? null,
         approval.scope ?? null,
         approval.status,
@@ -259,7 +356,7 @@ export class NightShiftStore {
   listApprovals(instanceId) {
     return this.db
       .prepare(`
-        SELECT id, instance_id AS instanceId, stage_id AS stageId, effect, scope, status,
+        SELECT id, instance_id AS instanceId, stage_id AS stageId, content_item_id AS contentItemId, effect, scope, status,
                actor, evidence, approval_card_id AS cardId,
                expires_at AS expiresAt, created_at AS createdAt
         FROM approvals WHERE instance_id = ? ORDER BY created_at DESC
@@ -304,6 +401,7 @@ function releaseRow(row) {
     version: row.version,
     name: row.name,
     sourceYaml: row.source_yaml,
+    sourceMarkdown: row.source_yaml,
     manifest: JSON.parse(row.manifest_json),
     publishedAt: row.published_at,
   };
@@ -320,5 +418,19 @@ function instanceRow(row, approvals) {
     approvals,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function contentItemRow(row) {
+  return {
+    ...JSON.parse(row.payloadJson),
+    instanceId: row.instanceId,
+    id: row.id,
+    title: row.title,
+    route: row.route,
+    status: row.status,
+    ordinal: row.ordinal,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
   };
 }

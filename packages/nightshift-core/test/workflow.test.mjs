@@ -2,176 +2,129 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
-import {
-  compileWorkflow,
-  loadWorkflow,
-  planNextActions,
-  validateWorkflow,
-} from "../src/index.mjs";
+import { compileWorkflow, loadWorkflow, planNextActions, validateWorkflow } from "../src/index.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const fixture = resolve(
-  here,
-  "../../../examples/workflows/xingqing-content-delivery.v0.2.yaml",
-);
+const fixture = resolve(here, "../../../examples/workflows/xingqing-content-delivery.workflow.md");
+const genericFixture = resolve(here, "../../../examples/workflows/generic-agent-delivery.workflow.md");
 
-test("compiles the six-stage Xingqing workflow deterministically", async () => {
+test("compiles the seven-stage workflow.md deterministically", async () => {
   const workflow = await loadWorkflow(fixture);
   const first = compileWorkflow(workflow);
   const second = compileWorkflow(workflow);
   assert.equal(first.metadata.workflowSha256, second.metadata.workflowSha256);
-  assert.deepEqual(
-    first.spec.stages.map((stage) => stage.id),
-    ["plan", "materials", "produce", "review", "publish", "measure"],
-  );
-  assert.deepEqual(first.spec.stages[1].needs, ["plan"]);
-  assert.deepEqual(first.spec.stages[1].skills, [
-    "shooting-checklist-v2",
-    "scene-cli",
-    "material-verification",
+  assert.deepEqual(first.spec.stages.map((stage) => stage.id), [
+    "plan", "route", "materials", "brief", "produce", "review", "publish-feedback",
   ]);
+  assert.equal(first.spec.stages[1].scope, "content-item");
+  assert.deepEqual(first.spec.contentItems.routes, ["AI_GENERATE", "SCENE_EDIT"]);
 });
 
-test("rejects duplicate IDs and unsafe side effects", async () => {
-  const workflow = structuredClone(await loadWorkflow(fixture));
-  workflow.spec.stages[1].id = "plan";
-  delete workflow.spec.stages[2].approval;
-  const codes = validateWorkflow(workflow).map((entry) => entry.code);
+test("the same compiler accepts a non-Xingqing workflow without content items", async () => {
+  const release = compileWorkflow(await loadWorkflow(genericFixture));
+  assert.equal(release.metadata.id, "generic-agent-delivery");
+  assert.deepEqual(release.spec.stages.map((stage) => stage.id), ["understand", "execute", "review"]);
+  assert.equal(release.spec.contentItems, undefined);
+});
+
+test("rejects duplicate IDs, cycles, and unapproved side effects", async () => {
+  const duplicate = structuredClone(await loadWorkflow(fixture));
+  duplicate.spec.stages[1].id = "plan";
+  delete duplicate.spec.stages[4].approval;
+  const codes = validateWorkflow(duplicate).map((entry) => entry.code);
   assert.ok(codes.includes("stage.duplicate"));
   assert.ok(codes.includes("stage.approval.required"));
+
+  const cyclic = structuredClone(await loadWorkflow(fixture));
+  cyclic.spec.stages[0].needs = ["publish-feedback"];
+  assert.ok(validateWorkflow(cyclic).some((entry) => entry.code === "workflow.cycle"));
 });
 
-test("rejects dependency cycles", async () => {
-  const workflow = structuredClone(await loadWorkflow(fixture));
-  workflow.spec.stages[0].needs = ["measure"];
-  const codes = validateWorkflow(workflow).map((entry) => entry.code);
-  assert.ok(codes.includes("workflow.cycle"));
-});
-
-test("plans only the first runnable card for a serial instance", async () => {
+test("plans the project stage and redacts secrets", async () => {
   const release = compileWorkflow(await loadWorkflow(fixture));
   const instance = activeInstance(release);
   instance.inputs.apiKey = "must-not-appear";
   const actions = planNextActions({ release, instance });
   assert.equal(actions.length, 1);
-  assert.equal(actions[0].type, "create_workboard_card");
   assert.equal(actions[0].stageId, "plan");
-  assert.equal(actions[0].card.assignedAgent, "main");
-  assert.match(actions[0].card.notes, /Objective: 读取需求/);
-  assert.match(
-    actions[0].card.notes,
-    /Required skills \(load in order\): lark-base, lark-doc, max-qijian-planning-doc/,
-  );
-  assert.deepEqual(actions[0].card.automation.skills, [
-    "lark-base",
-    "lark-doc",
-    "max-qijian-planning-doc",
-  ]);
-  assert.match(actions[0].card.notes, /https:\/\/example\.invalid\/brief/);
+  assert.match(actions[0].card.notes, /每条计划视频拆成独立 ContentItem/);
   assert.match(actions[0].card.notes, /"apiKey":"\[REDACTED\]"/);
   assert.doesNotMatch(actions[0].card.notes, /must-not-appear/);
-  assert.match(actions[0].idempotencyKey, /:run:/);
 });
 
-test("does not duplicate an existing ready card", async () => {
+test("fans one project out into independent content-item route cards", async () => {
   const release = compileWorkflow(await loadWorkflow(fixture));
   const instance = activeInstance(release);
   const actions = planNextActions({
     release,
     instance,
-    runs: [{ stageId: "plan", attempt: 1, status: "ready" }],
+    runs: [{ stageId: "plan", status: "done" }],
+    contentItems: twoItems(),
   });
-  assert.deepEqual(actions, []);
+  assert.equal(actions.length, 2);
+  assert.deepEqual(actions.map((action) => action.contentItemId), ["video-ai-01", "video-scene-01"]);
+  assert.ok(actions.every((action) => action.stageId === "route"));
+  assert.match(actions[0].card.title, /AI 产品视觉/);
+  assert.ok(actions[0].card.labels.includes("content-item:video-ai-01"));
 });
 
-test("advances after proof completion and requests paid-production approval", async () => {
+test("selects route-specific material skills without creating a second workflow", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const actions = planNextActions({
+    release,
+    instance: activeInstance(release),
+    runs: [{ stageId: "plan", status: "done" }],
+    contentItems: twoItems(),
+    contentItemRuns: [
+      { contentItemId: "video-ai-01", stageId: "route", status: "done" },
+      { contentItemId: "video-scene-01", stageId: "route", status: "done" },
+    ],
+  });
+  assert.equal(actions.length, 2);
+  assert.deepEqual(actions[0].card.automation.skills, ["lark-doc", "scene-cli", "material-verification"]);
+  assert.deepEqual(actions[1].card.automation.skills, ["shooting-checklist-v2", "scene-cli", "material-verification"]);
+});
+
+test("paid production approval is isolated per content item", async () => {
   const release = compileWorkflow(await loadWorkflow(fixture));
   const instance = activeInstance(release);
-  const planDone = [{ stageId: "plan", attempt: 1, status: "done" }];
-  assert.equal(
-    planNextActions({ release, instance, runs: planDone })[0].stageId,
-    "materials",
-  );
+  const contentItems = [twoItems()[0]];
+  const contentItemRuns = doneThrough("video-ai-01", "brief");
+  const request = planNextActions({ release, instance, runs: [{ stageId: "plan", status: "done" }], contentItems, contentItemRuns });
+  assert.equal(request[0].type, "request_approval");
+  assert.equal(request[0].contentItemId, "video-ai-01");
 
-  const materialsDone = [
-    ...planDone,
-    { stageId: "materials", attempt: 1, status: "done" },
-  ];
-  const approval = planNextActions({ release, instance, runs: materialsDone });
-  assert.equal(approval[0].type, "request_approval");
-  assert.equal(approval[0].stageId, "produce");
-
-  instance.approvals = [
-    { stageId: "produce", effect: "paid-production", status: "approved" },
-  ];
-  const approved = planNextActions({ release, instance, runs: materialsDone });
+  instance.approvals = [{ stageId: "produce", contentItemId: "video-ai-01", effect: "paid-production", status: "approved" }];
+  const approved = planNextActions({ release, instance, runs: [{ stageId: "plan", status: "done" }], contentItems, contentItemRuns });
   assert.equal(approved[0].type, "create_workboard_card");
   assert.equal(approved[0].stageId, "produce");
 });
 
-test("turns a human stage into a Workboard review card", async () => {
+test("human review and publication remain per-video and idempotent", async () => {
   const release = compileWorkflow(await loadWorkflow(fixture));
   const instance = activeInstance(release);
-  const actions = planNextActions({
-    release,
-    instance,
-    runs: [
-      { stageId: "plan", attempt: 1, status: "done" },
-      { stageId: "materials", attempt: 1, status: "done" },
-      { stageId: "produce", attempt: 1, status: "done" },
-    ],
-  });
-  assert.equal(actions[0].type, "create_review_card");
-  assert.equal(actions[0].stageId, "review");
-  assert.equal(actions[0].card.status, "review");
+  const contentItems = [twoItems()[1]];
+  let contentItemRuns = doneThrough("video-scene-01", "produce");
+  const review = planNextActions({ release, instance, runs: [{ stageId: "plan", status: "done" }], contentItems, contentItemRuns })[0];
+  assert.equal(review.type, "create_review_card");
+  assert.equal(review.stageId, "review");
+
+  contentItemRuns = doneThrough("video-scene-01", "review");
+  const publicationApproval = planNextActions({ release, instance, runs: [{ stageId: "plan", status: "done" }], contentItems, contentItemRuns })[0];
+  assert.equal(publicationApproval.type, "request_approval");
+  instance.approvals = [{ stageId: "publish-feedback", contentItemId: "video-scene-01", effect: "external-publication", status: "approved" }];
+  const publish = planNextActions({ release, instance, runs: [{ stageId: "plan", status: "done" }], contentItems, contentItemRuns })[0];
+  assert.match(publish.idempotencyKey, /video-scene-01:publish-feedback/);
 });
 
-test("resolves publish idempotency and metric timers from persisted inputs", async () => {
-  const release = compileWorkflow(await loadWorkflow(fixture));
-  const instance = activeInstance(release);
-  instance.inputs.assetHash = "asset-sha";
-  instance.inputs.accountId = "account-1";
-  instance.inputs.metricsWindow = "2026-08-22T00:00:00.000Z";
-  instance.approvals = [
-    { stageId: "publish", effect: "external-publication", status: "approved" },
-  ];
-  const runs = [
-    { stageId: "plan", status: "done" },
-    { stageId: "materials", status: "done" },
-    { stageId: "produce", status: "done" },
-    { stageId: "review", status: "done" },
-  ];
-  const publish = planNextActions({ release, instance, runs })[0];
-  assert.match(publish.idempotencyKey, /asset-sha:account-1$/);
-
-  runs.push({ stageId: "publish", status: "done" });
-  const measure = planNextActions({
-    release,
-    instance,
-    runs,
-    now: new Date("2026-08-22T00:00:01.000Z"),
-  })[0];
-  assert.equal(measure.stageId, "measure");
-});
-
-test("refuses to schedule an instance pinned to another workflow release", async () => {
+test("refuses another release and requires an Agent binding", async () => {
   const release = compileWorkflow(await loadWorkflow(fixture));
   const instance = activeInstance(release);
   instance.workflowSha256 = "different";
-  assert.throws(
-    () => planNextActions({ release, instance }),
-    /pinned to a different workflow release/,
-  );
-});
-
-test("blocks scheduling when an environment agent role is not bound", async () => {
-  const release = compileWorkflow(await loadWorkflow(fixture));
-  const instance = activeInstance(release);
-  delete instance.agentBindings;
-  assert.throws(
-    () => planNextActions({ release, instance }),
-    /Missing agent binding for role content-operator/,
-  );
+  assert.throws(() => planNextActions({ release, instance }), /pinned to a different workflow release/);
+  const unbound = activeInstance(release);
+  delete unbound.agentBindings;
+  assert.throws(() => planNextActions({ release, instance: unbound }), /Missing agent binding/);
 });
 
 function activeInstance(release) {
@@ -181,10 +134,18 @@ function activeInstance(release) {
     status: "active",
     workflowSha256: release.metadata.workflowSha256,
     agentBindings: { "content-operator": "main" },
-    inputs: {
-      customerId: "fixture-customer",
-      briefUrl: "https://example.invalid/brief",
-      targetCount: 1,
-    },
+    inputs: { customerId: "fixture-customer", briefUrl: "https://example.invalid/brief" },
   };
+}
+
+function twoItems() {
+  return [
+    { id: "video-ai-01", title: "AI 产品视觉", route: "AI_GENERATE", status: "planned" },
+    { id: "video-scene-01", title: "Scene 实拍剪辑", route: "SCENE_EDIT", status: "planned" },
+  ];
+}
+
+function doneThrough(contentItemId, lastStage) {
+  const stages = ["route", "materials", "brief", "produce", "review"];
+  return stages.slice(0, stages.indexOf(lastStage) + 1).map((stageId) => ({ contentItemId, stageId, status: "done" }));
 }

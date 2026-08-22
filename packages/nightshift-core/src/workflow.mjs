@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import YAML from "yaml";
 
 const ACTORS = new Set(["agent", "human", "system", "timer"]);
+const STAGE_SCOPES = new Set(["project", "content-item"]);
+const ROUTE_PATTERN = /^[A-Z][A-Z0-9_]*$/;
 const GUARDED_SIDE_EFFECTS = new Set([
   "destructive",
   "external-publication",
@@ -25,6 +27,9 @@ export async function loadWorkflow(filePath) {
 }
 
 export function parseWorkflow(source, sourceName = "workflow.yaml") {
+  if (/^---\s*$/m.test(source) && /^##\s+(?:STAGE|STEP)\s+/m.test(source)) {
+    return parseWorkflowMarkdown(source, sourceName);
+  }
   let document;
   try {
     document = YAML.parse(source);
@@ -33,6 +38,61 @@ export function parseWorkflow(source, sourceName = "workflow.yaml") {
       issue("yaml.invalid", sourceName, error.message),
     ]);
   }
+  return document;
+}
+
+export function parseWorkflowMarkdown(source, sourceName = "workflow.md") {
+  const frontmatter = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/.exec(source);
+  if (!frontmatter) {
+    throw new WorkflowValidationError([
+      issue("markdown.frontmatter.required", sourceName, "workflow.md requires YAML frontmatter"),
+    ]);
+  }
+  let document;
+  try {
+    document = YAML.parse(frontmatter[1]);
+  } catch (error) {
+    throw new WorkflowValidationError([
+      issue("markdown.frontmatter.invalid", sourceName, error.message),
+    ]);
+  }
+  if (!isObject(document)) document = {};
+  if (!isObject(document.spec)) document.spec = {};
+  const body = source.slice(frontmatter[0].length);
+  const headingPattern = /^##\s+(?:STAGE|STEP)\s+([a-z][a-z0-9-]*)\s*(?:｜|\||:|—|-)\s*(.+?)\s*$/gm;
+  const headings = [...body.matchAll(headingPattern)];
+  if (headings.length === 0) {
+    throw new WorkflowValidationError([
+      issue("markdown.stages.required", sourceName, "workflow.md requires at least one ## STAGE id | title section"),
+    ]);
+  }
+  document.spec.stages = headings.map((heading, index) => {
+    const sectionStart = heading.index + heading[0].length;
+    const sectionEnd = headings[index + 1]?.index ?? body.length;
+    const section = body.slice(sectionStart, sectionEnd);
+    const block = /```stage\s*\r?\n([\s\S]*?)\r?\n```/.exec(section);
+    if (!block) {
+      throw new WorkflowValidationError([
+        issue("markdown.stage.block.required", `stage.${heading[1]}`, `Stage ${heading[1]} requires a fenced stage block`),
+      ]);
+    }
+    let config;
+    try {
+      config = YAML.parse(block[1]);
+    } catch (error) {
+      throw new WorkflowValidationError([
+        issue("markdown.stage.block.invalid", `stage.${heading[1]}`, error.message),
+      ]);
+    }
+    if (!isObject(config)) config = {};
+    const goal = /###\s+Goal\s*\r?\n([\s\S]*?)(?=\r?\n(?:###\s+|```stage)|$)/i.exec(section)?.[1]?.trim();
+    return {
+      ...config,
+      id: heading[1],
+      title: heading[2].trim(),
+      description: config.description ?? goal,
+    };
+  });
   return document;
 }
 
@@ -70,6 +130,7 @@ export function validateWorkflow(document) {
     return issues;
   }
   validateIdentifier(spec.ownerAgentRole, "spec.ownerAgentRole", issues);
+  const contentRoutes = validateContentItemContract(spec.contentItems, issues);
 
   const stages = Array.isArray(spec.stages) ? spec.stages : [];
   if (stages.length === 0) {
@@ -96,6 +157,25 @@ export function validateWorkflow(document) {
       stageIds.add(stage.id);
     }
     requiredString(stage.title, `${path}.title`, issues);
+    const scope = stage.scope ?? "project";
+    if (!STAGE_SCOPES.has(scope)) {
+      issues.push(
+        issue(
+          "stage.scope.invalid",
+          `${path}.scope`,
+          `scope must be one of ${[...STAGE_SCOPES].join(", ")}`,
+        ),
+      );
+    }
+    if (scope === "content-item" && !isObject(spec.contentItems)) {
+      issues.push(
+        issue(
+          "stage.contentItems.required",
+          `${path}.scope`,
+          "content-item stages require spec.contentItems",
+        ),
+      );
+    }
     if (!ACTORS.has(stage.actor)) {
       issues.push(
         issue(
@@ -106,7 +186,8 @@ export function validateWorkflow(document) {
       );
     }
     const declaredSkills = stageSkills(stage);
-    if (stage.actor === "agent" && declaredSkills.length === 0) {
+    const routeSkills = routeStrategySkills(stage);
+    if (stage.actor === "agent" && declaredSkills.length === 0 && routeSkills.length === 0) {
       issues.push(
         issue(
           "stage.skill.required",
@@ -114,6 +195,26 @@ export function validateWorkflow(document) {
           "Agent stages require at least one skill",
         ),
       );
+    }
+    if (stage.routeStrategies !== undefined) {
+      if (scope !== "content-item" || !isObject(stage.routeStrategies)) {
+        issues.push(
+          issue(
+            "stage.routeStrategies.invalid",
+            `${path}.routeStrategies`,
+            "routeStrategies is only valid as an object on content-item stages",
+          ),
+        );
+      } else {
+        for (const [route, strategy] of Object.entries(stage.routeStrategies)) {
+          if (!contentRoutes.has(route)) {
+            issues.push(issue("stage.route.invalid", `${path}.routeStrategies.${route}`, `Unknown route ${route}`));
+          }
+          if (!isObject(strategy) || stageSkills(strategy).length === 0) {
+            issues.push(issue("stage.routeSkills.required", `${path}.routeStrategies.${route}.skills`, "Each route strategy requires skills"));
+          }
+        }
+      }
     }
     if (
       stage.skills !== undefined &&
@@ -395,11 +496,41 @@ function stringArray(value) {
   return [];
 }
 
-export function stageSkills(stage) {
+export function stageSkills(stage, route = null) {
   if (!isObject(stage)) return [];
+  const routed = route && isObject(stage.routeStrategies?.[route])
+    ? stringArray(stage.routeStrategies[route].skills).filter(nonEmptyString)
+    : [];
   const skills = stringArray(stage.skills).filter(nonEmptyString);
-  if (skills.length > 0) return [...new Set(skills)];
-  return nonEmptyString(stage.skill) ? [stage.skill] : [];
+  const fallback = nonEmptyString(stage.skill) ? [stage.skill] : [];
+  return [...new Set([...skills, ...fallback, ...routed])];
+}
+
+function routeStrategySkills(stage) {
+  if (!isObject(stage?.routeStrategies)) return [];
+  return Object.values(stage.routeStrategies).flatMap((strategy) => stageSkills(strategy));
+}
+
+function validateContentItemContract(contract, issues) {
+  const allowed = new Set();
+  if (contract === undefined) return allowed;
+  if (!isObject(contract)) {
+    issues.push(issue("contentItems.invalid", "spec.contentItems", "contentItems must be an object"));
+    return allowed;
+  }
+  const routes = stringArray(contract.routes);
+  if (routes.length === 0) {
+    issues.push(issue("contentItems.routes.required", "spec.contentItems.routes", "At least one content route is required"));
+  }
+  for (const route of routes) {
+    if (!ROUTE_PATTERN.test(route)) issues.push(issue("contentItems.route.invalid", "spec.contentItems.routes", `Route ${route} must use uppercase letters, numbers, and underscores`));
+    if (allowed.has(route)) issues.push(issue("contentItems.route.duplicate", "spec.contentItems.routes", `Duplicate route ${route}`));
+    allowed.add(route);
+  }
+  if (!Number.isInteger(contract.maxItems) || contract.maxItems < 1 || contract.maxItems > 100) {
+    issues.push(issue("contentItems.maxItems.invalid", "spec.contentItems.maxItems", "maxItems must be an integer from 1 to 100"));
+  }
+  return allowed;
 }
 
 function nonEmptyString(value) {

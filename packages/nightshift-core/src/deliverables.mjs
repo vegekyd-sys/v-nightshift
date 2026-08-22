@@ -7,16 +7,20 @@ const PATH_FIELDS = [
   ["qc", "reportPath"],
 ];
 
-export function normalizeDeliverablesManifest(input, { instanceId }) {
+export function normalizeDeliverablesManifest(input, { instanceId, contentItemId = null }) {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw new Error("Deliverables manifest must be an object");
   }
   if (input.version !== 1) throw new Error("Unsupported deliverables manifest version");
   if (input.instanceId !== instanceId) throw new Error("Deliverables manifest instance mismatch");
+  if (contentItemId && input.contentItemId !== contentItemId) {
+    throw new Error("Deliverables manifest content item mismatch");
+  }
 
   const manifest = {
     version: 1,
     instanceId,
+    contentItemId: contentItemId ?? optionalText(input.contentItemId, 160),
     title: cleanText(input.title, "Untitled delivery"),
     proposal: normalizeProposal(input.proposal),
     video: normalizeVideo(input.video),

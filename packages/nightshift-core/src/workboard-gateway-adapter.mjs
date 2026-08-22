@@ -116,14 +116,15 @@ export function gatewayIdempotencyLabel(key) {
 
 function approvalCard(action) {
   return {
-    title: `${action.instanceId}｜审批 ${action.stageId}`,
+    title: `${action.instanceId}｜${action.contentItemId ? `${action.contentItemId}｜` : ""}审批 ${action.stageId}`,
     status: "review",
     labels: [
       `instance:${action.instanceId}`,
       `stage:${action.stageId}`,
+      ...(action.contentItemId ? [`content-item:${action.contentItemId}`] : []),
       "nightshift:approval",
     ],
-    automation: { approval: action.approval },
+    automation: { approval: action.approval, contentItemId: action.contentItemId ?? null, instanceId: action.instanceId, stageId: action.stageId },
   };
 }
 

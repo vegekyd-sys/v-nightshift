@@ -58,3 +58,16 @@ test("drops non-https links instead of exposing them", () => {
   }, { instanceId: "NS-LAB-1" });
   assert.equal(manifest.proposal.externalUrl, null);
 });
+
+test("binds a delivery package to one content item", () => {
+  const itemManifest = { ...validManifest, contentItemId: "video-ai-01" };
+  const manifest = normalizeDeliverablesManifest(itemManifest, {
+    instanceId: "NS-LAB-1",
+    contentItemId: "video-ai-01",
+  });
+  assert.equal(manifest.contentItemId, "video-ai-01");
+  assert.throws(
+    () => normalizeDeliverablesManifest(itemManifest, { instanceId: "NS-LAB-1", contentItemId: "video-scene-01" }),
+    /content item mismatch/,
+  );
+});

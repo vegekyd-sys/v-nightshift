@@ -79,7 +79,7 @@ if (!command || !input || !["validate", "compile", "plan"].includes(command)) {
 
 function usage() {
   console.error(
-    "Usage: cli.mjs validate <workflow.yaml> | compile <workflow.yaml> [--out release.json] | plan <workflow.yaml> --instance <instance.json> [--runs <runs.json>] [--board <id>] [--apply]",
+    "Usage: cli.mjs validate <workflow.md> | compile <workflow.md> [--out release.json] | plan <workflow.md> --instance <instance.json> [--runs <runs.json>] [--board <id>] [--apply]",
   );
 }
 

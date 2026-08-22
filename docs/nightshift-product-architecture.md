@@ -17,8 +17,9 @@ interfaces.
 
 1. One operator surface: the Night Shift Workboard is the place where people
    see project state, agent activity, evidence, blockers, and approvals.
-2. One canonical workflow artifact: `workflow.yaml` is edited visually or as
-   code, but both modes change the same parsed document.
+2. One canonical workflow artifact: `workflow.md` is edited visually or as
+Markdown, but both modes change the same parsed document. Internal YAML/JSON is
+compiler output, never a second author-maintained truth.
 3. Immutable releases: publishing creates a version and content hash. Running
    instances stay pinned to that exact release.
 4. Workboard owns orchestration state: claim, running, review, blocked, done,
@@ -51,7 +52,8 @@ The main screen is designed to stay open on a shared display.
   machine QC on demand, and approve, request changes, or reject without opening
   Base. Base remains an optional adapter/read model, not a required human UI.
 
-The producing stage writes `instances/<instance-id>/deliverables.json` using
+Each producing item writes
+`instances/<instance-id>/content-items/<content-item-id>/deliverables.json` using
 the versioned delivery-manifest contract. Only artifacts explicitly declared
 in that manifest can be streamed by the dashboard, and each resolved file must
 remain inside the instance directory. Video responses support byte ranges so
@@ -59,7 +61,7 @@ the browser can seek without loading the full file.
 
 ### 2. Workflow designer
 
-- Visual graph and code editor are two views of the same `workflow.yaml` AST.
+- Visual graph and Markdown editor are two views of the same `workflow.md` AST.
 - V can create or modify a draft through the UI or workflow tools.
 - Validation reports missing inputs, cycles, unsafe side effects, missing
   retry/idempotency rules, and unavailable skills before publish.
@@ -80,7 +82,7 @@ the browser can seek without loading the full file.
 ## Runtime architecture
 
 ```text
-workflow.yaml draft
+workflow.md draft
         |
         v
 validator + compiler ----> immutable workflow release
@@ -158,8 +160,12 @@ The minimum durable entities are:
 - `WorkflowDraft`: mutable definition before publish.
 - `WorkflowRelease`: immutable version, content hash, and compatibility data.
 - `Instance`: one project run pinned to one release and authorization scope.
+- `ContentItem`: one deliverable video split from the planning document, with
+  an independent route, brief, state, evidence, and approved asset version.
 - `StageRun`: reference from `(instance, stage, attempt)` to a native Workboard
   card/run.
+- `ContentItemRun`: reference from `(instance, content_item, stage, attempt)`
+  to a native Workboard card/run.
 - `Approval`: requested decision, actor, evidence, scope, and expiration.
 - `ExternalOperation`: adapter, operation, idempotency key, request hash,
   external ID, and readback state.

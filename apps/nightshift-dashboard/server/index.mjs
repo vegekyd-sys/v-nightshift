@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, readFile, realpath, stat } from "node:fs/promises";
 import { extname, join, normalize, resolve, sep } from "node:path";
@@ -20,7 +21,7 @@ const host = process.env.NIGHTSHIFT_HOST ?? "127.0.0.1";
 const dataDir = resolve(process.env.NIGHTSHIFT_DATA_DIR ?? resolve(appRoot, "../../../tmp/nightshift"));
 const workflowPath = resolve(
   process.env.NIGHTSHIFT_WORKFLOW_PATH ??
-    resolve(appRoot, "../../examples/workflows/xingqing-content-delivery.v0.2.yaml"),
+    resolve(appRoot, "../../examples/workflows/xingqing-content-delivery.workflow.md"),
 );
 const board = process.env.NIGHTSHIFT_BOARD ?? "nightshift-lab";
 await mkdir(dataDir, { recursive: true });
@@ -35,6 +36,7 @@ let lastSchedulerError = null;
 let schedulerPromise = null;
 let tickQueue = Promise.resolve();
 let shuttingDown = false;
+const contentManifestHashes = new Map();
 
 await ensureWorkflow();
 await ensureSeedInstance();
@@ -80,6 +82,8 @@ async function handleApi(request, response, url) {
     if (url.searchParams.get("refresh") === "1") await refreshCards();
     const instances = store.listInstances().map((instance) => ({
       ...instance,
+      contentItems: store.listContentItems(instance.id),
+      contentItemRuns: store.listContentItemRuns(instance.id),
       stageRuns: store.listStageRuns(instance.id),
     }));
     json(response, 200, {
@@ -104,6 +108,19 @@ async function handleApi(request, response, url) {
     }
     return;
   }
+  const itemDeliverablesMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/content-items\/([^/]+)\/deliverables$/);
+  if (request.method === "GET" && itemDeliverablesMatch) {
+    const instanceId = decodeURIComponent(itemDeliverablesMatch[1]);
+    const contentItemId = decodeURIComponent(itemDeliverablesMatch[2]);
+    try {
+      const manifest = await loadDeliverables(instanceId, contentItemId);
+      json(response, 200, await presentDeliverables(manifest, contentItemId));
+    } catch (error) {
+      if (error.code === "ENOENT") json(response, 404, { error: "No delivery package has been published for this video task" });
+      else throw error;
+    }
+    return;
+  }
   const artifactMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/artifacts\/(.+)$/);
   if ((request.method === "GET" || request.method === "HEAD") && artifactMatch) {
     const instanceId = decodeURIComponent(artifactMatch[1]);
@@ -111,25 +128,36 @@ async function handleApi(request, response, url) {
     await serveDeliverableArtifact(request, response, instanceId, relativePath);
     return;
   }
+  const itemArtifactMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/content-items\/([^/]+)\/artifacts\/(.+)$/);
+  if ((request.method === "GET" || request.method === "HEAD") && itemArtifactMatch) {
+    await serveDeliverableArtifact(
+      request,
+      response,
+      decodeURIComponent(itemArtifactMatch[1]),
+      decodeURIComponent(itemArtifactMatch[3]),
+      decodeURIComponent(itemArtifactMatch[2]),
+    );
+    return;
+  }
   if (request.method === "POST" && url.pathname === "/api/workflows/validate") {
     const body = await bodyJson(request);
-    const result = runtime.validate(body.sourceYaml ?? "");
+    const result = runtime.validate(body.sourceMarkdown ?? body.sourceYaml ?? "");
     json(response, 200, { issues: result.issues, ok: result.ok });
     return;
   }
   if (request.method === "PUT" && url.pathname === "/api/workflows/draft") {
     const body = await bodyJson(request);
-    json(response, 200, runtime.saveDraft(body.sourceYaml ?? ""));
+    json(response, 200, runtime.saveDraft(body.sourceMarkdown ?? body.sourceYaml ?? ""));
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/workflows/publish") {
     const body = await bodyJson(request);
-    json(response, 200, runtime.publish(body.sourceYaml ?? ""));
+    json(response, 200, runtime.publish(body.sourceMarkdown ?? body.sourceYaml ?? ""));
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/instances") {
     const body = await bodyJson(request);
-    json(response, 201, runtime.startInstance(body));
+    json(response, 201, await startInstance(body));
     return;
   }
   const instanceInputMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/inputs$/);
@@ -143,6 +171,17 @@ async function handleApi(request, response, url) {
         body.inputs ?? {},
       ),
     );
+    return;
+  }
+  const contentItemsMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/content-items$/);
+  if (request.method === "PUT" && contentItemsMatch) {
+    const body = await bodyJson(request);
+    json(response, 200, {
+      contentItems: runtime.setContentItems(
+        decodeURIComponent(contentItemsMatch[1]),
+        body.contentItems ?? [],
+      ),
+    });
     return;
   }
   const tickMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/tick$/);
@@ -183,7 +222,7 @@ async function handleApi(request, response, url) {
 async function ensureWorkflow() {
   const source = await readFile(workflowPath, "utf8");
   runtime.saveDraft(source);
-  if (store.listReleases().length === 0) runtime.publish(source);
+  runtime.publish(source);
 }
 
 async function ensureSeedInstance() {
@@ -191,7 +230,7 @@ async function ensureSeedInstance() {
   if (!seedPath || store.listInstances().length > 0) return;
   const seed = JSON.parse(await readFile(resolve(seedPath), "utf8"));
   const release = store.listReleases()[0];
-  runtime.startInstance({ ...seed, workflowSha256: release.workflowSha256 });
+  await startInstance({ ...seed, workflowSha256: release.workflowSha256 });
 }
 
 async function reconcileSeededInstances(cards) {
@@ -207,6 +246,7 @@ function runScheduler() {
     let changed = false;
     for (const instance of store.listInstances()) {
       if (instance.status !== "active") continue;
+      await syncContentItemsManifest(instance);
       const result = await serializedTick(instance.id, { dispatch: true });
       if (result.applied.length > 0) changed = true;
     }
@@ -221,6 +261,38 @@ function runScheduler() {
     schedulerPromise = null;
   });
   return schedulerPromise;
+}
+
+async function startInstance(instance) {
+  assertInstanceId(instance.id);
+  const instanceDir = resolve(dataDir, "instances", instance.id);
+  await mkdir(instanceDir, { recursive: true });
+  return runtime.startInstance({
+    ...instance,
+    inputs: {
+      ...(instance.inputs ?? {}),
+      nightshift: {
+        instanceDir,
+        contentItemsManifestPath: join(instanceDir, "content-items.json"),
+      },
+    },
+  });
+}
+
+async function syncContentItemsManifest(instance) {
+  const manifestPath = join(dataDir, "instances", instance.id, "content-items.json");
+  let source;
+  try {
+    source = await readFile(manifestPath, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return;
+    throw error;
+  }
+  const digest = createHash("sha256").update(source).digest("hex");
+  if (contentManifestHashes.get(instance.id) === digest) return;
+  const parsed = JSON.parse(source);
+  runtime.setContentItems(instance.id, Array.isArray(parsed) ? parsed : parsed.contentItems);
+  contentManifestHashes.set(instance.id, digest);
 }
 
 function serializedTick(instanceId, options) {
@@ -255,22 +327,28 @@ async function bodyJson(request) {
   return value ? JSON.parse(value) : {};
 }
 
-async function loadDeliverables(instanceId) {
+async function loadDeliverables(instanceId, contentItemId = null) {
   assertInstanceId(instanceId);
-  const manifestPath = resolve(dataDir, "instances", instanceId, "deliverables.json");
+  if (contentItemId) assertInstanceId(contentItemId);
+  const manifestPath = contentItemId
+    ? resolve(dataDir, "instances", instanceId, "content-items", contentItemId, "deliverables.json")
+    : resolve(dataDir, "instances", instanceId, "deliverables.json");
   const source = JSON.parse(await readFile(manifestPath, "utf8"));
-  return normalizeDeliverablesManifest(source, { instanceId });
+  return normalizeDeliverablesManifest(source, { instanceId, contentItemId });
 }
 
-async function presentDeliverables(manifest) {
+async function presentDeliverables(manifest, contentItemId = null) {
+  const base = contentItemId
+    ? `/api/instances/${encodeURIComponent(manifest.instanceId)}/content-items/${encodeURIComponent(contentItemId)}`
+    : `/api/instances/${encodeURIComponent(manifest.instanceId)}`;
   const artifactUrl = (path) => path
-    ? `/api/instances/${encodeURIComponent(manifest.instanceId)}/artifacts/${path.split("/").map(encodeURIComponent).join("/")}`
+    ? `${base}/artifacts/${path.split("/").map(encodeURIComponent).join("/")}`
     : null;
   return {
     ...manifest,
     proposal: {
       ...manifest.proposal,
-      summary: await readArtifactText(manifest, manifest.proposal.summaryPath),
+      summary: await readArtifactText(manifest, manifest.proposal.summaryPath, contentItemId),
       summaryUrl: artifactUrl(manifest.proposal.summaryPath),
     },
     video: {
@@ -280,23 +358,23 @@ async function presentDeliverables(manifest) {
     },
     qc: {
       ...manifest.qc,
-      report: await readArtifactText(manifest, manifest.qc.reportPath),
+      report: await readArtifactText(manifest, manifest.qc.reportPath, contentItemId),
       reportUrl: artifactUrl(manifest.qc.reportPath),
     },
   };
 }
 
-async function readArtifactText(manifest, relativePath) {
+async function readArtifactText(manifest, relativePath, contentItemId = null) {
   if (!relativePath) return null;
-  const filePath = await resolveDeclaredArtifact(manifest, relativePath);
+  const filePath = await resolveDeclaredArtifact(manifest, relativePath, contentItemId);
   const content = await readFile(filePath, "utf8");
   return content.slice(0, 24000);
 }
 
-async function serveDeliverableArtifact(request, response, instanceId, requestedPath) {
+async function serveDeliverableArtifact(request, response, instanceId, requestedPath, contentItemId = null) {
   let manifest;
   try {
-    manifest = await loadDeliverables(instanceId);
+    manifest = await loadDeliverables(instanceId, contentItemId);
   } catch (error) {
     if (error.code === "ENOENT") {
       json(response, 404, { error: "Delivery package not found" });
@@ -318,7 +396,7 @@ async function serveDeliverableArtifact(request, response, instanceId, requested
   let filePath;
   let info;
   try {
-    filePath = await resolveDeclaredArtifact(manifest, relativePath);
+    filePath = await resolveDeclaredArtifact(manifest, relativePath, contentItemId);
     info = await stat(filePath);
   } catch (error) {
     if (error.code === "ENOENT") {
@@ -356,12 +434,14 @@ async function serveDeliverableArtifact(request, response, instanceId, requested
   createReadStream(filePath, { start, end }).pipe(response);
 }
 
-async function resolveDeclaredArtifact(manifest, relativePath) {
+async function resolveDeclaredArtifact(manifest, relativePath, contentItemId = null) {
   const normalizedPath = normalizeArtifactPath(relativePath);
   if (!deliverableArtifactPaths(manifest).has(normalizedPath)) {
     throw new Error("Artifact is not declared in the delivery manifest");
   }
-  const instanceRoot = await realpath(resolve(dataDir, "instances", manifest.instanceId));
+  const instanceRoot = await realpath(contentItemId
+    ? resolve(dataDir, "instances", manifest.instanceId, "content-items", contentItemId)
+    : resolve(dataDir, "instances", manifest.instanceId));
   const candidate = await realpath(resolve(instanceRoot, normalizedPath));
   if (!candidate.startsWith(`${instanceRoot}${sep}`)) {
     throw new Error("Artifact escaped the instance directory");

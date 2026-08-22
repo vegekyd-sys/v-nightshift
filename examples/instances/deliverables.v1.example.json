@@ -1,6 +1,7 @@
 {
   "version": 1,
   "instanceId": "EXAMPLE-INSTANCE-001",
+  "contentItemId": "video-scene-01",
   "title": "客户与项目名称",
   "proposal": {
     "title": "策划与执行方案",

@@ -5,6 +5,7 @@ export {
   interpolate,
   loadWorkflow,
   parseWorkflow,
+  parseWorkflowMarkdown,
   validateWorkflow,
 } from "./workflow.mjs";
 export { planNextActions } from "./orchestrator.mjs";
@@ -20,3 +21,7 @@ export {
   normalizeArtifactPath,
   normalizeDeliverablesManifest,
 } from "./deliverables.mjs";
+export {
+  contentItemRouteAllowed,
+  normalizeContentItems,
+} from "./content-items.mjs";

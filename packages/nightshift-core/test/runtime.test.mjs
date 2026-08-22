@@ -9,7 +9,7 @@ import {
 } from "../src/index.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const workflowPath = resolve(here, "../../../examples/workflows/xingqing-content-delivery.v0.2.yaml");
+const workflowPath = resolve(here, "../../../examples/workflows/xingqing-content-delivery.workflow.md");
 
 test("persists a stage card and advances after native completion", async () => {
   const source = await readFile(workflowPath, "utf8");
@@ -29,8 +29,12 @@ test("persists a stage card and advances after native completion", async () => {
   assert.equal(first.applied[0].status, "created");
   assert.equal(store.listStageRuns("NS-RUNTIME-1")[0].stageId, "plan");
   workboard.cards[0].status = "done";
+  runtime.setContentItems("NS-RUNTIME-1", [
+    { id: "video-1", title: "First video", route: "SCENE_EDIT" },
+  ]);
   const second = await runtime.tick("NS-RUNTIME-1");
-  assert.equal(second.actions[0].stageId, "materials");
+  assert.equal(second.actions[0].stageId, "route");
+  assert.equal(second.actions[0].contentItemId, "video-1");
   store.close();
 });
 
@@ -46,13 +50,17 @@ test("approval card completion does not skip the guarded agent stage", async () 
     agentBindings: { "content-operator": "main" },
   });
   store.upsertStageRun({ instanceId: "NS-RUNTIME-2", stageId: "plan", status: "done" });
-  store.upsertStageRun({ instanceId: "NS-RUNTIME-2", stageId: "materials", status: "done" });
+  runtime.setContentItems("NS-RUNTIME-2", [{ id: "video-1", title: "First video", route: "AI_GENERATE" }]);
+  for (const stageId of ["route", "materials", "brief"]) {
+    store.upsertContentItemRun({ instanceId: "NS-RUNTIME-2", contentItemId: "video-1", stageId, status: "done" });
+  }
   const requested = await runtime.tick("NS-RUNTIME-2");
   assert.equal(requested.actions[0].type, "request_approval");
   const cardId = requested.applied[0].card.id;
   await runtime.approve({
     actor: "tianyi",
     cardId,
+    contentItemId: "video-1",
     effect: "paid-production",
     instanceId: "NS-RUNTIME-2",
     stageId: "produce",
@@ -168,6 +176,7 @@ class FakeWorkboard {
         labels: [
           `instance:${action.instanceId}`,
           `stage:${action.stageId}`,
+          ...(action.contentItemId ? [`content-item:${action.contentItemId}`] : []),
           "nightshift:approval",
         ],
       };

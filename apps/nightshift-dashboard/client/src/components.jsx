@@ -88,9 +88,10 @@ export function StatusIcon({ status }) {
 export function WorkCard({ card, onClick }) {
   const automation = card.metadata?.automation ?? {};
   const stage = card.labels?.find((label) => label.startsWith("stage:"))?.slice(6);
+  const route = automation.contentRoute ?? findLabel(card, "route");
   return (
     <button className={`work-card status-${card.status}`} onClick={() => onClick(card)}>
-      <div className="work-card-top"><StatusIcon status={card.status} /><span>{stage ?? "task"}</span></div>
+      <div className="work-card-top"><StatusIcon status={card.status} /><span>{stage ?? "task"}</span>{route && route !== "—" && <span className="route-chip">{route}</span>}</div>
       <h3>{card.title}</h3>
       <div className="work-card-meta">
         <span><Bot size={13} />{card.agentId ?? automation.agentRole ?? "unassigned"}</span>
@@ -136,6 +137,7 @@ export function Drawer({ card, delivery, deliveryState, deliveryError, onClose, 
       <div className="drawer-status"><StatusIcon status={card.status} /><strong>{card.status}</strong><span>{card.id?.slice(0, 8)}</span></div>
       <DeliveryPanel delivery={delivery} state={deliveryState} error={deliveryError} showPlaceholder={card.status === "review"} />
       <section><h3>Execution</h3><Detail label="Agent" value={card.agentId ?? automation.agentRole ?? "—"} /><Detail label="Stage" value={automation.stageId ?? findLabel(card, "stage")} /><Detail label="Runtime" value={automation.maxRuntime ?? "—"} /><Detail label="Attempts" value={automation.maxAttempts ?? 1} /></section>
+      {automation.contentItemId && <section><h3>视频任务</h3><Detail label="ContentItem" value={automation.contentItemId} mono /><Detail label="Route" value={automation.contentRoute ?? findLabel(card, "route")} /></section>}
       <section><h3>Live timeline</h3><ol className="timeline"><li className="done"><span />Card materialized in native Workboard</li><li className={card.status === "running" ? "active" : ""}><span />Waiting for the next runtime event</li></ol></section>
       <section><h3>Evidence & safety</h3><Detail label="Workflow SHA" value={automation.workflowSha256?.slice(0, 12) ?? "—"} mono /><Detail label="Input hash" value={automation.inputHash?.slice(0, 12) ?? "—"} mono /><Detail label="Idempotency" value={automation.nightshiftActionKey ? "protected" : "native card"} /></section>
       {card.notes && <section><h3>Operator notes</h3><pre>{card.notes}</pre></section>}

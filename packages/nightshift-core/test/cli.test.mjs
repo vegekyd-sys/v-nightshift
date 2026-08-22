@@ -15,7 +15,7 @@ test("plan CLI emits a deterministic first Workboard action without applying", a
     [
       "packages/nightshift-core/src/cli.mjs",
       "plan",
-      "examples/workflows/xingqing-content-delivery.v0.2.yaml",
+      "examples/workflows/xingqing-content-delivery.workflow.md",
       "--instance",
       "examples/instances/xingqing-vlab-smoke.json",
     ],

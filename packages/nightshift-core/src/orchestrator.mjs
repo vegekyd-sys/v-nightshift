@@ -12,13 +12,22 @@ const PRESENT_STATUSES = new Set([
   "cancelled",
 ]);
 
-export function planNextActions({ release, instance, runs = [], now = new Date() }) {
+export function planNextActions({
+  release,
+  instance,
+  runs = [],
+  contentItems = [],
+  contentItemRuns = [],
+  now = new Date(),
+}) {
   assertInstance(release, instance);
   if (instance.status !== "active") return [];
 
   const stages = release.spec.stages;
+  const stageById = new Map(stages.map((stage) => [stage.id, stage]));
   const latestRuns = latestRunByStage(runs);
-  const activeCount = [...latestRuns.values()].filter((run) =>
+  const latestItemRuns = latestRunByContentItemStage(contentItemRuns);
+  const activeCount = [...latestRuns.values(), ...latestItemRuns.values()].filter((run) =>
     ACTIVE_STATUSES.has(run.status),
   ).length;
   const limit = release.spec.concurrency?.perInstance ?? 1;
@@ -27,6 +36,40 @@ export function planNextActions({ release, instance, runs = [], now = new Date()
   const actions = [];
   for (const stage of stages) {
     if (actions.length + activeCount >= limit) break;
+    if ((stage.scope ?? "project") === "content-item") {
+      for (const contentItem of contentItems) {
+        if (actions.length + activeCount >= limit) break;
+        const key = contentItemRunKey(contentItem.id, stage.id);
+        const existing = latestItemRuns.get(key);
+        if (existing && PRESENT_STATUSES.has(existing.status)) continue;
+        if (stage.requiresRoute !== false && !contentItem.route) continue;
+        if (!dependenciesDoneForContentItem(stage, stageById, latestRuns, latestItemRuns, contentItem.id)) continue;
+
+        const missingApproval = requiredApproval(stage, instance, now, contentItem.id);
+        if (missingApproval) {
+          actions.push({
+            type: "request_approval",
+            instanceId: instance.id,
+            contentItemId: contentItem.id,
+            stageId: stage.id,
+            approval: missingApproval,
+            idempotencyKey: actionKey(release, instance, stage, "approval", contentItem),
+          });
+          continue;
+        }
+        const type = stage.actor === "human" ? "create_review_card" : "create_workboard_card";
+        if (!["agent", "system", "human"].includes(stage.actor)) continue;
+        actions.push({
+          type,
+          instanceId: instance.id,
+          contentItemId: contentItem.id,
+          stageId: stage.id,
+          idempotencyKey: actionKey(release, instance, stage, stage.actor === "human" ? "review" : "run", contentItem),
+          card: cardPayload(release, instance, stage, stage.actor === "human" ? "review" : "ready", contentItem),
+        });
+      }
+      continue;
+    }
     const existing = latestRuns.get(stage.id);
     if (existing && PRESENT_STATUSES.has(existing.status)) continue;
     if (!dependenciesDone(stage, latestRuns)) continue;
@@ -78,7 +121,7 @@ export function planNextActions({ release, instance, runs = [], now = new Date()
   return actions;
 }
 
-function cardPayload(release, instance, stage, status) {
+function cardPayload(release, instance, stage, status, contentItem = null) {
   const inputHash = instance.inputHash ?? hashJson(instance.inputs ?? {});
   const agentRole = stage.agentRole ?? release.spec.ownerAgentRole;
   const assignedAgent = stage.actor === "agent" ? instance.agentBindings?.[agentRole] : null;
@@ -86,15 +129,18 @@ function cardPayload(release, instance, stage, status) {
     throw new Error(`Missing agent binding for role ${agentRole}`);
   }
   return {
-    title: `${instance.name ?? instance.id}｜${stage.title}`,
+    title: contentItem
+      ? `${instance.name ?? instance.id}｜${contentItem.title}｜${stage.title}`
+      : `${instance.name ?? instance.id}｜${stage.title}`,
     status,
     assignedAgent,
-    notes: buildAgentBrief(release, instance, stage),
+    notes: buildAgentBrief(release, instance, stage, contentItem),
     labels: [
       `workflow:${release.metadata.id}`,
       `release:${release.metadata.workflowSha256.slice(0, 12)}`,
       `instance:${instance.id}`,
       `stage:${stage.id}`,
+      ...(contentItem ? [`content-item:${contentItem.id}`, `route:${contentItem.route ?? "UNROUTED"}`] : []),
     ],
     automation: {
       workflowId: release.metadata.id,
@@ -103,23 +149,39 @@ function cardPayload(release, instance, stage, status) {
       agentRole,
       instanceId: instance.id,
       stageId: stage.id,
+      contentItemId: contentItem?.id ?? null,
+      contentRoute: contentItem?.route ?? null,
       inputHash,
-      skills: stageSkills(stage),
+      skills: stageSkills(stage, contentItem?.route),
       maxRuntime: stage.timeout,
       maxAttempts: stage.retry?.maxAttempts ?? 1,
     },
   };
 }
 
-function buildAgentBrief(release, instance, stage) {
+function buildAgentBrief(release, instance, stage, contentItem = null) {
   const safeInputs = redactSensitiveInputs(instance.inputs ?? {});
+  const strategy = contentItem?.route ? stage.routeStrategies?.[contentItem.route] : null;
+  const instanceDir = instance.inputs?.nightshift?.instanceDir;
+  const itemDir = contentItem && instanceDir ? `${instanceDir}/content-items/${contentItem.id}` : null;
   return [
     `Night Shift workflow: ${release.metadata.name} (${release.metadata.version})`,
     `Instance: ${instance.id}`,
     `Stage: ${stage.id} — ${stage.title}`,
-    `Objective: ${stage.description ?? "Complete the declared stage."}`,
-    `Required skills (load in order): ${stageSkills(stage).join(", ") || "none"}`,
+    ...(contentItem ? [`Content item: ${JSON.stringify(redactSensitiveInputs(contentItem))}`] : []),
+    `Objective: ${strategy?.description ?? stage.description ?? "Complete the declared stage."}`,
+    `Required skills (load in order): ${stageSkills(stage, contentItem?.route).join(", ") || "none"}`,
     `Inputs: ${JSON.stringify(safeInputs)}`,
+    ...(stage.id === "plan" && instance.inputs?.nightshift?.contentItemsManifestPath
+      ? [`Content backlog contract: write {"contentItems":[{"id":"stable-id","title":"...","route":"AI_GENERATE|SCENE_EDIT|null","status":"planned|routing"}]} to ${instance.inputs.nightshift.contentItemsManifestPath}. The control plane imports this file and fans out Workboard tasks.`]
+      : []),
+    ...(stage.id === "route" && instance.inputs?.nightshift?.contentItemsManifestPath
+      ? [`Route writeback contract: update only this ContentItem in ${instance.inputs.nightshift.contentItemsManifestPath}; preserve every other item and stable id.`]
+      : []),
+    ...(itemDir ? [`Content item artifact directory: ${itemDir}`] : []),
+    ...(stage.outputs?.includes("deliveryManifest") && itemDir
+      ? [`Delivery contract: write the item-scoped manifest to ${itemDir}/deliverables.json and include instanceId=${instance.id}, contentItemId=${contentItem.id}.`]
+      : []),
     `Required outputs: ${(stage.outputs ?? []).join(", ") || "none"}`,
     `Completion checks: ${(stage.completeWhen ?? []).join("; ") || "human decision"}`,
     `Safety: ${(stage.sideEffects ?? []).length ? `requires approved side effects: ${stage.sideEffects.join(", ")}` : "no declared external side effect"}`,
@@ -141,7 +203,7 @@ function redactSensitiveInputs(value, key = "") {
   return value;
 }
 
-function actionKey(release, instance, stage, action) {
+function actionKey(release, instance, stage, action, contentItem = null) {
   const inputHash = instance.inputHash ?? hashJson(instance.inputs ?? {});
   const template = stage.retry?.idempotencyKey;
   const logicalKey = template
@@ -150,18 +212,20 @@ function actionKey(release, instance, stage, action) {
         asset: instance.asset ?? {},
         input: { ...(instance.inputs ?? {}), hash: inputHash },
         instance,
+        contentItem: contentItem ?? {},
         stage,
       })
-    : `${instance.id}:${stage.id}:${inputHash}`;
+    : `${instance.id}:${contentItem?.id ?? "project"}:${stage.id}:${inputHash}`;
   return `${release.metadata.workflowSha256}:${action}:${logicalKey}`;
 }
 
-function requiredApproval(stage, instance, now) {
+function requiredApproval(stage, instance, now, contentItemId = null) {
   if (!stage.approval?.before) return null;
   const approvals = Array.isArray(instance.approvals) ? instance.approvals : [];
   const accepted = approvals.some((approval) => {
     if (approval.status !== "approved") return false;
     if (approval.stageId && approval.stageId !== stage.id) return false;
+    if ((approval.contentItemId ?? null) !== contentItemId) return false;
     if (approval.effect && approval.effect !== stage.approval.before) return false;
     if (approval.expiresAt && new Date(approval.expiresAt) <= now) return false;
     return true;
@@ -189,6 +253,16 @@ function dependenciesDone(stage, latestRuns) {
   );
 }
 
+function dependenciesDoneForContentItem(stage, stageById, projectRuns, itemRuns, contentItemId) {
+  return (stage.needs ?? []).every((dependency) => {
+    const dependencyStage = stageById.get(dependency);
+    if ((dependencyStage?.scope ?? "project") === "content-item") {
+      return itemRuns.get(contentItemRunKey(contentItemId, dependency))?.status === "done";
+    }
+    return projectRuns.get(dependency)?.status === "done";
+  });
+}
+
 function latestRunByStage(runs) {
   const latest = new Map();
   for (const run of runs) {
@@ -198,6 +272,20 @@ function latestRunByStage(runs) {
     }
   }
   return latest;
+}
+
+function latestRunByContentItemStage(runs) {
+  const latest = new Map();
+  for (const run of runs) {
+    const key = contentItemRunKey(run.contentItemId, run.stageId);
+    const previous = latest.get(key);
+    if (!previous || (run.attempt ?? 0) > (previous.attempt ?? 0)) latest.set(key, run);
+  }
+  return latest;
+}
+
+function contentItemRunKey(contentItemId, stageId) {
+  return `${contentItemId}\u0000${stageId}`;
 }
 
 function assertInstance(release, instance) {
