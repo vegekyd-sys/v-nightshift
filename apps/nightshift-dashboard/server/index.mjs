@@ -216,6 +216,14 @@ async function handleApi(request, response, url) {
     json(response, 200, result);
     return;
   }
+  const retryMatch = url.pathname.match(/^\/api\/cards\/([^/]+)\/retry$/);
+  if (request.method === "POST" && retryMatch) {
+    const body = await bodyJson(request);
+    const result = await runtime.retry({ ...body, cardId: decodeURIComponent(retryMatch[1]) });
+    await refreshCards();
+    json(response, 200, result);
+    return;
+  }
   json(response, 404, { error: "Not found" });
 }
 

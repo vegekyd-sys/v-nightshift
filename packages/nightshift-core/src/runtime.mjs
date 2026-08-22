@@ -4,7 +4,7 @@ import {
   validateWorkflow,
   WorkflowValidationError,
 } from "./workflow.mjs";
-import { planNextActions } from "./orchestrator.mjs";
+import { buildAgentBrief, planNextActions } from "./orchestrator.mjs";
 
 export class NightShiftRuntime {
   constructor({ board = "nightshift", completionValidator = null, store, workboard }) {
@@ -82,6 +82,13 @@ export class NightShiftRuntime {
         const contentItemId = contentItemLabel?.slice("content-item:".length) ?? null;
         try {
           await this.completionValidator({ card, contentItemId, instance, release, stageId });
+          await this.restoreDownstreamCards({
+            cards: currentCards,
+            contentItemId,
+            recoveredStageId: stageId,
+            instanceId,
+            release,
+          });
         } catch (error) {
           status = "blocked";
           summary = `Completion validation failed: ${error.message}`;
@@ -127,6 +134,12 @@ export class NightShiftRuntime {
       const stageId = labels.find((label) => label.startsWith("stage:"))?.slice("stage:".length);
       if (!stageId || !downstream.has(stageId) || ["blocked", "cancelled"].includes(card.status)) continue;
       await this.workboard.moveCard(card.id, "blocked");
+      const blockedSummary = `Blocked because upstream stage ${failedStageId} failed completion validation`;
+      card.status = "blocked";
+      card.metadata = {
+        ...(card.metadata ?? {}),
+        automation: { ...(card.metadata?.automation ?? {}), summary: blockedSummary },
+      };
       if (contentItemId) {
         this.store.upsertContentItemRun({
           instanceId,
@@ -135,7 +148,7 @@ export class NightShiftRuntime {
           attempt: card.metadata?.automation?.attempt ?? 1,
           cardId: card.id,
           status: "blocked",
-          summary: `Blocked because upstream stage ${failedStageId} failed completion validation`,
+          summary: blockedSummary,
         });
       }
       this.store.appendEvent({
@@ -144,6 +157,69 @@ export class NightShiftRuntime {
         payload: { cardId: card.id, contentItemId, failedStageId, stageId },
       });
     }
+  }
+
+  async restoreDownstreamCards({ cards, contentItemId, recoveredStageId, instanceId, release }) {
+    const immediate = new Set((release?.spec?.stages ?? []).filter((stage) => (stage.needs ?? []).includes(recoveredStageId)).map((stage) => stage.id));
+    const runs = contentItemId ? this.store.listContentItemRuns(instanceId) : this.store.listStageRuns(instanceId);
+    for (const card of cards) {
+      const labels = card.labels ?? [];
+      if (!labels.includes(`instance:${instanceId}`)) continue;
+      if (contentItemId && !labels.includes(`content-item:${contentItemId}`)) continue;
+      const stageId = labels.find((label) => label.startsWith("stage:"))?.slice("stage:".length);
+      if (!stageId || !immediate.has(stageId) || card.status !== "blocked") continue;
+      const run = runs.find((entry) => entry.cardId === card.id && entry.stageId === stageId);
+      if (!run?.summary?.includes(`upstream stage ${recoveredStageId} failed completion validation`)) continue;
+      const stage = release.spec.stages.find((entry) => entry.id === stageId);
+      const status = stage?.actor === "human" ? "review" : "ready";
+      await this.workboard.moveCard(card.id, status);
+      const reopenedSummary = `Reopened after ${recoveredStageId} passed completion validation`;
+      card.status = status;
+      card.metadata = {
+        ...(card.metadata ?? {}),
+        automation: { ...(card.metadata?.automation ?? {}), summary: reopenedSummary },
+      };
+      const updated = { ...run, status, summary: reopenedSummary };
+      if (contentItemId) this.store.upsertContentItemRun(updated);
+      else this.store.upsertStageRun(updated);
+      this.store.appendEvent({
+        instanceId,
+        type: "stage.downstream.reopened",
+        payload: { cardId: card.id, contentItemId, recoveredStageId, stageId },
+      });
+    }
+  }
+
+  async retry({ actor, cardId, contentItemId, evidence, instanceId, stageId }) {
+    const instance = this.store.getInstance(instanceId);
+    if (!instance) throw new Error(`Unknown instance ${instanceId}`);
+    const release = this.store.getRelease(instance.workflowSha256)?.manifest;
+    const stage = release?.spec?.stages?.find((entry) => entry.id === stageId);
+    if (!stage || !["agent", "system"].includes(stage.actor)) throw new Error("Only blocked executable stages can be retried");
+    const cards = await this.workboard.listCards();
+    const card = cards.find((entry) => entry.id === cardId);
+    if (!card || card.status !== "blocked") throw new Error("Retry requires a blocked Workboard card");
+    const contentItem = contentItemId
+      ? this.store.listContentItems(instanceId).find((entry) => entry.id === contentItemId)
+      : null;
+    if (contentItemId && !contentItem) throw new Error(`Unknown content item ${contentItemId}`);
+    await this.workboard.updateCard(cardId, { notes: buildAgentBrief(release, instance, stage, contentItem) });
+    await this.workboard.moveCard(cardId, "ready");
+    const runs = contentItemId ? this.store.listContentItemRuns(instanceId) : this.store.listStageRuns(instanceId);
+    const run = runs.find((entry) => entry.cardId === cardId && entry.stageId === stageId);
+    const updated = {
+      ...(run ?? { instanceId, contentItemId, stageId, attempt: 1, cardId }),
+      status: "ready",
+      summary: `Retry requested by ${actor}: ${evidence ?? "no evidence"}`,
+    };
+    if (contentItemId) this.store.upsertContentItemRun(updated);
+    else this.store.upsertStageRun(updated);
+    this.store.appendEvent({
+      instanceId,
+      type: "stage.retry.requested",
+      payload: { actor, cardId, contentItemId, evidence, stageId },
+    });
+    return { cardId, contentItemId, stageId, status: "ready" };
   }
 
   async tick(instanceId, { cards = null, dispatch = false, dryRun = false } = {}) {

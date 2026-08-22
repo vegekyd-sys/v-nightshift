@@ -159,7 +159,7 @@ function cardPayload(release, instance, stage, status, contentItem = null) {
   };
 }
 
-function buildAgentBrief(release, instance, stage, contentItem = null) {
+export function buildAgentBrief(release, instance, stage, contentItem = null) {
   const safeInputs = redactSensitiveInputs(instance.inputs ?? {});
   const strategy = contentItem?.route ? stage.routeStrategies?.[contentItem.route] : null;
   const instanceDir = instance.inputs?.nightshift?.instanceDir;

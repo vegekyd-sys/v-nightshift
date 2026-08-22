@@ -78,12 +78,24 @@ export function App() {
     }
   }
 
+  async function retry(card) {
+    const instanceId = cardLabel(card, "instance");
+    const contentItemId = card.metadata?.automation?.contentItemId ?? label(card, "content-item");
+    const stageId = card.metadata?.automation?.stageId ?? label(card, "stage");
+    await api(`/api/cards/${card.id}/retry`, {
+      method: "POST",
+      body: JSON.stringify({ actor: "Workboard operator", contentItemId, evidence: "Retry requested from Workboard", instanceId, stageId }),
+    });
+    setSelected(null);
+    await refresh();
+  }
+
   return (
     <div className="app-shell">
       <Sidebar active={active} onChange={setActive} />
       <main className="main-shell">
         {error && <div className="error-banner">{error}</div>}
-        {active === "board" && <LiveBoard data={data} query={query} setQuery={setQuery} selected={selected} setSelected={setSelected} refreshing={refreshing} refresh={refresh} decide={decide} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} />}
+        {active === "board" && <LiveBoard data={data} query={query} setQuery={setQuery} selected={selected} setSelected={setSelected} refreshing={refreshing} refresh={refresh} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} />}
         {active === "workflows" && <WorkflowDesigner data={data} refresh={refresh} />}
         {active === "projects" && <Projects data={data} />}
         {active === "agents" && <Agents data={data} />}
@@ -92,7 +104,7 @@ export function App() {
   );
 }
 
-function LiveBoard({ data, query, setQuery, selected, setSelected, refreshing, refresh, decide, delivery, deliveryState, deliveryError }) {
+function LiveBoard({ data, query, setQuery, selected, setSelected, refreshing, refresh, decide, retry, delivery, deliveryState, deliveryError }) {
   const cards = useMemo(() => (data?.cards ?? []).filter((card) => !query || card.title.toLowerCase().includes(query.toLowerCase())), [data, query]);
   const count = (statuses) => cards.filter((card) => statuses.includes(card.status)).length;
   return <>
@@ -100,7 +112,7 @@ function LiveBoard({ data, query, setQuery, selected, setSelected, refreshing, r
     <section className="metrics"><Metric label="Active agents" value={count(["running"])} tone="active" /><Metric label="Waiting review" value={count(["review"])} tone="review" /><Metric label="Blocked" value={count(["blocked"])} tone="blocked" /><Metric label="Completed" value={count(["done"])} /></section>
     <section className={`board ${selected ? "with-drawer" : ""}`}>
       <div className="board-columns">{columns.map(([id, title, statuses]) => { const items = cards.filter((card) => statuses.includes(card.status)); return <div className={`board-column column-${id}`} key={id}><div className="column-head"><h2>{title}</h2><span>{items.length}</span></div><div className="column-body">{items.map((card) => <WorkCard key={card.id} card={card} onClick={setSelected} />)}{items.length === 0 && <EmptyColumn />}</div></div>; })}</div>
-      <Drawer card={selected} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} onClose={() => setSelected(null)} onDecide={decide} />
+      <Drawer card={selected} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} onClose={() => setSelected(null)} onDecide={decide} onRetry={retry} />
     </section>
   </>;
 }

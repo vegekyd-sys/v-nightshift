@@ -103,7 +103,7 @@ export function WorkCard({ card, onClick }) {
   );
 }
 
-export function Drawer({ card, delivery, deliveryState, deliveryError, onClose, onDecide }) {
+export function Drawer({ card, delivery, deliveryState, deliveryError, onClose, onDecide, onRetry }) {
   const [reviewAction, setReviewAction] = useState(null);
   const [evidence, setEvidence] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -150,6 +150,7 @@ export function Drawer({ card, delivery, deliveryState, deliveryError, onClose, 
           <div className="review-confirm"><button onClick={() => { setReviewAction(null); setEvidence(""); }}>取消</button><button className={reviewAction === "reject" ? "danger" : "primary"} disabled={!canSubmit || submitting} onClick={submitDecision}>{submitting ? "提交中…" : "确认提交"}</button></div>
         </div>}
       </div>}
+      {card.status === "blocked" && !approval && <div className="review-zone"><button className="primary" disabled={submitting} onClick={async () => { setSubmitting(true); try { await onRetry(card); } catch (reason) { setSubmitError(reason.message); setSubmitting(false); } }}>{submitting ? "重新排队中…" : "修正后重新执行"}</button>{submitError && <p className="decision-error">{submitError}</p>}</div>}
     </aside>
   );
 }

@@ -187,8 +187,9 @@ test("rejects a done card when its declared delivery fails validation", async ()
   const source = await readFile(workflowPath, "utf8");
   const store = new NightShiftStore();
   const workboard = new FakeWorkboard();
+  let deliveryValid = false;
   const runtime = new NightShiftRuntime({
-    completionValidator: async () => { throw new Error("invalid delivery manifest"); },
+    completionValidator: async () => { if (!deliveryValid) throw new Error("invalid delivery manifest"); },
     store,
     workboard,
   });
@@ -197,6 +198,7 @@ test("rejects a done card when its declared delivery fails validation", async ()
     id: "NS-RUNTIME-INVALID-DELIVERY",
     workflowSha256: release.workflowSha256,
     agentBindings: { "content-operator": "main" },
+    inputs: { nightshift: { instanceDir: "/srv/nightshift/NS-RUNTIME-INVALID-DELIVERY" } },
     contentItems: [{ id: "video-1", title: "Invalid delivery", route: "AI_GENERATE" }],
   });
   workboard.cards.push({
@@ -215,6 +217,22 @@ test("rejects a done card when its declared delivery fails validation", async ()
   assert.ok(store.listContentItemRuns("NS-RUNTIME-INVALID-DELIVERY").every((run) => run.status === "blocked"));
   assert.ok(store.listEvents("NS-RUNTIME-INVALID-DELIVERY").some((event) => event.type === "stage.completion.rejected"));
   assert.ok(store.listEvents("NS-RUNTIME-INVALID-DELIVERY").some((event) => event.type === "stage.downstream.blocked"));
+  await runtime.retry({
+    actor: "tester",
+    cardId: "card-produce-done",
+    contentItemId: "video-1",
+    evidence: "manifest fixed",
+    instanceId: "NS-RUNTIME-INVALID-DELIVERY",
+    stageId: "produce",
+  });
+  assert.equal(workboard.cards[0].status, "ready");
+  assert.match(workboard.cards[0].notes, /\{"version":1/);
+  deliveryValid = true;
+  workboard.cards[0].status = "done";
+  await runtime.reconcile("NS-RUNTIME-INVALID-DELIVERY");
+  assert.equal(workboard.cards[0].status, "done");
+  assert.equal(workboard.cards[1].status, "review");
+  assert.ok(store.listEvents("NS-RUNTIME-INVALID-DELIVERY").some((event) => event.type === "stage.downstream.reopened"));
   store.close();
 });
 
@@ -249,6 +267,12 @@ class FakeWorkboard {
   async moveCard(id, status) {
     const card = this.cards.find((entry) => entry.id === id);
     card.status = status;
+    return card;
+  }
+
+  async updateCard(id, patch) {
+    const card = this.cards.find((entry) => entry.id === id);
+    Object.assign(card, patch);
     return card;
   }
 
