@@ -214,6 +214,7 @@ export function buildAgentBrief(release, instance, stage, contentItem = null) {
     `Required outputs: ${(stage.outputs ?? []).join(", ") || "none"}`,
     `Completion checks: ${(stage.completeWhen ?? []).join("; ") || "human decision"}`,
     `Safety: ${(stage.sideEffects ?? []).length ? `requires approved side effects: ${stage.sideEffects.join(", ")}` : "no declared external side effect"}`,
+    "Workboard completion: use workboard_complete directly when that tool is available. In an isolated Worker where it is absent, do not search source code or inspect plugin internals; after finishing the business work, call `openclaw gateway call workboard.cards.complete --params '{\"id\":\"<Card id from Worker protocol>\",\"token\":\"<Claim token from Worker protocol>\",\"summary\":\"<concise evidence-backed result>\"}' --json`. Use workboard.cards.block the same way for a real blocker. Never print the claim token.",
     "Return a concise result with evidence links or an explicit blocker. Do not invent missing evidence.",
   ].join("\n").slice(0, 8000);
 }

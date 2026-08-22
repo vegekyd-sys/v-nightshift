@@ -49,6 +49,8 @@ test("plans the project stage and redacts secrets", async () => {
   assert.equal(actions.length, 1);
   assert.equal(actions[0].stageId, "plan");
   assert.match(actions[0].card.notes, /每条计划视频拆成独立 ContentItem/);
+  assert.match(actions[0].card.notes, /do not search source code or inspect plugin internals/);
+  assert.match(actions[0].card.notes, /workboard\.cards\.complete/);
   assert.match(actions[0].card.notes, /"apiKey":"\[REDACTED\]"/);
   assert.doesNotMatch(actions[0].card.notes, /must-not-appear/);
 });
