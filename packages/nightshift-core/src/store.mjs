@@ -174,6 +174,22 @@ export class NightShiftStore {
     return this.getInstance(id);
   }
 
+  updateInstanceInputs(id, patch, now = new Date()) {
+    const current = this.getInstance(id);
+    if (!current) throw new Error(`Unknown instance ${id}`);
+    const inputs = { ...current.inputs, ...patch };
+    this.db
+      .prepare("UPDATE instances SET inputs_json = ?, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify(inputs), now.toISOString(), id);
+    this.appendEvent({
+      instanceId: id,
+      type: "instance.inputs.updated",
+      payload: { keys: Object.keys(patch).sort() },
+      now,
+    });
+    return this.getInstance(id);
+  }
+
   upsertStageRun(run, now = new Date()) {
     this.db
       .prepare(`

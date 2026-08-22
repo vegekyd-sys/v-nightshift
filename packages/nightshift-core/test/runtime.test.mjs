@@ -124,6 +124,33 @@ test("reconciles a shared Workboard snapshot without another Gateway read", asyn
   store.close();
 });
 
+test("updates persisted instance inputs before a downstream side effect", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard });
+  const release = runtime.publish(source);
+  runtime.startInstance({
+    id: "NS-RUNTIME-5",
+    workflowSha256: release.workflowSha256,
+    agentBindings: { "content-operator": "main" },
+    inputs: { targetCount: 1 },
+  });
+
+  const updated = runtime.updateInstanceInputs("NS-RUNTIME-5", {
+    accountId: "account-1",
+    assetHash: "asset-sha",
+  });
+
+  assert.equal(updated.inputs.accountId, "account-1");
+  assert.equal(updated.inputs.assetHash, "asset-sha");
+  assert.deepEqual(store.listEvents("NS-RUNTIME-5", 1)[0].payload.keys, [
+    "accountId",
+    "assetHash",
+  ]);
+  store.close();
+});
+
 class FakeWorkboard {
   constructor() {
     this.cards = [];

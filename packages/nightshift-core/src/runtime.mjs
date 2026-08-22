@@ -42,6 +42,13 @@ export class NightShiftRuntime {
     return this.store.createInstance(instance);
   }
 
+  updateInstanceInputs(instanceId, patch) {
+    if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+      throw new Error("Instance input patch must be an object");
+    }
+    return this.store.updateInstanceInputs(instanceId, patch);
+  }
+
   async reconcile(instanceId, cards = null) {
     const currentCards = cards ?? await this.workboard.listCards();
     for (const card of currentCards) {

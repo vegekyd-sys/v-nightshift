@@ -107,6 +107,19 @@ async function handleApi(request, response, url) {
     json(response, 201, runtime.startInstance(body));
     return;
   }
+  const instanceInputMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/inputs$/);
+  if (request.method === "PATCH" && instanceInputMatch) {
+    const body = await bodyJson(request);
+    json(
+      response,
+      200,
+      runtime.updateInstanceInputs(
+        decodeURIComponent(instanceInputMatch[1]),
+        body.inputs ?? {},
+      ),
+    );
+    return;
+  }
   const tickMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/tick$/);
   if (request.method === "POST" && tickMatch) {
     const body = await bodyJson(request);
