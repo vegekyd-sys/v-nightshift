@@ -618,7 +618,8 @@ function redactSessionValue(value, key = "") {
   if (typeof value === "string") return cleanText(value, 20000)
     .replace(/(bearer\s+)[a-z0-9._~+/=-]+/gi, "$1[redacted]")
     .replace(/(["']?(?:[a-z0-9_.-]*(?:token|secret|password|api.?key)[a-z0-9_.-]*)["']?\s*[:=]\s*["'])[^"']+(["'])/gi, "$1[redacted]$2")
-    .replace(/((?:claim\s+token|[a-z0-9_.-]*(?:token|secret|password|api.?key)[a-z0-9_.-]*)\s*[:=]\s*)[^\s,;}\]]+/gi, "$1[redacted]");
+    .replace(/((?:claim\s+token|[a-z0-9_.-]*(?:token|secret|password|api.?key)[a-z0-9_.-]*)\s*[:=]\s*)[^\s,;}\]]+/gi, "$1[redacted]")
+    .replace(/((?:claim\s+)?token(?:\s+(?:is|was|used|value(?:\s+is)?))?\s*(?:[:=]\s*)?[`"']?)[a-z0-9._~+/=…-]{8,}([`"']?)/gi, "$1[redacted]$2");
   if (Array.isArray(value)) return value.map((entry) => redactSessionValue(entry));
   if (value && typeof value === "object") {
     return Object.fromEntries(Object.entries(value).map(([childKey, child]) => [childKey, redactSessionValue(child, childKey)]));
