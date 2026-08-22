@@ -148,7 +148,7 @@ function actionKey(release, instance, stage, action) {
     ? interpolate(template, {
         account: instance.account ?? {},
         asset: instance.asset ?? {},
-        input: { hash: inputHash },
+        input: { ...(instance.inputs ?? {}), hash: inputHash },
         instance,
         stage,
       })
@@ -180,7 +180,7 @@ function timerReady(expression, instance, now) {
 }
 
 function resolveExpression(expression, instance) {
-  return interpolate(expression, { instance });
+  return interpolate(expression, { input: instance.inputs ?? {}, instance });
 }
 
 function dependenciesDone(stage, latestRuns) {

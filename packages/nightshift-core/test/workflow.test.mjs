@@ -126,6 +126,34 @@ test("turns a human stage into a Workboard review card", async () => {
   assert.equal(actions[0].card.status, "review");
 });
 
+test("resolves publish idempotency and metric timers from persisted inputs", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const instance = activeInstance(release);
+  instance.inputs.assetHash = "asset-sha";
+  instance.inputs.accountId = "account-1";
+  instance.inputs.metricsWindow = "2026-08-22T00:00:00.000Z";
+  instance.approvals = [
+    { stageId: "publish", effect: "external-publication", status: "approved" },
+  ];
+  const runs = [
+    { stageId: "plan", status: "done" },
+    { stageId: "materials", status: "done" },
+    { stageId: "produce", status: "done" },
+    { stageId: "review", status: "done" },
+  ];
+  const publish = planNextActions({ release, instance, runs })[0];
+  assert.match(publish.idempotencyKey, /asset-sha:account-1$/);
+
+  runs.push({ stageId: "publish", status: "done" });
+  const measure = planNextActions({
+    release,
+    instance,
+    runs,
+    now: new Date("2026-08-22T00:00:01.000Z"),
+  })[0];
+  assert.equal(measure.stageId, "measure");
+});
+
 test("refuses to schedule an instance pinned to another workflow release", async () => {
   const release = compileWorkflow(await loadWorkflow(fixture));
   const instance = activeInstance(release);

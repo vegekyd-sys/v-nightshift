@@ -120,7 +120,7 @@ spec:
       timeout: 2h
       retry:
         maxAttempts: 3
-        idempotencyKey: "${instance.id}:publish:${asset.hash}:${account.id}"
+        idempotencyKey: "${instance.id}:publish:${input.assetHash}:${input.accountId}"
       next: [measure]
 
     - id: measure
@@ -131,7 +131,7 @@ spec:
         - lark-base
       needs: [publish]
       description: 到统计窗口后回收数据，明确 UNKNOWN，形成复盘并建议关闭、补救或新建下一轮。
-      waitUntil: "${instance.metricsWindow}"
+      waitUntil: "${input.metricsWindow}"
       outputs: [metricsSnapshot, retrospective, nextCycleRecommendation]
       completeWhen:
         - output.metricsSnapshot.traceable
