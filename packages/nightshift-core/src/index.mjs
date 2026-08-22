@@ -15,3 +15,8 @@ export {
   gatewayIdempotencyLabel,
 } from "./workboard-gateway-adapter.mjs";
 export { NightShiftRuntime } from "./runtime.mjs";
+export {
+  deliverableArtifactPaths,
+  normalizeArtifactPath,
+  normalizeDeliverablesManifest,
+} from "./deliverables.mjs";

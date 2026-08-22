@@ -17,6 +17,9 @@ export function App() {
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(null);
+  const [delivery, setDelivery] = useState(null);
+  const [deliveryState, setDeliveryState] = useState("idle");
+  const [deliveryError, setDeliveryError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
 
   async function refresh(force = false) {
@@ -28,11 +31,46 @@ export function App() {
 
   useEffect(() => { refresh(false); const timer = setInterval(() => refresh(false), 5000); return () => clearInterval(timer); }, []);
 
-  async function decide(card, status) {
-    const instanceId = card.metadata?.automation?.instanceId ?? label(card, "instance");
+  useEffect(() => {
+    const instanceId = selected ? cardLabel(selected, "instance") : null;
+    if (!instanceId) {
+      setDelivery(null);
+      setDeliveryState("idle");
+      setDeliveryError("");
+      return undefined;
+    }
+    let current = true;
+    setDelivery(null);
+    setDeliveryState("loading");
+    setDeliveryError("");
+    api(`/api/instances/${encodeURIComponent(instanceId)}/deliverables`)
+      .then((result) => {
+        if (!current) return;
+        setDelivery(result);
+        setDeliveryState("ready");
+      })
+      .catch((reason) => {
+        if (!current) return;
+        setDeliveryError(reason.message);
+        setDeliveryState("missing");
+      });
+    return () => { current = false; };
+  }, [selected?.id]);
+
+  async function decide(card, status, evidence) {
+    const instanceId = cardLabel(card, "instance");
     const stageId = card.metadata?.automation?.stageId ?? label(card, "stage");
-    await api(`/api/cards/${card.id}/${status}`, { method: "POST", body: JSON.stringify({ actor: "operator", instanceId, stageId }) });
-    setSelected(null); await refresh();
+    try {
+      await api(`/api/cards/${card.id}/${status}`, {
+        method: "POST",
+        body: JSON.stringify({ actor: "Workboard operator", evidence, instanceId, stageId }),
+      });
+      setSelected(null);
+      await refresh();
+    } catch (reason) {
+      setError(reason.message);
+      throw reason;
+    }
   }
 
   return (
@@ -40,7 +78,7 @@ export function App() {
       <Sidebar active={active} onChange={setActive} />
       <main className="main-shell">
         {error && <div className="error-banner">{error}</div>}
-        {active === "board" && <LiveBoard data={data} query={query} setQuery={setQuery} selected={selected} setSelected={setSelected} refreshing={refreshing} refresh={refresh} decide={decide} />}
+        {active === "board" && <LiveBoard data={data} query={query} setQuery={setQuery} selected={selected} setSelected={setSelected} refreshing={refreshing} refresh={refresh} decide={decide} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} />}
         {active === "workflows" && <WorkflowDesigner data={data} refresh={refresh} />}
         {active === "projects" && <Projects data={data} />}
         {active === "agents" && <Agents data={data} />}
@@ -49,7 +87,7 @@ export function App() {
   );
 }
 
-function LiveBoard({ data, query, setQuery, selected, setSelected, refreshing, refresh, decide }) {
+function LiveBoard({ data, query, setQuery, selected, setSelected, refreshing, refresh, decide, delivery, deliveryState, deliveryError }) {
   const cards = useMemo(() => (data?.cards ?? []).filter((card) => !query || card.title.toLowerCase().includes(query.toLowerCase())), [data, query]);
   const count = (statuses) => cards.filter((card) => statuses.includes(card.status)).length;
   return <>
@@ -57,7 +95,7 @@ function LiveBoard({ data, query, setQuery, selected, setSelected, refreshing, r
     <section className="metrics"><Metric label="Active agents" value={count(["running"])} tone="active" /><Metric label="Waiting review" value={count(["review"])} tone="review" /><Metric label="Blocked" value={count(["blocked"])} tone="blocked" /><Metric label="Completed" value={count(["done"])} /></section>
     <section className={`board ${selected ? "with-drawer" : ""}`}>
       <div className="board-columns">{columns.map(([id, title, statuses]) => { const items = cards.filter((card) => statuses.includes(card.status)); return <div className={`board-column column-${id}`} key={id}><div className="column-head"><h2>{title}</h2><span>{items.length}</span></div><div className="column-body">{items.map((card) => <WorkCard key={card.id} card={card} onClick={setSelected} />)}{items.length === 0 && <EmptyColumn />}</div></div>; })}</div>
-      <Drawer card={selected} onClose={() => setSelected(null)} onApprove={(card) => decide(card, "approve")} onRequestChanges={(card) => decide(card, "request-changes")} onReject={(card) => decide(card, "reject")} />
+      <Drawer card={selected} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} onClose={() => setSelected(null)} onDecide={decide} />
     </section>
   </>;
 }
@@ -86,3 +124,7 @@ function Agents({ data }) {
 }
 
 function label(card, prefix) { return card.labels?.find((entry) => entry.startsWith(`${prefix}:`))?.slice(prefix.length + 1); }
+
+function cardLabel(card, prefix) {
+  return card.metadata?.automation?.[`${prefix}Id`] ?? label(card, prefix);
+}

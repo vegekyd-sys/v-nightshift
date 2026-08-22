@@ -46,6 +46,16 @@ The main screen is designed to stay open on a shared display.
   reviews, failures, and throughput.
 - Opening a card shows business context, the live agent timeline, tool/skill
   activity, proof, artifacts, retry history, and approval actions.
+- Review cards include a first-class delivery panel. The operator can play the
+  final video inline, open the proposal and editable Makaron project, inspect
+  machine QC on demand, and approve, request changes, or reject without opening
+  Base. Base remains an optional adapter/read model, not a required human UI.
+
+The producing stage writes `instances/<instance-id>/deliverables.json` using
+the versioned delivery-manifest contract. Only artifacts explicitly declared
+in that manifest can be streamed by the dashboard, and each resolved file must
+remain inside the instance directory. Video responses support byte ranges so
+the browser can seek without loading the full file.
 
 ### 2. Workflow designer
 

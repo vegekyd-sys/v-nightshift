@@ -1,10 +1,14 @@
 import { createServer } from "node:http";
-import { mkdir, readFile, stat } from "node:fs/promises";
-import { extname, join, normalize, resolve } from "node:path";
+import { createReadStream } from "node:fs";
+import { mkdir, readFile, realpath, stat } from "node:fs/promises";
+import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  deliverableArtifactPaths,
   NightShiftRuntime,
   NightShiftStore,
+  normalizeArtifactPath,
+  normalizeDeliverablesManifest,
   WorkboardGatewayAdapter,
 } from "../../../packages/nightshift-core/src/index.mjs";
 
@@ -85,6 +89,25 @@ async function handleApi(request, response, url) {
       instances,
       workflows: store.listReleases(),
     });
+    return;
+  }
+  const deliverablesMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/deliverables$/);
+  if (request.method === "GET" && deliverablesMatch) {
+    const instanceId = decodeURIComponent(deliverablesMatch[1]);
+    try {
+      const manifest = await loadDeliverables(instanceId);
+      json(response, 200, await presentDeliverables(manifest));
+    } catch (error) {
+      if (error.code === "ENOENT") json(response, 404, { error: "No delivery package has been published for this project" });
+      else throw error;
+    }
+    return;
+  }
+  const artifactMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/artifacts\/(.+)$/);
+  if ((request.method === "GET" || request.method === "HEAD") && artifactMatch) {
+    const instanceId = decodeURIComponent(artifactMatch[1]);
+    const relativePath = decodeURIComponent(artifactMatch[2]);
+    await serveDeliverableArtifact(request, response, instanceId, relativePath);
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/workflows/validate") {
@@ -231,6 +254,128 @@ async function bodyJson(request) {
   return value ? JSON.parse(value) : {};
 }
 
+async function loadDeliverables(instanceId) {
+  assertInstanceId(instanceId);
+  const manifestPath = resolve(dataDir, "instances", instanceId, "deliverables.json");
+  const source = JSON.parse(await readFile(manifestPath, "utf8"));
+  return normalizeDeliverablesManifest(source, { instanceId });
+}
+
+async function presentDeliverables(manifest) {
+  const artifactUrl = (path) => path
+    ? `/api/instances/${encodeURIComponent(manifest.instanceId)}/artifacts/${path.split("/").map(encodeURIComponent).join("/")}`
+    : null;
+  return {
+    ...manifest,
+    proposal: {
+      ...manifest.proposal,
+      summary: await readArtifactText(manifest, manifest.proposal.summaryPath),
+      summaryUrl: artifactUrl(manifest.proposal.summaryPath),
+    },
+    video: {
+      ...manifest.video,
+      url: artifactUrl(manifest.video.path),
+      posterUrl: artifactUrl(manifest.video.posterPath),
+    },
+    qc: {
+      ...manifest.qc,
+      report: await readArtifactText(manifest, manifest.qc.reportPath),
+      reportUrl: artifactUrl(manifest.qc.reportPath),
+    },
+  };
+}
+
+async function readArtifactText(manifest, relativePath) {
+  if (!relativePath) return null;
+  const filePath = await resolveDeclaredArtifact(manifest, relativePath);
+  const content = await readFile(filePath, "utf8");
+  return content.slice(0, 24000);
+}
+
+async function serveDeliverableArtifact(request, response, instanceId, requestedPath) {
+  let manifest;
+  try {
+    manifest = await loadDeliverables(instanceId);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      json(response, 404, { error: "Delivery package not found" });
+      return;
+    }
+    throw error;
+  }
+  const relativePath = normalizeArtifactPath(requestedPath);
+  if (!deliverableArtifactPaths(manifest).has(relativePath)) {
+    json(response, 404, { error: "Artifact is not part of the published delivery package" });
+    return;
+  }
+  const filePath = await resolveDeclaredArtifact(manifest, relativePath);
+  const info = await stat(filePath);
+  if (!info.isFile()) {
+    json(response, 404, { error: "Artifact not found" });
+    return;
+  }
+  const range = parseByteRange(request.headers.range, info.size);
+  if (range === false) {
+    response.writeHead(416, { "Content-Range": `bytes */${info.size}` });
+    response.end();
+    return;
+  }
+  const start = range?.start ?? 0;
+  const end = range?.end ?? info.size - 1;
+  const headers = {
+    "Accept-Ranges": "bytes",
+    "Cache-Control": "private, max-age=60",
+    "Content-Disposition": "inline",
+    "Content-Length": Math.max(0, end - start + 1),
+    "Content-Type": contentType(filePath),
+    "X-Content-Type-Options": "nosniff",
+  };
+  if (range) headers["Content-Range"] = `bytes ${start}-${end}/${info.size}`;
+  response.writeHead(range ? 206 : 200, headers);
+  if (request.method === "HEAD") {
+    response.end();
+    return;
+  }
+  createReadStream(filePath, { start, end }).pipe(response);
+}
+
+async function resolveDeclaredArtifact(manifest, relativePath) {
+  const normalizedPath = normalizeArtifactPath(relativePath);
+  if (!deliverableArtifactPaths(manifest).has(normalizedPath)) {
+    throw new Error("Artifact is not declared in the delivery manifest");
+  }
+  const instanceRoot = await realpath(resolve(dataDir, "instances", manifest.instanceId));
+  const candidate = await realpath(resolve(instanceRoot, normalizedPath));
+  if (!candidate.startsWith(`${instanceRoot}${sep}`)) {
+    throw new Error("Artifact escaped the instance directory");
+  }
+  return candidate;
+}
+
+function assertInstanceId(instanceId) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/.test(instanceId)) {
+    throw new Error("Invalid instance id");
+  }
+}
+
+function parseByteRange(header, size) {
+  if (!header) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!match) return false;
+  let start = match[1] ? Number(match[1]) : null;
+  let end = match[2] ? Number(match[2]) : null;
+  if (start == null && end == null) return false;
+  if (start == null) {
+    const suffixLength = Math.min(end, size);
+    start = Math.max(0, size - suffixLength);
+    end = size - 1;
+  } else {
+    end = end == null ? size - 1 : Math.min(end, size - 1);
+  }
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || start > end || start >= size) return false;
+  return { start, end };
+}
+
 async function serveStatic(response, pathname) {
   const relative = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
   const candidate = resolve(distRoot, normalize(relative));
@@ -264,8 +409,14 @@ function contentType(path) {
   return {
     ".css": "text/css; charset=utf-8",
     ".html": "text/html; charset=utf-8",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
     ".js": "text/javascript; charset=utf-8",
+    ".md": "text/markdown; charset=utf-8",
+    ".mp4": "video/mp4",
+    ".png": "image/png",
     ".svg": "image/svg+xml",
+    ".webm": "video/webm",
   }[extname(path)] ?? "application/octet-stream";
 }
 

@@ -2,7 +2,7 @@ apiVersion: nightshift.versa.ai/v1alpha1
 kind: Workflow
 metadata:
   id: xingqing-content-delivery
-  version: 0.3.1-draft
+  version: 0.3.2-draft
   name: 星擎内容交付
 spec:
   ownerAgentRole: content-operator
@@ -72,16 +72,17 @@ spec:
         - montage-script-writer
         - makaron
         - background-worker-contract
-      description: 编译生产包，生成样片并机器 QC；样片通过后在同一阶段内完成目标数量和逐条 QC。
+      description: 编译生产包，生成样片并机器 QC；样片通过后完成目标数量、逐条 QC，并发布 Workboard 可读取的 deliverables.json。
       needs: [materials]
       sideEffects: [paid-production]
       approval:
         before: paid-production
         scope: instance
-      outputs: [productionPackage, finishedAssets, machineQc]
+      outputs: [productionPackage, finishedAssets, machineQc, deliveryManifest]
       completeWhen:
         - output.finishedAssets.passedCountEqualsTarget
         - output.machineQc.terminalForEveryAsset
+        - output.deliveryManifest.accessible
       timeout: 4h
       retry:
         maxAttempts: 3
