@@ -10,6 +10,7 @@ import {
   NightShiftStore,
   normalizeArtifactPath,
   normalizeDeliverablesManifest,
+  validateProjectRequest,
   WorkboardGatewayAdapter,
 } from "../../../packages/nightshift-core/src/index.mjs";
 
@@ -170,7 +171,29 @@ async function handleApi(request, response, url) {
   }
   if (request.method === "POST" && url.pathname === "/api/instances") {
     const body = await bodyJson(request);
-    json(response, 201, await startInstance(body));
+    const release = store.getRelease(body.workflowSha256);
+    validateProjectRequest(release?.manifest, body);
+    const created = await startInstance(body);
+    let initialSchedule = null;
+    let initialScheduleError = null;
+    if (created.status === "active") {
+      try {
+        const scheduled = await serializedTick(created.id, { dispatch: body.dispatch !== false });
+        initialSchedule = {
+          actionCount: scheduled.actions.length,
+          cardIds: scheduled.applied.map((entry) => entry.card?.id).filter(Boolean),
+          dispatched: body.dispatch !== false,
+        };
+        await refreshCards();
+      } catch (error) {
+        initialScheduleError = error.message;
+      }
+    }
+    json(response, 201, {
+      ...store.getInstance(created.id),
+      initialSchedule,
+      initialScheduleError,
+    });
     return;
   }
   const instanceInputMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/inputs$/);

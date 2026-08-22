@@ -25,3 +25,4 @@ export {
   contentItemRouteAllowed,
   normalizeContentItems,
 } from "./content-items.mjs";
+export { validateProjectRequest } from "./project.mjs";

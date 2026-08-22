@@ -32,6 +32,7 @@ export function App() {
   const [deliveryState, setDeliveryState] = useState("idle");
   const [deliveryError, setDeliveryError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
+  const [projectReleaseSha, setProjectReleaseSha] = useState(null);
   const refreshInFlight = useRef(null);
 
   function refresh(force = false) {
@@ -117,10 +118,11 @@ export function App() {
       <main className="main-shell">
         {error && <div className="error-banner">{error}</div>}
         {active === "board" && <LiveBoard data={data} query={query} setQuery={setQuery} selected={selected} setSelected={setSelected} refreshing={refreshing} refresh={refresh} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} />}
-        {active === "workflows" && <WorkflowStudio data={data} refresh={refresh} setSelected={setSelected} selected={selected} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} />}
-        {active === "projects" && <Projects data={data} />}
+        {active === "workflows" && <WorkflowStudio data={data} refresh={refresh} setSelected={setSelected} selected={selected} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} onNewProject={(release) => setProjectReleaseSha(release?.workflowSha256 ?? data?.workflows?.[0]?.workflowSha256)} />}
+        {active === "projects" && <Projects data={data} onNewProject={() => setProjectReleaseSha(data?.workflows?.[0]?.workflowSha256)} />}
         {active === "agents" && <Agents data={data} />}
       </main>
+      {projectReleaseSha && <ProjectEditor releases={data?.workflows ?? []} initialReleaseSha={projectReleaseSha} onClose={() => setProjectReleaseSha(null)} onCreated={async () => { setProjectReleaseSha(null); setActive("workflows"); await refresh(true); }} />}
     </div>
   );
 }
@@ -138,7 +140,7 @@ function LiveBoard({ data, query, setQuery, selected, setSelected, refreshing, r
   </>;
 }
 
-function WorkflowStudio({ data, refresh, setSelected, selected, decide, retry, delivery, deliveryState, deliveryError }) {
+function WorkflowStudio({ data, refresh, setSelected, selected, decide, retry, delivery, deliveryState, deliveryError, onNewProject }) {
   const groups = useMemo(() => groupWorkflowReleases(data?.workflows ?? []), [data?.workflows]);
   const [workflowId, setWorkflowId] = useState("");
   const [projectId, setProjectId] = useState("all");
@@ -162,7 +164,7 @@ function WorkflowStudio({ data, refresh, setSelected, selected, decide, retry, d
   return <div className="workflow-screen workflow-studio">
     <header className="topbar workflow-topbar">
       <div><span className="section-label">Workflow operations</span><h1>{group.name}</h1><p className="topbar-copy">每个项目沿同一条阶段轨道运行；点击任务即可查看证据、处理审核或解除阻塞。</p></div>
-      <div className="top-actions"><button onClick={() => setEditor({ mode: "import", source: "" })}><Upload size={15} />导入 Workflow</button><button onClick={() => setEditor({ mode: "edit", source: group.releases[0].sourceMarkdown ?? group.releases[0].sourceYaml })}><FilePenLine size={15} />编辑 Workflow</button><button className="primary" onClick={() => setEditor({ mode: "create", source: newWorkflowSource() })}><Plus size={15} />新建 Workflow</button></div>
+      <div className="top-actions"><button className="primary" onClick={() => onNewProject(pinnedRelease ?? group.releases[0])}><Plus size={15} />新建项目</button><button onClick={() => setEditor({ mode: "import", source: "" })}><Upload size={15} />导入 Workflow</button><button onClick={() => setEditor({ mode: "edit", source: group.releases[0].sourceMarkdown ?? group.releases[0].sourceYaml })}><FilePenLine size={15} />编辑 Workflow</button><button onClick={() => setEditor({ mode: "create", source: newWorkflowSource() })}><Plus size={15} />新建 Workflow</button></div>
     </header>
     <div className={`workflow-workspace ${selected ? "with-drawer" : ""}`}>
       <aside className="workflow-library" aria-label="Workflow 列表">
@@ -259,7 +261,93 @@ function WorkflowEditor({ initialSource, mode, onClose, onPublished }) {
   </div>;
 }
 
-function Projects({ data }) { return <div className="simple-screen"><header className="topbar"><div><span className="section-label">Workflow instances</span><h1>Projects</h1></div></header><div className="project-table"><div className="table-head"><span>Project</span><span>Workflow</span><span>视频任务</span><span>Status</span><span>Updated</span></div>{(data?.instances ?? []).map((instance) => <div className="table-row" key={instance.id}><strong>{instance.name}</strong><span className="mono">{instance.workflowSha256.slice(0, 12)}</span><span>{instance.contentItems?.length ?? 0} 条 · {routeSummary(instance.contentItems)}</span><span>{instance.status}</span><span>{new Date(instance.updatedAt).toLocaleString()}</span></div>)}</div></div>; }
+function ProjectEditor({ releases, initialReleaseSha, onClose, onCreated }) {
+  const initialRelease = releases.find((release) => release.workflowSha256 === initialReleaseSha) ?? releases[0];
+  const [releaseSha, setReleaseSha] = useState(initialRelease?.workflowSha256 ?? "");
+  const [form, setForm] = useState(() => newProjectForm(initialRelease));
+  const [message, setMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const release = releases.find((entry) => entry.workflowSha256 === releaseSha) ?? initialRelease;
+  const contracts = release?.manifest?.spec?.inputs ?? {};
+  const roles = workflowAgentRoles(release);
+
+  function chooseRelease(nextSha) {
+    const nextRelease = releases.find((entry) => entry.workflowSha256 === nextSha);
+    setReleaseSha(nextSha);
+    setForm((current) => ({ ...current, agentBindings: defaultAgentBindings(nextRelease), inputs: defaultProjectInputs(nextRelease) }));
+    setMessage("");
+  }
+
+  function updateInput(name, value) {
+    setForm((current) => ({ ...current, inputs: { ...current.inputs, [name]: value } }));
+  }
+
+  async function createProject(event) {
+    event.preventDefault();
+    if (submitting) return;
+    setSubmitting(true);
+    setMessage("");
+    try {
+      const result = await api("/api/instances", {
+        method: "POST",
+        body: JSON.stringify({
+          id: form.id.trim(),
+          name: form.name.trim(),
+          workflowSha256: release.workflowSha256,
+          inputs: form.inputs,
+          agentBindings: form.agentBindings,
+          status: "active",
+          dispatch: true,
+        }),
+      });
+      if (result.initialScheduleError) {
+        setMessage(`项目已创建，但首次调度失败：${result.initialScheduleError}`);
+        setSubmitting(false);
+        return;
+      }
+      await onCreated(result);
+    } catch (reason) {
+      setMessage(reason.message);
+      setSubmitting(false);
+    }
+  }
+
+  if (!release) return null;
+  return <div className="workflow-modal" role="dialog" aria-modal="true" aria-label="新建项目">
+    <form className="project-editor" onSubmit={createProject}>
+      <header><div><span>New project</span><h2>把客户工作放上生产线</h2><p>项目会锁定所选 Workflow 版本；创建后立即进入第一个阶段。</p></div><button type="button" aria-label="关闭新建项目" onClick={onClose}><X size={18} /></button></header>
+      <div className="project-form-body">
+        <section className="project-form-main">
+          <label className="project-field"><span>Workflow 版本</span><select value={releaseSha} onChange={(event) => chooseRelease(event.target.value)}>{releases.map((entry) => <option key={entry.workflowSha256} value={entry.workflowSha256}>{entry.name} · {entry.version}</option>)}</select><small>项目开始后会固定在 SHA {release.workflowSha256.slice(0, 12)}</small></label>
+          <div className="project-form-grid"><label className="project-field"><span>项目名称</span><input autoFocus value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} placeholder="例如：振丰｜8 月内容生产" required /></label><label className="project-field"><span>Project ID</span><input className="mono" value={form.id} onChange={(event) => setForm((current) => ({ ...current, id: event.target.value }))} required /></label></div>
+          <div className="project-section-head"><strong>Workflow 输入</strong><span>由 workflow.md 自动生成</span></div>
+          <div className="project-inputs">{Object.entries(contracts).map(([name, contract]) => <ProjectInput key={name} name={name} contract={contract} value={form.inputs[name]} onChange={(value) => updateInput(name, value)} />)}</div>
+          <div className="project-section-head"><strong>Agent 绑定</strong><span>逻辑角色映射到 OpenClaw Agent</span></div>
+          <div className="project-form-grid">{roles.map((role) => <label className="project-field" key={role}><span>{role}</span><input value={form.agentBindings[role] ?? ""} onChange={(event) => setForm((current) => ({ ...current, agentBindings: { ...current.agentBindings, [role]: event.target.value } }))} placeholder="main" required /></label>)}</div>
+        </section>
+        <aside className="project-safety">
+          <strong>创建后会发生什么</strong>
+          <ol><li><span>01</span><p>锁定 <b>{release.name} {release.version}</b></p></li><li><span>02</span><p>项目进入 <b>Active</b></p></li><li><span>03</span><p>立即创建并派发 <b>{release.manifest.spec.stages?.[0]?.title ?? "第一阶段"}</b></p></li><li><span>04</span><p>后续阶段按照依赖自动推进</p></li></ol>
+          <div className="safety-note"><Icons.ShieldCheck size={16} /><div><strong>安全默认值</strong><p>付费生产和外部发布默认关闭，必须在对应阶段再次人工批准。</p></div></div>
+        </aside>
+      </div>
+      <footer>{message && <p className="project-message">{message}</p>}<button type="button" onClick={onClose}>取消</button><button className="primary" type="submit" disabled={submitting}>{submitting ? "正在创建…" : "创建并启动项目"}</button></footer>
+    </form>
+  </div>;
+}
+
+function ProjectInput({ name, contract, value, onChange }) {
+  const labelText = projectInputLabel(name);
+  if (name === "authorizationScope") {
+    const scope = value ?? {};
+    return <fieldset className="authorization-field"><legend>{labelText}</legend><label><input type="checkbox" checked={scope.paidProduction === true} onChange={(event) => onChange({ ...scope, paidProduction: event.target.checked })} /><span>允许进入付费生产审批</span></label><label><input type="checkbox" checked={scope.externalPublication === true} onChange={(event) => onChange({ ...scope, externalPublication: event.target.checked })} /><span>允许申请外部发布</span></label><label><input type="checkbox" checked={scope.vlabOnly !== false} onChange={(event) => onChange({ ...scope, vlabOnly: event.target.checked })} /><span>仅在 VLab 运行</span></label></fieldset>;
+  }
+  if (contract.type === "boolean") return <label className="project-field checkbox-field"><input type="checkbox" checked={value === true} onChange={(event) => onChange(event.target.checked)} /><span>{labelText}</span></label>;
+  if (contract.type === "object" || contract.type === "array") return <label className="project-field wide"><span>{labelText}{contract.required ? " *" : ""}</span><textarea value={typeof value === "string" ? value : JSON.stringify(value ?? (contract.type === "array" ? [] : {}), null, 2)} onChange={(event) => onChange(parseJsonValue(event.target.value))} /></label>;
+  return <label className="project-field"><span>{labelText}{contract.required ? " *" : ""}</span><input type={contract.type === "number" ? "number" : name.toLowerCase().includes("url") ? "url" : "text"} value={value ?? ""} onChange={(event) => onChange(contract.type === "number" ? Number(event.target.value) : event.target.value)} required={contract.required === true} placeholder={projectInputPlaceholder(name)} /></label>;
+}
+
+function Projects({ data, onNewProject }) { return <div className="simple-screen"><header className="topbar"><div><span className="section-label">Workflow instances</span><h1>Projects</h1><p className="topbar-copy">一个 Project 是某个客户或策划案在一个固定 Workflow 版本上的运行实例。</p></div><div className="top-actions"><button className="primary" onClick={onNewProject}><Plus size={15} />新建项目</button></div></header><div className="project-table"><div className="table-head"><span>Project</span><span>Workflow</span><span>视频任务</span><span>Status</span><span>Updated</span></div>{(data?.instances ?? []).map((instance) => <div className="table-row" key={instance.id}><strong>{instance.name}</strong><span className="mono">{instance.workflowSha256.slice(0, 12)}</span><span>{instance.contentItems?.length ?? 0} 条 · {routeSummary(instance.contentItems)}</span><span>{instance.status}</span><span>{new Date(instance.updatedAt).toLocaleString()}</span></div>)}</div></div>; }
 
 function Agents({ data }) {
   const agents = [...new Set([
@@ -323,6 +411,54 @@ function emptyWorkflow() {
 }
 
 function newWorkflowSource() { return serializeWorkflow(emptyWorkflow()); }
+
+function newProjectForm(release) {
+  return {
+    id: newProjectId(),
+    name: "",
+    inputs: defaultProjectInputs(release),
+    agentBindings: defaultAgentBindings(release),
+  };
+}
+
+function newProjectId(now = new Date()) {
+  const stamp = now.toISOString().replace(/[-:T]/g, "").slice(0, 14);
+  return `NS-LAB-${stamp}`;
+}
+
+function defaultProjectInputs(release) {
+  const result = {};
+  for (const [name, contract] of Object.entries(release?.manifest?.spec?.inputs ?? {})) {
+    if (name === "authorizationScope") result[name] = { paidProduction: false, externalPublication: false, vlabOnly: true };
+    else if (contract.type === "object") result[name] = {};
+    else if (contract.type === "array") result[name] = [];
+    else if (contract.type === "boolean") result[name] = false;
+    else if (contract.type === "number") result[name] = 0;
+    else result[name] = "";
+  }
+  return result;
+}
+
+function workflowAgentRoles(release) {
+  return [...new Set((release?.manifest?.spec?.stages ?? []).filter((stage) => stage.actor === "agent").map((stage) => stage.agentRole ?? release.manifest.spec.ownerAgentRole))];
+}
+
+function defaultAgentBindings(release) {
+  return Object.fromEntries(workflowAgentRoles(release).map((role) => [role, "main"]));
+}
+
+function projectInputLabel(name) {
+  return ({ customerId: "客户 ID", briefUrl: "策划案 URL", authorizationScope: "执行权限" })[name] ?? name;
+}
+
+function projectInputPlaceholder(name) {
+  return ({ customerId: "客户或合同中的稳定 ID", briefUrl: "https://..." })[name] ?? "";
+}
+
+function parseJsonValue(value) {
+  try { return JSON.parse(value); }
+  catch { return value; }
+}
 
 function defaultStage(number) {
   return {
