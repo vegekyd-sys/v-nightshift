@@ -8,6 +8,20 @@ service_name=nightshift-workboard.service
 service_path=/etc/systemd/system/nightshift-workboard.service
 cli_path=/home/openclaw/.local/bin/nightshiftctl
 
+wait_for_health() {
+  local attempts=15
+  local delay_seconds=2
+  local attempt
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    if curl -fsS --max-time 10 http://127.0.0.1:24879/api/health >/dev/null; then
+      return 0
+    fi
+    sleep "$delay_seconds"
+  done
+  echo "Night Shift Workboard did not become healthy after $((attempts * delay_seconds)) seconds" >&2
+  return 1
+}
+
 if [[ ${EUID} -ne 0 ]]; then
   echo "Run as root" >&2
   exit 2
@@ -58,7 +72,7 @@ case "${1:-}" in
     ln -sfn "$release/scripts/nightshiftctl.mjs" "$cli_path"
     systemctl daemon-reload
     systemctl enable --now "$service_name"
-    curl -fsS --max-time 10 http://127.0.0.1:24879/api/health >/dev/null
+    wait_for_health
     printf '%s\n' "deployed=$release" "backup=$backup" "rollback=sudo $0 rollback $backup"
     ;;
   rollback)
@@ -89,7 +103,7 @@ case "${1:-}" in
       ln -sfn "$previous/scripts/nightshiftctl.mjs" "$cli_path"
       systemctl daemon-reload
       systemctl start "$service_name"
-      curl -fsS --max-time 10 http://127.0.0.1:24879/api/health >/dev/null
+      wait_for_health
       echo "rolled_back=$previous"
     else
       systemctl disable "$service_name" || true
