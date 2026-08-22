@@ -1,5 +1,16 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import YAML from "yaml";
+import {
+  ArrowDown,
+  ArrowUp,
+  ChevronDown,
+  FilePenLine,
+  FileUp,
+  Plus,
+  Save,
+  Upload,
+  X,
+} from "lucide-react";
 import { api } from "./api.js";
 import { Drawer, EmptyColumn, Icons, Metric, Sidebar, WorkCard } from "./components.jsx";
 
@@ -65,10 +76,11 @@ export function App() {
     const instanceId = cardLabel(card, "instance");
     const contentItemId = card.metadata?.automation?.contentItemId ?? label(card, "content-item");
     const stageId = card.metadata?.automation?.stageId ?? label(card, "stage");
+    const approval = card.metadata?.automation?.approval;
     try {
       await api(`/api/cards/${card.id}/${status}`, {
         method: "POST",
-        body: JSON.stringify({ actor: "Workboard operator", contentItemId, evidence, instanceId, stageId }),
+        body: JSON.stringify({ actor: "Workboard operator", contentItemId, effect: approval?.effect, evidence, instanceId, scope: approval?.scope, stageId }),
       });
       setSelected(null);
       await refresh();
@@ -96,7 +108,7 @@ export function App() {
       <main className="main-shell">
         {error && <div className="error-banner">{error}</div>}
         {active === "board" && <LiveBoard data={data} query={query} setQuery={setQuery} selected={selected} setSelected={setSelected} refreshing={refreshing} refresh={refresh} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} />}
-        {active === "workflows" && <WorkflowDesigner data={data} refresh={refresh} />}
+        {active === "workflows" && <WorkflowStudio data={data} refresh={refresh} setSelected={setSelected} selected={selected} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} />}
         {active === "projects" && <Projects data={data} />}
         {active === "agents" && <Agents data={data} />}
       </main>
@@ -117,17 +129,125 @@ function LiveBoard({ data, query, setQuery, selected, setSelected, refreshing, r
   </>;
 }
 
-function WorkflowDesigner({ data, refresh }) {
-  const release = data?.workflows?.[0];
-  const [source, setSource] = useState("");
+function WorkflowStudio({ data, refresh, setSelected, selected, decide, retry, delivery, deliveryState, deliveryError }) {
+  const groups = useMemo(() => groupWorkflowReleases(data?.workflows ?? []), [data?.workflows]);
+  const [workflowId, setWorkflowId] = useState("");
+  const [projectId, setProjectId] = useState("all");
+  const [editor, setEditor] = useState(null);
+  useEffect(() => {
+    if (!groups.length) return;
+    if (!groups.some((group) => group.id === workflowId)) setWorkflowId(groups[0].id);
+  }, [groups, workflowId]);
+  const group = groups.find((entry) => entry.id === workflowId) ?? groups[0];
+  const releaseShas = useMemo(() => new Set(group?.releases.map((release) => release.workflowSha256) ?? []), [group]);
+  const projects = useMemo(() => (data?.instances ?? []).filter((instance) => releaseShas.has(instance.workflowSha256)), [data?.instances, releaseShas]);
+  useEffect(() => { if (projectId !== "all" && !projects.some((project) => project.id === projectId)) setProjectId("all"); }, [projectId, projects]);
+  const visibleProjects = projectId === "all" ? projects : projects.filter((project) => project.id === projectId);
+  const pinnedRelease = projectId === "all" ? group?.releases[0] : group?.releases.find((release) => release.workflowSha256 === visibleProjects[0]?.workflowSha256);
+  const stages = pinnedRelease?.manifest?.spec?.stages ?? [];
+  const taskIndex = useMemo(() => indexStageTasks(stages, visibleProjects, data?.cards ?? []), [stages, visibleProjects, data?.cards]);
+
+  if (!data) return <div className="workflow-loading"><span className="delivery-skeleton" /><strong>正在载入 Workflow 运行状态</strong></div>;
+  if (!group) return <div className="simple-screen"><header className="topbar"><div><h1>Workflows</h1><p className="topbar-copy">导入第一份 workflow.md，建立可执行生产线。</p></div><div className="top-actions"><button className="primary" onClick={() => setEditor({ mode: "create", source: newWorkflowSource() })}><Plus size={15} />新建 Workflow</button></div></header></div>;
+
+  return <div className="workflow-screen workflow-studio">
+    <header className="topbar workflow-topbar">
+      <div><span className="section-label">Workflow operations</span><h1>{group.name}</h1><p className="topbar-copy">每个项目沿同一条阶段轨道运行；点击任务即可查看证据、处理审核或解除阻塞。</p></div>
+      <div className="top-actions"><button onClick={() => setEditor({ mode: "import", source: "" })}><Upload size={15} />导入 Workflow</button><button onClick={() => setEditor({ mode: "edit", source: group.releases[0].sourceMarkdown ?? group.releases[0].sourceYaml })}><FilePenLine size={15} />编辑 Workflow</button><button className="primary" onClick={() => setEditor({ mode: "create", source: newWorkflowSource() })}><Plus size={15} />新建 Workflow</button></div>
+    </header>
+    <div className={`workflow-workspace ${selected ? "with-drawer" : ""}`}>
+      <aside className="workflow-library" aria-label="Workflow 列表">
+        <div className="library-head"><strong>Workflows</strong><span>{groups.length}</span></div>
+        {groups.map((entry) => {
+          const shas = new Set(entry.releases.map((release) => release.workflowSha256));
+          const count = (data?.instances ?? []).filter((instance) => shas.has(instance.workflowSha256)).length;
+          return <button className={entry.id === group.id ? "selected" : ""} key={entry.id} onClick={() => { setWorkflowId(entry.id); setProjectId("all"); }}><span className="workflow-signal" /><div><strong>{entry.name}</strong><small>{count} 个项目 · {entry.releases[0].version}</small></div></button>;
+        })}
+      </aside>
+      <main className="workflow-runway">
+        <div className="runway-toolbar">
+          <div className="release-identity"><span className="mono">{pinnedRelease?.version}</span><strong>{stages.length} 个阶段</strong><small>SHA {pinnedRelease?.workflowSha256.slice(0, 12)}</small></div>
+          <label className="project-filter"><span>查看项目</span><select value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="all">全部项目（{projects.length}）</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><ChevronDown size={14} /></label>
+        </div>
+        <div className="stage-runway" style={{ "--stage-count": stages.length }}>
+          <div className="stage-rail" />
+          {stages.map((stage, index) => <StageLane key={stage.id} stage={stage} index={index} tasks={taskIndex.get(stage.id) ?? []} onSelect={setSelected} />)}
+        </div>
+      </main>
+      <Drawer card={selected} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} onClose={() => setSelected(null)} onDecide={decide} onRetry={retry} />
+    </div>
+    {editor && <WorkflowEditor initialSource={editor.source} mode={editor.mode} onClose={() => setEditor(null)} onPublished={async () => { setEditor(null); await refresh(true); }} />}
+  </div>;
+}
+
+function StageLane({ stage, index, tasks, onSelect }) {
+  const summary = summarizeStatuses(tasks);
+  return <section className="stage-lane">
+    <header><span className="stage-index">{String(index + 1).padStart(2, "0")}</span><div><strong>{stage.title}</strong><small>{stage.scope === "content-item" ? "每条内容" : "整个项目"} · {stage.actor === "human" ? "人工" : "Agent"}</small></div></header>
+    <div className="stage-counts">{Object.entries(summary).map(([status, count]) => <span className={`state-${status}`} key={status}>{statusLabel(status)} {count}</span>)}{tasks.length === 0 && <span>尚未开始</span>}</div>
+    <div className="stage-tasks">{tasks.map((task) => <button key={`${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}-${task.card?.id ?? task.attempt}`} className={`stage-task state-${task.status}`} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}><span className="task-state" /><div><strong>{task.contentTitle ?? task.projectName}</strong><small>{task.contentTitle ? task.projectName : task.projectId}</small></div><span className="task-action">{task.stageId === "publish-feedback" && (task.status === "blocked" || task.isApproval) ? "等待发布授权" : statusLabel(task.status)}</span></button>)}</div>
+  </section>;
+}
+
+function WorkflowEditor({ initialSource, mode, onClose, onPublished }) {
+  const fileRef = useRef(null);
+  const [workflow, setWorkflow] = useState(() => parseWorkflowAuthoringSource(initialSource) ?? emptyWorkflow());
   const [issues, setIssues] = useState([]);
   const [message, setMessage] = useState("");
-  useEffect(() => { if (release?.sourceMarkdown ?? release?.sourceYaml) setSource(release.sourceMarkdown ?? release.sourceYaml); }, [release?.workflowSha256]);
-  const parsed = useMemo(() => parseWorkflowAuthoringSource(source), [source]);
-  async function validate() { try { const result = await api("/api/workflows/validate", { method: "POST", body: JSON.stringify({ sourceMarkdown: source }) }); setIssues(result.issues); setMessage(result.ok ? "Workflow is valid" : "Fix validation issues"); } catch (e) { setMessage(e.message); } }
-  async function saveDraft() { const result = await api("/api/workflows/draft", { method: "PUT", body: JSON.stringify({ sourceMarkdown: source }) }); setIssues(result.issues ?? []); setMessage(result.valid ? "Draft saved" : "Draft saved with issues"); }
-  async function publish() { await api("/api/workflows/publish", { method: "POST", body: JSON.stringify({ sourceMarkdown: source }) }); setMessage("Immutable release published in VLab"); await refresh(); }
-  return <div className="workflow-screen"><header className="topbar"><div><span className="section-label">Workflow library</span><h1>Workflow Designer</h1></div><div className="top-actions"><button onClick={validate}>Validate</button><button onClick={saveDraft}>Save draft</button><button className="primary" onClick={publish}>Publish VLab release</button></div></header><div className="workflow-meta"><div><span>Workflow</span><strong>{parsed?.metadata?.name ?? "Invalid workflow.md"}</strong></div><div><span>Version</span><strong>{parsed?.metadata?.version ?? "—"}</strong></div><div><span>Stages</span><strong>{parsed?.spec?.stages?.length ?? 0}</strong></div><div><span>Release SHA</span><strong className="mono">{release?.workflowSha256?.slice(0, 12) ?? "draft"}</strong></div></div><div className="designer-grid"><section className="yaml-panel"><div className="panel-head"><h2>workflow.md</h2><span>唯一命令文件</span></div><textarea aria-label="Workflow Markdown" spellCheck="false" value={source} onChange={(event) => setSource(event.target.value)} /></section><section className="graph-panel"><div className="panel-head"><h2>Visual flow</h2><span>由同一份 Markdown 自动编译</span></div><div className="stage-flow">{(parsed?.spec?.stages ?? []).map((stage, index) => <div className="stage-node" key={stage.id}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{stage.title}</strong><small>{stage.scope ?? "project"} · {stage.actor ?? "agent"}</small></div>{index < parsed.spec.stages.length - 1 && <div className="connector" />}</div>)}</div>{issues.length > 0 && <div className="issues"><h3>Validation</h3>{issues.map((item) => <p key={`${item.path}-${item.code}`}>{item.path}: {item.message}</p>)}</div>}{message && <div className="toast-inline">{message}</div>}</section></div></div>;
+  const [saving, setSaving] = useState(false);
+  const [advanced, setAdvanced] = useState(false);
+  const source = useMemo(() => serializeWorkflow(workflow), [workflow]);
+  const updateMetadata = (patch) => setWorkflow((current) => ({ ...current, metadata: { ...current.metadata, ...patch } }));
+  const updateStage = (index, patch) => setWorkflow((current) => ({ ...current, spec: { ...current.spec, stages: current.spec.stages.map((stage, stageIndex) => stageIndex === index ? { ...stage, ...patch } : stage) } }));
+  const moveStage = (index, direction) => setWorkflow((current) => {
+    const stages = [...current.spec.stages];
+    const target = index + direction;
+    if (target < 0 || target >= stages.length) return current;
+    [stages[index], stages[target]] = [stages[target], stages[index]];
+    return { ...current, spec: { ...current.spec, stages } };
+  });
+  const removeStage = (index) => setWorkflow((current) => ({ ...current, spec: { ...current.spec, stages: current.spec.stages.filter((_, stageIndex) => stageIndex !== index) } }));
+  const addStage = () => setWorkflow((current) => ({ ...current, spec: { ...current.spec, stages: [...current.spec.stages, defaultStage(current.spec.stages.length + 1)] } }));
+
+  async function loadFile(file) {
+    if (!file) return;
+    const text = await file.text();
+    const parsed = parseWorkflowAuthoringSource(text);
+    if (!parsed) { setMessage("无法读取该文件，请确认它是有效的 workflow.md"); return; }
+    setWorkflow(parsed); setMessage(`已载入 ${file.name}`); setIssues([]);
+  }
+  async function validate() {
+    try { const result = await api("/api/workflows/validate", { method: "POST", body: JSON.stringify({ sourceMarkdown: source }) }); setIssues(result.issues ?? []); setMessage(result.ok ? "检查通过，可以发布" : "请先修正标出的问题"); return result.ok; }
+    catch (reason) { setMessage(reason.message); return false; }
+  }
+  async function persist(publish) {
+    if (saving) return;
+    setSaving(true);
+    try {
+      const result = await api("/api/workflows/import", { method: "POST", body: JSON.stringify({ sourceMarkdown: source, publish }) });
+      setIssues(result.draft?.issues ?? []);
+      setMessage(publish ? `已发布 ${result.release.version}` : "草稿已保存");
+      if (publish) await onPublished();
+    } catch (reason) { setMessage(reason.message); setSaving(false); }
+  }
+
+  return <div className="workflow-modal" role="dialog" aria-modal="true" aria-label="Workflow 编辑器">
+    <div className="workflow-editor">
+      <header><div><span>{mode === "edit" ? "编辑现有流程" : mode === "import" ? "导入流程" : "创建流程"}</span><h2>{workflow.metadata?.name || "新 Workflow"}</h2></div><button aria-label="关闭 Workflow 编辑器" onClick={onClose}><X size={18} /></button></header>
+      <div className="editor-actions"><input ref={fileRef} type="file" accept=".md,.markdown,text/markdown,text/plain" hidden onChange={(event) => loadFile(event.target.files?.[0])} /><button onClick={() => fileRef.current?.click()}><FileUp size={15} />选择 workflow.md</button><button onClick={validate}>检查流程</button><button onClick={() => persist(false)} disabled={saving}><Save size={15} />保存草稿</button><button className="primary" onClick={() => persist(true)} disabled={saving}>{saving ? "处理中…" : "发布新版本"}</button></div>
+      <div className="editor-body">
+        <section className="workflow-form">
+          <div className="form-grid"><label><span>名称</span><input value={workflow.metadata?.name ?? ""} onChange={(event) => updateMetadata({ name: event.target.value })} /></label><label><span>Workflow ID</span><input className="mono" value={workflow.metadata?.id ?? ""} onChange={(event) => updateMetadata({ id: slug(event.target.value) })} /></label><label><span>版本</span><input className="mono" value={workflow.metadata?.version ?? ""} onChange={(event) => updateMetadata({ version: event.target.value })} /></label></div>
+          <div className="visual-stage-editor">{(workflow.spec?.stages ?? []).map((stage, index) => <article key={`${stage.id}-${index}`} className="editable-stage">
+            <div className="editable-stage-head"><span>{String(index + 1).padStart(2, "0")}</span><input value={stage.title ?? ""} aria-label={`阶段 ${index + 1} 名称`} onChange={(event) => updateStage(index, { title: event.target.value })} /><div><button aria-label="上移阶段" onClick={() => moveStage(index, -1)} disabled={index === 0}><ArrowUp size={14} /></button><button aria-label="下移阶段" onClick={() => moveStage(index, 1)} disabled={index === workflow.spec.stages.length - 1}><ArrowDown size={14} /></button><button aria-label="删除阶段" onClick={() => removeStage(index)}><X size={14} /></button></div></div>
+            <div className="editable-stage-fields"><label><span>ID</span><input className="mono" value={stage.id ?? ""} onChange={(event) => updateStage(index, { id: slug(event.target.value) })} /></label><label><span>执行者</span><select value={stage.actor ?? "agent"} onChange={(event) => updateStage(index, { actor: event.target.value })}><option value="agent">Agent</option><option value="human">人工</option></select></label><label><span>范围</span><select value={stage.scope ?? "project"} onChange={(event) => updateStage(index, { scope: event.target.value })}><option value="project">整个项目</option><option value="content-item">每条内容</option></select></label><label><span>依赖阶段</span><input value={(stage.needs ?? []).join(", ")} onChange={(event) => updateStage(index, { needs: csv(event.target.value) })} placeholder="plan, route" /></label><label className="wide"><span>Agent Skills</span><input value={(stage.skills ?? []).join(", ")} onChange={(event) => updateStage(index, { skills: csv(event.target.value) })} /></label><label className="wide"><span>阶段说明</span><textarea value={stage.description ?? ""} onChange={(event) => updateStage(index, { description: event.target.value })} /></label></div>
+          </article>)}</div>
+          <button className="add-stage" onClick={addStage}><Plus size={15} />增加一个阶段</button>
+        </section>
+        <aside className="editor-preview"><strong>运行预览</strong><p>发布后，所有新项目都会沿这条轨道运行。</p><ol>{(workflow.spec?.stages ?? []).map((stage, index) => <li key={`${stage.id}-preview`}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{stage.title || "未命名阶段"}</strong><small>{stage.actor === "human" ? "人工" : "Agent"} · {stage.scope === "content-item" ? "每条内容" : "整个项目"}</small></div></li>)}</ol><button className="advanced-toggle" onClick={() => setAdvanced((value) => !value)}>{advanced ? "隐藏高级源文件" : "查看高级源文件"}</button>{advanced && <textarea aria-label="Workflow Markdown 高级编辑" value={source} onChange={(event) => { const parsed = parseWorkflowAuthoringSource(event.target.value); if (parsed) setWorkflow(parsed); }} />}{issues.length > 0 && <div className="issues"><strong>需要修正</strong>{issues.map((issue) => <p key={`${issue.path}-${issue.code}`}>{issue.path}: {issue.message}</p>)}</div>}{message && <div className="toast-inline">{message}</div>}</aside>
+      </div>
+    </div>
+  </div>;
 }
 
 function Projects({ data }) { return <div className="simple-screen"><header className="topbar"><div><span className="section-label">Workflow instances</span><h1>Projects</h1></div></header><div className="project-table"><div className="table-head"><span>Project</span><span>Workflow</span><span>视频任务</span><span>Status</span><span>Updated</span></div>{(data?.instances ?? []).map((instance) => <div className="table-row" key={instance.id}><strong>{instance.name}</strong><span className="mono">{instance.workflowSha256.slice(0, 12)}</span><span>{instance.contentItems?.length ?? 0} 条 · {routeSummary(instance.contentItems)}</span><span>{instance.status}</span><span>{new Date(instance.updatedAt).toLocaleString()}</span></div>)}</div></div>; }
@@ -164,6 +284,138 @@ function parseWorkflowAuthoringSource(source) {
     return null;
   }
 }
+
+function serializeWorkflow(workflow) {
+  const stages = workflow.spec?.stages ?? [];
+  const frontmatter = { ...workflow, spec: { ...(workflow.spec ?? {}) } };
+  delete frontmatter.spec.stages;
+  const sections = stages.map((stage) => {
+    const body = { ...stage };
+    delete body.id;
+    delete body.title;
+    delete body.order;
+    return `## STAGE ${stage.id}｜${stage.title}\n\n\`\`\`stage\n${YAML.stringify(body).trim()}\n\`\`\``;
+  });
+  return `---\n${YAML.stringify(frontmatter).trim()}\n---\n\n${sections.join("\n\n")}`;
+}
+
+function emptyWorkflow() {
+  return {
+    apiVersion: "nightshift.versa.ai/v1alpha1",
+    kind: "Workflow",
+    metadata: { id: "new-workflow", version: "0.1.0-draft", name: "新 Workflow" },
+    spec: {
+      ownerAgentRole: "operator",
+      concurrency: { perInstance: 2, maxActiveInstances: 3 },
+      inputs: {},
+      stages: [defaultStage(1)],
+    },
+  };
+}
+
+function newWorkflowSource() { return serializeWorkflow(emptyWorkflow()); }
+
+function defaultStage(number) {
+  return {
+    id: `stage-${number}`,
+    title: `阶段 ${number}`,
+    actor: "agent",
+    scope: "project",
+    skills: [],
+    needs: number === 1 ? [] : [`stage-${number - 1}`],
+    outputs: ["completed"],
+    completeWhen: ["output.completed"],
+    timeout: "30m",
+    retry: { maxAttempts: 2, idempotencyKey: `\${instance.id}:stage-${number}:\${input.hash}` },
+  };
+}
+
+function groupWorkflowReleases(releases) {
+  const groups = new Map();
+  for (const release of releases) {
+    const current = groups.get(release.workflowId) ?? { id: release.workflowId, name: release.name, releases: [] };
+    current.releases.push(release);
+    groups.set(release.workflowId, current);
+  }
+  return [...groups.values()];
+}
+
+function indexStageTasks(stages, projects, cards) {
+  const cardById = new Map(cards.map((card) => [card.id, card]));
+  const result = new Map(stages.map((stage) => [stage.id, []]));
+  const projectsById = new Map(projects.map((project) => [project.id, project]));
+  for (const project of projects) {
+    const contentById = new Map((project.contentItems ?? []).map((item) => [item.id, item]));
+    const runs = [
+      ...(project.stageRuns ?? []).map((run) => ({ ...run, contentItemId: null })),
+      ...(project.contentItemRuns ?? []),
+    ];
+    for (const run of runs) {
+      if (!result.has(run.stageId)) continue;
+      const card = cardById.get(run.cardId);
+      const content = run.contentItemId ? contentById.get(run.contentItemId) : null;
+      result.get(run.stageId).push({
+        ...run,
+        card,
+        contentTitle: content?.title,
+        projectId: project.id,
+        projectName: project.name,
+        status: card?.status ?? run.status,
+      });
+    }
+  }
+  for (const card of cards) {
+    if (!(card.labels ?? []).includes("nightshift:approval")) continue;
+    const projectId = label(card, "instance");
+    const stageId = label(card, "stage");
+    const project = projectsById.get(projectId);
+    if (!project || !result.has(stageId)) continue;
+    if ([...result.get(stageId)].some((task) => task.card?.id === card.id)) continue;
+    const contentItemId = label(card, "content-item");
+    const content = (project.contentItems ?? []).find((item) => item.id === contentItemId);
+    result.get(stageId).push({
+      attempt: card.metadata?.automation?.attempt ?? 1,
+      card,
+      contentItemId,
+      contentTitle: content?.title,
+      isApproval: true,
+      projectId,
+      projectName: project.name,
+      stageId,
+      status: card.status,
+    });
+  }
+  for (const [stageId, tasks] of result) {
+    const latest = new Map();
+    for (const task of tasks) {
+      const key = `${task.projectId}:${task.contentItemId ?? "project"}`;
+      const current = latest.get(key);
+      if (!current || preferTask(task, current)) latest.set(key, task);
+    }
+    result.set(stageId, [...latest.values()].sort((left, right) => statusOrder(left.status) - statusOrder(right.status) || left.projectName.localeCompare(right.projectName)));
+  }
+  return result;
+}
+
+function summarizeStatuses(tasks) {
+  return tasks.reduce((summary, task) => ({ ...summary, [task.status]: (summary[task.status] ?? 0) + 1 }), {});
+}
+
+function statusOrder(status) { return ({ running: 0, review: 1, blocked: 2, ready: 3, done: 4 })[status] ?? 5; }
+
+function preferTask(candidate, current) {
+  const candidateRank = statusOrder(candidate.status);
+  const currentRank = statusOrder(current.status);
+  if (candidateRank !== currentRank) return candidateRank < currentRank;
+  return new Date(candidate.card?.updatedAt ?? candidate.updatedAt ?? 0) > new Date(current.card?.updatedAt ?? current.updatedAt ?? 0);
+}
+
+function statusLabel(status) {
+  return ({ ready: "待开始", running: "进行中", review: "待审核", blocked: "已阻塞", done: "已完成", cancelled: "已取消" })[status] ?? status;
+}
+
+function csv(value) { return value.split(",").map((entry) => entry.trim()).filter(Boolean); }
+function slug(value) { return value.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, ""); }
 
 function routeSummary(items = []) {
   const counts = items.reduce((result, item) => ({ ...result, [item.route ?? "待分流"]: (result[item.route ?? "待分流"] ?? 0) + 1 }), {});

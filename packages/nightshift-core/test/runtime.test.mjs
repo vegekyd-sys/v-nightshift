@@ -63,6 +63,7 @@ test("approval card completion does not skip the guarded agent stage", async () 
     contentItemId: "video-1",
     effect: "paid-production",
     instanceId: "NS-RUNTIME-2",
+    scope: "content-item",
     stageId: "produce",
   });
   const after = await runtime.tick("NS-RUNTIME-2");

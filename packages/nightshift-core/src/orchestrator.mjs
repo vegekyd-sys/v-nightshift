@@ -245,18 +245,20 @@ function actionKey(release, instance, stage, action, contentItem = null) {
 function requiredApproval(stage, instance, now, contentItemId = null) {
   if (!stage.approval?.before) return null;
   const approvals = Array.isArray(instance.approvals) ? instance.approvals : [];
+  const requiredScope = stage.approval.scope ?? "stage";
   const accepted = approvals.some((approval) => {
     if (approval.status !== "approved") return false;
     if (approval.stageId && approval.stageId !== stage.id) return false;
     if ((approval.contentItemId ?? null) !== contentItemId) return false;
-    if (approval.effect && approval.effect !== stage.approval.before) return false;
+    if (approval.effect !== stage.approval.before) return false;
+    if (approval.scope !== requiredScope) return false;
     if (approval.expiresAt && new Date(approval.expiresAt) <= now) return false;
     return true;
   });
   if (accepted) return null;
   return {
     effect: stage.approval.before,
-    scope: stage.approval.scope ?? "stage",
+    scope: requiredScope,
   };
 }
 

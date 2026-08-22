@@ -155,6 +155,19 @@ async function handleApi(request, response, url) {
     json(response, 200, runtime.publish(body.sourceMarkdown ?? body.sourceYaml ?? ""));
     return;
   }
+  if (request.method === "POST" && url.pathname === "/api/workflows/import") {
+    const body = await bodyJson(request);
+    const source = body.sourceMarkdown ?? body.sourceYaml ?? "";
+    const validation = runtime.validate(source);
+    if (!validation.ok) {
+      json(response, 422, { error: "Workflow validation failed", issues: validation.issues });
+      return;
+    }
+    const draft = runtime.saveDraft(source);
+    const release = body.publish === false ? null : runtime.publish(source);
+    json(response, release ? 201 : 200, { draft, release });
+    return;
+  }
   if (request.method === "POST" && url.pathname === "/api/instances") {
     const body = await bodyJson(request);
     json(response, 201, await startInstance(body));

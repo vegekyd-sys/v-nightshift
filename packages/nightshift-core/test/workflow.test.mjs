@@ -96,7 +96,7 @@ test("paid production approval is isolated per content item", async () => {
   assert.equal(request[0].type, "request_approval");
   assert.equal(request[0].contentItemId, "video-ai-01");
 
-  instance.approvals = [{ stageId: "produce", contentItemId: "video-ai-01", effect: "paid-production", status: "approved" }];
+  instance.approvals = [{ stageId: "produce", contentItemId: "video-ai-01", effect: "paid-production", scope: "content-item", status: "approved" }];
   const approved = planNextActions({ release, instance, runs: [{ stageId: "plan", status: "done" }], contentItems, contentItemRuns });
   assert.equal(approved[0].type, "create_workboard_card");
   assert.equal(approved[0].stageId, "produce");
@@ -116,9 +116,20 @@ test("human review and publication remain per-video and idempotent", async () =>
   contentItemRuns = doneThrough("video-scene-01", "review");
   const publicationApproval = planNextActions({ release, instance, runs: [{ stageId: "plan", status: "done" }], contentItems, contentItemRuns })[0];
   assert.equal(publicationApproval.type, "request_approval");
-  instance.approvals = [{ stageId: "publish-feedback", contentItemId: "video-scene-01", effect: "external-publication", status: "approved" }];
+  instance.approvals = [{ stageId: "publish-feedback", contentItemId: "video-scene-01", effect: "external-publication", scope: "asset-and-account", status: "approved" }];
   const publish = planNextActions({ release, instance, runs: [{ stageId: "plan", status: "done" }], contentItems, contentItemRuns })[0];
   assert.match(publish.idempotencyKey, /video-scene-01:publish-feedback/);
+});
+
+test("approval without the exact effect and scope never unlocks a side effect", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const instance = activeInstance(release);
+  const contentItems = [twoItems()[1]];
+  const contentItemRuns = doneThrough("video-scene-01", "review");
+  instance.approvals = [{ stageId: "publish-feedback", contentItemId: "video-scene-01", effect: null, scope: null, status: "approved" }];
+  const action = planNextActions({ release, instance, runs: [{ stageId: "plan", status: "done" }], contentItems, contentItemRuns })[0];
+  assert.equal(action.type, "request_approval");
+  assert.deepEqual(action.approval, { effect: "external-publication", scope: "asset-and-account" });
 });
 
 test("refuses another release and requires an Agent binding", async () => {
