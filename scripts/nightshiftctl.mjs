@@ -32,15 +32,15 @@ async function run(input) {
     const project = await readJson(subject);
     await resolveWorkflow(project);
     return api(action === "preflight" ? "/api/instances/preflight" : "/api/instances", {
-      body: JSON.stringify({ ...project, dispatch: false }),
+      body: JSON.stringify(action === "create" ? { ...project, dispatch: false, status: "paused" } : project),
       method: "POST",
     });
   }
   if (resource === "projects" && action === "start" && subject) {
-    return api(`/api/instances/${encodeURIComponent(subject)}/tick`, {
-      body: JSON.stringify({ dispatch: true }),
-      method: "POST",
-    });
+    return api(`/api/instances/${encodeURIComponent(subject)}/start`, { body: "{}", method: "POST" });
+  }
+  if (resource === "projects" && action === "pause" && subject) {
+    return api(`/api/instances/${encodeURIComponent(subject)}/pause`, { body: "{}", method: "POST" });
   }
   if (resource === "cards" && action === "list") {
     const status = option(input, "--status");
@@ -62,7 +62,7 @@ async function run(input) {
       method: "POST",
     });
   }
-  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|preflight|create|start | cards list|approve|changes|reject|retry");
+  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|preflight|create|start|pause | cards list|approve|changes|reject|retry");
 }
 
 async function resolveWorkflow(project) {
@@ -108,4 +108,3 @@ function option(input, name) {
 function label(card, prefix) {
   return card.labels?.find((entry) => entry.startsWith(`${prefix}:`))?.slice(prefix.length + 1) ?? null;
 }
-

@@ -309,6 +309,24 @@ async function handleApi(request, response, url) {
     return;
   }
   const instanceInputMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/inputs$/);
+  const instanceLifecycleMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/(start|pause)$/);
+  if (request.method === "POST" && instanceLifecycleMatch) {
+    const instanceId = decodeURIComponent(instanceLifecycleMatch[1]);
+    const instance = store.getInstance(instanceId);
+    if (!instance) {
+      json(response, 404, { error: "Project not found" });
+      return;
+    }
+    if (instanceLifecycleMatch[2] === "pause") {
+      json(response, 200, store.updateInstanceStatus(instanceId, "paused"));
+      return;
+    }
+    store.updateInstanceStatus(instanceId, "active");
+    const result = await serializedTick(instanceId, { dispatch: true, dryRun: false });
+    await refreshCards();
+    json(response, 200, { instance: store.getInstance(instanceId), schedule: result });
+    return;
+  }
   if (request.method === "PATCH" && instanceInputMatch) {
     const body = await bodyJson(request);
     json(
