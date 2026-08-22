@@ -303,13 +303,29 @@ async function serveDeliverableArtifact(request, response, instanceId, requested
     }
     throw error;
   }
-  const relativePath = normalizeArtifactPath(requestedPath);
+  let relativePath;
+  try {
+    relativePath = normalizeArtifactPath(requestedPath);
+  } catch {
+    json(response, 404, { error: "Artifact not found" });
+    return;
+  }
   if (!deliverableArtifactPaths(manifest).has(relativePath)) {
     json(response, 404, { error: "Artifact is not part of the published delivery package" });
     return;
   }
-  const filePath = await resolveDeclaredArtifact(manifest, relativePath);
-  const info = await stat(filePath);
+  let filePath;
+  let info;
+  try {
+    filePath = await resolveDeclaredArtifact(manifest, relativePath);
+    info = await stat(filePath);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      json(response, 404, { error: "Artifact not found" });
+      return;
+    }
+    throw error;
+  }
   if (!info.isFile()) {
     json(response, 404, { error: "Artifact not found" });
     return;

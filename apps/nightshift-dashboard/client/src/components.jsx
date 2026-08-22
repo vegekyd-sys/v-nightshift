@@ -110,6 +110,7 @@ export function Drawer({ card, delivery, deliveryState, deliveryError, onClose, 
   useEffect(() => {
     setReviewAction(null);
     setEvidence("");
+    setSubmitting(false);
     setSubmitError("");
   }, [card?.id]);
   if (!card) return null;
