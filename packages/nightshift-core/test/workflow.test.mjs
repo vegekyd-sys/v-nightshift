@@ -92,6 +92,25 @@ test("selects route-specific material skills without creating a second workflow"
   assert.deepEqual(actions[1].card.automation.skills, ["shooting-checklist-v3", "scene-cli", "material-verification"]);
 });
 
+test("brief cards declare the executable artifact contract", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const instance = activeInstance(release);
+  instance.inputs.nightshift = { instanceDir: "/srv/nightshift/NS-LAB-001" };
+  const contentItems = [twoItems()[1]];
+  const actions = planNextActions({
+    release,
+    instance,
+    runs: [{ stageId: "plan", status: "done" }],
+    contentItems,
+    contentItemRuns: doneThrough("video-scene-01", "materials"),
+  });
+  assert.equal(actions[0].stageId, "brief");
+  assert.match(actions[0].card.notes, /finishedVideoBrief\.md/);
+  assert.match(actions[0].card.notes, /routeMatchesContentItem/);
+  assert.match(actions[0].card.notes, /source_url\/start_sec\/end_sec/);
+  assert.match(actions[0].card.notes, /Do not inspect Night Shift source code/);
+});
+
 test("paid production approval is isolated per content item", async () => {
   const release = compileWorkflow(await loadWorkflow(fixture));
   const instance = activeInstance(release);
