@@ -19,14 +19,14 @@ export function App() {
   const [selected, setSelected] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
 
-  async function refresh() {
+  async function refresh(force = false) {
     setRefreshing(true);
-    try { setData(await api("/api/bootstrap")); setError(""); }
+    try { setData(await api(force ? "/api/bootstrap?refresh=1" : "/api/bootstrap")); setError(""); }
     catch (reason) { setError(reason.message); }
     finally { setRefreshing(false); }
   }
 
-  useEffect(() => { refresh(); const timer = setInterval(refresh, 5000); return () => clearInterval(timer); }, []);
+  useEffect(() => { refresh(false); const timer = setInterval(() => refresh(false), 5000); return () => clearInterval(timer); }, []);
 
   async function decide(card, status) {
     const instanceId = card.metadata?.automation?.instanceId ?? label(card, "instance");
@@ -53,7 +53,7 @@ function LiveBoard({ data, query, setQuery, selected, setSelected, refreshing, r
   const cards = useMemo(() => (data?.cards ?? []).filter((card) => !query || card.title.toLowerCase().includes(query.toLowerCase())), [data, query]);
   const count = (statuses) => cards.filter((card) => statuses.includes(card.status)).length;
   return <>
-    <header className="topbar"><div><span className="section-label">Night Shift operations</span><h1>Live Workboard</h1></div><div className="top-actions"><label className="search"><Icons.Search size={16} /><input aria-label="Search cards" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search work" /></label><button onClick={refresh} className="refresh-button">{refreshing ? "Refreshing…" : "Refresh"}</button></div></header>
+    <header className="topbar"><div><span className="section-label">Night Shift operations</span><h1>Live Workboard</h1></div><div className="top-actions"><label className="search"><Icons.Search size={16} /><input aria-label="Search cards" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search work" /></label><button onClick={() => refresh(true)} className="refresh-button">{refreshing ? "Refreshing…" : "Refresh"}</button></div></header>
     <section className="metrics"><Metric label="Active agents" value={count(["running"])} tone="active" /><Metric label="Waiting review" value={count(["review"])} tone="review" /><Metric label="Blocked" value={count(["blocked"])} tone="blocked" /><Metric label="Completed" value={count(["done"])} /></section>
     <section className={`board ${selected ? "with-drawer" : ""}`}>
       <div className="board-columns">{columns.map(([id, title, statuses]) => { const items = cards.filter((card) => statuses.includes(card.status)); return <div className={`board-column column-${id}`} key={id}><div className="column-head"><h2>{title}</h2><span>{items.length}</span></div><div className="column-body">{items.map((card) => <WorkCard key={card.id} card={card} onClick={setSelected} />)}{items.length === 0 && <EmptyColumn />}</div></div>; })}</div>

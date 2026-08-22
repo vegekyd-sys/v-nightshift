@@ -23,10 +23,18 @@ await mkdir(dataDir, { recursive: true });
 const store = new NightShiftStore(join(dataDir, "nightshift.sqlite"));
 const workboard = new WorkboardGatewayAdapter({ board });
 const runtime = new NightShiftRuntime({ board, store, workboard });
+let cardCache = [];
+let cardsUpdatedAt = null;
+let cardRefreshPromise = null;
 
 await ensureWorkflow();
 await ensureSeedInstance();
 await reconcileSeededInstances();
+await refreshCards();
+const refreshTimer = setInterval(() => {
+  refreshCards().catch((error) => console.error(`Workboard refresh failed: ${error.message}`));
+}, 30000);
+refreshTimer.unref();
 
 const server = createServer(async (request, response) => {
   try {
@@ -47,18 +55,24 @@ server.listen(port, host, () => {
 
 async function handleApi(request, response, url) {
   if (request.method === "GET" && url.pathname === "/api/health") {
-    json(response, 200, { board, ok: true, service: "nightshift-workboard" });
+    json(response, 200, {
+      board,
+      cardsUpdatedAt,
+      ok: true,
+      service: "nightshift-workboard",
+    });
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/bootstrap") {
-    const cards = await workboard.listCards();
+    if (url.searchParams.get("refresh") === "1") await refreshCards();
     const instances = store.listInstances().map((instance) => ({
       ...instance,
       stageRuns: store.listStageRuns(instance.id),
     }));
     json(response, 200, {
       board,
-      cards,
+      cards: cardCache,
+      cardsUpdatedAt,
       events: store.listEvents(null, 80),
       instances,
       workflows: store.listReleases(),
@@ -89,13 +103,16 @@ async function handleApi(request, response, url) {
   const tickMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/tick$/);
   if (request.method === "POST" && tickMatch) {
     const body = await bodyJson(request);
-    json(
-      response,
-      200,
+    const result =
       await runtime.tick(decodeURIComponent(tickMatch[1]), {
         dispatch: body.dispatch === true,
         dryRun: body.dryRun === true,
-      }),
+      });
+    if (!body.dryRun) await refreshCards();
+    json(
+      response,
+      200,
+      result,
     );
     return;
   }
@@ -111,6 +128,7 @@ async function handleApi(request, response, url) {
       : decisionMatch[2] === "request-changes"
         ? await runtime.requestChanges(input)
         : await runtime.reject(input);
+    await refreshCards();
     json(response, 200, result);
     return;
   }
@@ -135,6 +153,18 @@ async function reconcileSeededInstances() {
   for (const instance of store.listInstances()) {
     await runtime.reconcile(instance.id);
   }
+}
+
+async function refreshCards() {
+  if (cardRefreshPromise) return cardRefreshPromise;
+  cardRefreshPromise = workboard.listCards().then((cards) => {
+    cardCache = cards;
+    cardsUpdatedAt = new Date().toISOString();
+    return cards;
+  }).finally(() => {
+    cardRefreshPromise = null;
+  });
+  return cardRefreshPromise;
 }
 
 async function bodyJson(request) {
@@ -185,6 +215,7 @@ function contentType(path) {
 }
 
 function shutdown() {
+  clearInterval(refreshTimer);
   server.close(() => {
     store.close();
     process.exit(0);
