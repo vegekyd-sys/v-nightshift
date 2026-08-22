@@ -3,7 +3,7 @@ apiVersion: nightshift.versa.ai/v1alpha1
 kind: Workflow
 metadata:
   id: xingqing-content-delivery
-  version: 0.4.1-draft
+  version: 0.4.2-draft
   name: 星擎内容交付
 spec:
   ownerAgentRole: content-operator

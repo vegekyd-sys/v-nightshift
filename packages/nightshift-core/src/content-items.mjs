@@ -1,16 +1,5 @@
-const STATUSES = new Set([
-  "planned",
-  "routing",
-  "materials",
-  "briefing",
-  "producing",
-  "review",
-  "approved",
-  "publishing",
-  "done",
-  "blocked",
-]);
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/;
+const STATUS_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 
 export function normalizeContentItems(items, { maxItems = 50, routes = [] } = {}) {
   const allowedRoutes = new Set(routes);
@@ -36,7 +25,7 @@ export function normalizeContentItems(items, { maxItems = 50, routes = [] } = {}
       throw new Error(`Unsupported content route ${route}`);
     }
     const status = String(item.status ?? (route ? "planned" : "routing"));
-    if (!STATUSES.has(status)) throw new Error(`Unsupported content item status ${status}`);
+    if (!STATUS_PATTERN.test(status)) throw new Error(`Invalid content item status ${status}`);
     return { ...item, id, title, route, status, ordinal };
   });
 }

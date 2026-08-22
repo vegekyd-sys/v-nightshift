@@ -36,6 +36,10 @@ test("persists immutable releases, instances, stage runs, approvals, and audit e
     stageId: "route",
     status: "done",
   });
+  store.replaceContentItems("NS-STORE-1", [
+    { id: "video-ai-01", title: "AI video", route: "AI_GENERATE", status: "routed" },
+    { id: "video-scene-01", title: "Scene video", route: "SCENE_EDIT", status: "routed" },
+  ]);
   store.recordApproval({
     instanceId: "NS-STORE-1",
     stageId: "produce",
@@ -48,10 +52,11 @@ test("persists immutable releases, instances, stage runs, approvals, and audit e
   assert.equal(store.getInstance("NS-STORE-1").approvals.length, 1);
   assert.equal(store.listStageRuns("NS-STORE-1")[0].cardId, "card-1");
   assert.equal(store.listContentItems("NS-STORE-1").length, 2);
+  assert.equal(store.listContentItems("NS-STORE-1")[0].status, "routed");
   assert.equal(store.listContentItemRuns("NS-STORE-1")[0].contentItemId, "video-ai-01");
   assert.deepEqual(
     store.listEvents("NS-STORE-1").map((event) => event.type),
-    ["approval.recorded", "content-items.replaced", "instance.created"],
+    ["approval.recorded", "content-items.replaced", "content-items.replaced", "instance.created"],
   );
   store.close();
 });

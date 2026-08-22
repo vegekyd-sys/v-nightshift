@@ -244,15 +244,25 @@ function runScheduler() {
   schedulerPromise = (async () => {
     await refreshCards();
     let changed = false;
+    const warnings = [];
     for (const instance of store.listInstances()) {
       if (instance.status !== "active") continue;
-      await syncContentItemsManifest(instance);
+      try {
+        await syncContentItemsManifest(instance);
+      } catch (error) {
+        warnings.push(`${instance.id}: ${error.message}`);
+        store.appendEvent({
+          instanceId: instance.id,
+          type: "content-items.import.failed",
+          payload: { error: error.message },
+        });
+      }
       const result = await serializedTick(instance.id, { dispatch: true });
       if (result.applied.length > 0) changed = true;
     }
     if (changed) await refreshCards();
     lastSchedulerAt = new Date().toISOString();
-    lastSchedulerError = null;
+    lastSchedulerError = warnings.length > 0 ? warnings.join("; ") : null;
   })().catch((error) => {
     lastSchedulerAt = new Date().toISOString();
     lastSchedulerError = error.message;
