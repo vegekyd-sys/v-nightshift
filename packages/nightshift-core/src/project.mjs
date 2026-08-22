@@ -1,6 +1,6 @@
 export function validateProjectRequest(release, project) {
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/.test(project?.id ?? "")) {
-    throw new Error("Invalid project id");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,30}$/.test(project?.id ?? "")) {
+    throw new Error("Project id must be 1-31 characters using letters, numbers, dots, underscores, or hyphens");
   }
   if (typeof project.name !== "string" || !project.name.trim()) {
     throw new Error("Project name is required");

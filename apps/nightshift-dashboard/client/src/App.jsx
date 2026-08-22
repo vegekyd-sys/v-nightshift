@@ -122,7 +122,7 @@ export function App() {
         {active === "projects" && <Projects data={data} onNewProject={() => setProjectReleaseSha(data?.workflows?.[0]?.workflowSha256)} />}
         {active === "agents" && <Agents data={data} />}
       </main>
-      {projectReleaseSha && <ProjectEditor releases={data?.workflows ?? []} initialReleaseSha={projectReleaseSha} onClose={() => setProjectReleaseSha(null)} onCreated={async () => { setProjectReleaseSha(null); setActive("workflows"); await refresh(true); }} />}
+      {projectReleaseSha && <ProjectEditor releases={data?.workflows ?? []} initialReleaseSha={projectReleaseSha} onClose={() => setProjectReleaseSha(null)} onCreated={(result) => { setProjectReleaseSha(null); setActive("workflows"); if (result.initialScheduleError) setError(`项目已创建，首次调度将在下一轮重试：${result.initialScheduleError}`); refresh(true).catch((reason) => setError(reason.message)); }} />}
     </div>
   );
 }
@@ -300,12 +300,7 @@ function ProjectEditor({ releases, initialReleaseSha, onClose, onCreated }) {
           dispatch: true,
         }),
       });
-      if (result.initialScheduleError) {
-        setMessage(`项目已创建，但首次调度失败：${result.initialScheduleError}`);
-        setSubmitting(false);
-        return;
-      }
-      await onCreated(result);
+      onCreated(result);
     } catch (reason) {
       setMessage(reason.message);
       setSubmitting(false);
@@ -319,7 +314,7 @@ function ProjectEditor({ releases, initialReleaseSha, onClose, onCreated }) {
       <div className="project-form-body">
         <section className="project-form-main">
           <label className="project-field"><span>Workflow 版本</span><select value={releaseSha} onChange={(event) => chooseRelease(event.target.value)}>{releases.map((entry) => <option key={entry.workflowSha256} value={entry.workflowSha256}>{entry.name} · {entry.version}</option>)}</select><small>项目开始后会固定在 SHA {release.workflowSha256.slice(0, 12)}</small></label>
-          <div className="project-form-grid"><label className="project-field"><span>项目名称</span><input autoFocus value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} placeholder="例如：振丰｜8 月内容生产" required /></label><label className="project-field"><span>Project ID</span><input className="mono" value={form.id} onChange={(event) => setForm((current) => ({ ...current, id: event.target.value }))} required /></label></div>
+          <div className="project-form-grid"><label className="project-field"><span>项目名称</span><input autoFocus value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} placeholder="例如：振丰｜8 月内容生产" required /></label><label className="project-field"><span>Project ID</span><input className="mono" maxLength={31} value={form.id} onChange={(event) => setForm((current) => ({ ...current, id: event.target.value }))} required /><small>最多 31 个英文、数字、点、下划线或连字符</small></label></div>
           <div className="project-section-head"><strong>Workflow 输入</strong><span>由 workflow.md 自动生成</span></div>
           <div className="project-inputs">{Object.entries(contracts).map(([name, contract]) => <ProjectInput key={name} name={name} contract={contract} value={form.inputs[name]} onChange={(value) => updateInput(name, value)} />)}</div>
           <div className="project-section-head"><strong>Agent 绑定</strong><span>逻辑角色映射到 OpenClaw Agent</span></div>

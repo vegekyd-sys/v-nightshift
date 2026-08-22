@@ -43,4 +43,8 @@ test("rejects a project with missing inputs or agent bindings", async () => {
     }),
     /content-operator/,
   );
+  assert.throws(
+    () => validateProjectRequest(release, { ...base, id: "NS-LAB-PROJECT-ID-THAT-IS-LONGER-THAN-THIRTY-ONE" }),
+    /1-31 characters/,
+  );
 });
