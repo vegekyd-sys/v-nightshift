@@ -34,6 +34,7 @@ let lastSchedulerAt = null;
 let lastSchedulerError = null;
 let schedulerPromise = null;
 let tickQueue = Promise.resolve();
+let shuttingDown = false;
 
 await ensureWorkflow();
 await ensureSeedInstance();
@@ -437,12 +438,26 @@ function contentType(path) {
 }
 
 function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
   clearInterval(schedulerTimer);
   clearTimeout(initialSchedulerTimer);
-  server.close(() => {
+  let finished = false;
+  let forceTimer;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(forceTimer);
     store.close();
     process.exit(0);
-  });
+  };
+  forceTimer = setTimeout(() => {
+    server.closeAllConnections?.();
+    finish();
+  }, 5000);
+  forceTimer.unref();
+  server.close(finish);
+  server.closeIdleConnections?.();
 }
 
 process.on("SIGINT", shutdown);
