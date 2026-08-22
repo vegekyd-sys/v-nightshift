@@ -12,6 +12,7 @@ Environment=HOME=/srv/vlab-browser
 Environment=OPENCLAW_HOME=/srv/vlab-browser
 Environment=OPENCLAW_STATE_DIR=/srv/vlab-browser/state
 Environment=OPENCLAW_CONFIG_PATH=/srv/vlab-browser/state/openclaw.json
+Environment=PATH=/opt/node-v22.23.1/bin:/usr/local/bin:/usr/bin:/bin
 Environment=NIGHTSHIFT_HOST=100.82.39.107
 Environment=NIGHTSHIFT_PORT=24880
 Environment=NIGHTSHIFT_DATA_DIR=/srv/vlab-browser/nightshift
