@@ -4,12 +4,14 @@ import { createReadStream } from "node:fs";
 import { mkdir, readFile, realpath, stat } from "node:fs/promises";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadPublicAuth, requiresPublicAuth, verifyPublicAuth } from "./public-auth.mjs";
 import {
   deliverableArtifactPaths,
   NightShiftRuntime,
   NightShiftStore,
   normalizeArtifactPath,
   normalizeDeliverablesManifest,
+  requiredSkillsByRole,
   validateProjectRequest,
   WorkboardGatewayAdapter,
 } from "../../../packages/nightshift-core/src/index.mjs";
@@ -25,6 +27,8 @@ const workflowPath = resolve(
     resolve(appRoot, "../../examples/workflows/xingqing-content-delivery.workflow.md"),
 );
 const board = process.env.NIGHTSHIFT_BOARD ?? "nightshift-lab";
+const publicHost = process.env.NIGHTSHIFT_PUBLIC_HOST ?? "";
+const publicAuth = await loadPublicAuth(process.env.NIGHTSHIFT_BASIC_AUTH_FILE);
 await mkdir(dataDir, { recursive: true });
 const store = new NightShiftStore(join(dataDir, "nightshift.sqlite"));
 const workboard = new WorkboardGatewayAdapter({ board });
@@ -52,6 +56,15 @@ initialSchedulerTimer.unref();
 
 const server = createServer(async (request, response) => {
   try {
+    if (requiresPublicAuth(request, publicHost) && !verifyPublicAuth(request.headers.authorization, publicAuth)) {
+      response.writeHead(401, {
+        "Cache-Control": "no-store",
+        "Content-Type": "text/plain; charset=utf-8",
+        "WWW-Authenticate": 'Basic realm="Night Shift", charset="UTF-8"',
+      });
+      response.end("Authentication required");
+      return;
+    }
     const url = new URL(request.url, `http://${request.headers.host ?? "localhost"}`);
     if (url.pathname.startsWith("/api/")) {
       await handleApi(request, response, url);
@@ -95,6 +108,51 @@ async function handleApi(request, response, url) {
       instances,
       workflows: store.listReleases(),
     });
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/workflows") {
+    json(response, 200, {
+      workflows: store.listReleases().map((release) => ({
+        name: release.name,
+        publishedAt: release.publishedAt,
+        version: release.version,
+        workflowId: release.workflowId,
+        workflowSha256: release.workflowSha256,
+      })),
+    });
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/instances") {
+    json(response, 200, {
+      instances: store.listInstances().map((instance) => ({
+        ...instance,
+        contentItemCount: store.listContentItems(instance.id).length,
+        contentItemRuns: store.listContentItemRuns(instance.id),
+        stageRuns: store.listStageRuns(instance.id),
+      })),
+    });
+    return;
+  }
+  const instanceReadMatch = url.pathname.match(/^\/api\/instances\/([^/]+)$/);
+  if (request.method === "GET" && instanceReadMatch) {
+    const instanceId = decodeURIComponent(instanceReadMatch[1]);
+    const instance = store.getInstance(instanceId);
+    if (!instance) {
+      json(response, 404, { error: "Project not found" });
+      return;
+    }
+    json(response, 200, {
+      ...instance,
+      contentItems: store.listContentItems(instanceId),
+      contentItemRuns: store.listContentItemRuns(instanceId),
+      stageRuns: store.listStageRuns(instanceId),
+    });
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/cards") {
+    const cards = url.searchParams.get("refresh") === "1" ? await refreshCards() : cardCache;
+    const status = url.searchParams.get("status");
+    json(response, 200, { cards: status ? cards.filter((card) => card.status === status) : cards });
     return;
   }
   const cardSessionMatch = url.pathname.match(/^\/api\/cards\/([^/]+)\/session$/);
@@ -205,10 +263,27 @@ async function handleApi(request, response, url) {
     json(response, release ? 201 : 200, { draft, release });
     return;
   }
+  if (request.method === "POST" && url.pathname === "/api/instances/preflight") {
+    const body = await bodyJson(request);
+    const release = store.getRelease(body.workflowSha256);
+    try {
+      validateProjectRequest(release?.manifest, body);
+      const preflight = await preflightProjectSkills(release.manifest, body);
+      json(response, preflight.ok ? 200 : 422, preflight.ok ? preflight : { ...preflight, error: "Required Night Shift Skills are unavailable" });
+    } catch (error) {
+      json(response, 422, { error: error.message, ok: false });
+    }
+    return;
+  }
   if (request.method === "POST" && url.pathname === "/api/instances") {
     const body = await bodyJson(request);
     const release = store.getRelease(body.workflowSha256);
     validateProjectRequest(release?.manifest, body);
+    const preflight = await preflightProjectSkills(release.manifest, body);
+    if (!preflight.ok) {
+      json(response, 422, { ...preflight, error: "Required Night Shift Skills are unavailable" });
+      return;
+    }
     const created = await startInstance(body);
     let initialSchedule = null;
     let initialScheduleError = null;
@@ -229,6 +304,7 @@ async function handleApi(request, response, url) {
       ...store.getInstance(created.id),
       initialSchedule,
       initialScheduleError,
+      preflight,
     });
     return;
   }
@@ -367,6 +443,30 @@ async function startInstance(instance) {
       },
     },
   });
+}
+
+async function preflightProjectSkills(release, project) {
+  const agents = [];
+  for (const [role, requiredSkills] of Object.entries(requiredSkillsByRole(release))) {
+    const agentId = project.agentBindings?.[role];
+    const status = await workboard.getSkillsStatus(agentId);
+    const available = new Set(
+      (status.skills ?? [])
+        .filter((skill) => skill.eligible === true && skill.disabled !== true)
+        .map((skill) => skill.name),
+    );
+    agents.push({
+      agentId,
+      missingSkills: requiredSkills.filter((skill) => !available.has(skill)),
+      requiredSkills,
+      role,
+    });
+  }
+  return {
+    agents,
+    ok: agents.every((entry) => entry.missingSkills.length === 0),
+    workflowSha256: release.metadata.workflowSha256,
+  };
 }
 
 async function syncContentItemsManifest(instance) {

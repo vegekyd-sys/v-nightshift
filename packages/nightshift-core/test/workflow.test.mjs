@@ -83,7 +83,7 @@ test("selects route-specific material skills without creating a second workflow"
   });
   assert.equal(actions.length, 2);
   assert.deepEqual(actions[0].card.automation.skills, ["lark-doc", "scene-cli", "material-verification"]);
-  assert.deepEqual(actions[1].card.automation.skills, ["shooting-checklist-v2", "scene-cli", "material-verification"]);
+  assert.deepEqual(actions[1].card.automation.skills, ["shooting-checklist-v3", "scene-cli", "material-verification"]);
 });
 
 test("paid production approval is isolated per content item", async () => {

@@ -32,6 +32,25 @@ export function validateProjectRequest(release, project) {
   return project;
 }
 
+export function requiredSkillsByRole(release) {
+  const result = new Map();
+  const defaultRole = release?.spec?.ownerAgentRole;
+  for (const stage of release?.spec?.stages ?? []) {
+    if (stage.actor !== "agent") continue;
+    const role = stage.agentRole ?? defaultRole;
+    if (!role) continue;
+    const required = result.get(role) ?? new Set();
+    for (const skill of stage.skills ?? []) required.add(skill);
+    for (const strategy of Object.values(stage.routeStrategies ?? {})) {
+      for (const skill of strategy.skills ?? []) required.add(skill);
+    }
+    result.set(role, required);
+  }
+  return Object.fromEntries(
+    [...result.entries()].map(([role, skills]) => [role, [...skills].sort()]),
+  );
+}
+
 function inputMatchesType(value, type) {
   if (!type) return true;
   if (type === "array") return Array.isArray(value);

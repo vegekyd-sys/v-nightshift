@@ -25,4 +25,4 @@ export {
   contentItemRouteAllowed,
   normalizeContentItems,
 } from "./content-items.mjs";
-export { validateProjectRequest } from "./project.mjs";
+export { requiredSkillsByRole, validateProjectRequest } from "./project.mjs";

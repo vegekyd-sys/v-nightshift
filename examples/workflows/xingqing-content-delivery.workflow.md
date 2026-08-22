@@ -3,7 +3,7 @@ apiVersion: nightshift.versa.ai/v1alpha1
 kind: Workflow
 metadata:
   id: xingqing-content-delivery
-  version: 0.4.4-draft
+  version: 0.4.5
   name: 星擎内容交付
 spec:
   ownerAgentRole: content-operator
@@ -72,7 +72,7 @@ routeStrategies:
     skills: [lark-doc, scene-cli, material-verification]
     description: 冻结授权的产品图、品牌事实、视觉参考和生成约束；不得伪造客户事实。
   SCENE_EDIT:
-    skills: [shooting-checklist-v2, scene-cli, material-verification]
+    skills: [shooting-checklist-v3, scene-cli, material-verification]
     description: 从 Scene 验真并冻结 source_url、start_sec、end_sec；缺镜头时创建拍摄和上传待办。
 needs: [route]
 outputs: [materialReadiness, frozenInputManifest]

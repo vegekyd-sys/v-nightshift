@@ -88,6 +88,11 @@ export class WorkboardGatewayAdapter {
     return this.call("sessions.get", { key: sessionKey, limit });
   }
 
+  async getSkillsStatus(agentId) {
+    if (!agentId) throw new Error("An Agent id is required for Skill preflight");
+    return this.call("skills.status", { agentId });
+  }
+
   async call(method, params) {
     if (!this.gatewayUrl) throw new Error("NIGHTSHIFT_GATEWAY_URL is required");
     if (!this.configPath) throw new Error("OPENCLAW_CONFIG_PATH is required");

@@ -24,6 +24,9 @@ test("creates and reuses native cards through Gateway RPC", async () => {
     if (method === "sessions.get") {
       return JSON.stringify({ messages: [{ role: "assistant", content: [{ type: "text", text: params.key }] }] });
     }
+    if (method === "skills.status") {
+      return JSON.stringify({ agentId: params.agentId, skills: [{ name: "night-shift-operator", eligible: true }] });
+    }
     throw new Error(`unexpected ${method}`);
   };
   const adapter = new WorkboardGatewayAdapter({
@@ -61,4 +64,8 @@ test("creates and reuses native cards through Gateway RPC", async () => {
     key: "agent:main:subagent:workboard-card-1",
     limit: 25,
   });
+  const skills = await adapter.getSkillsStatus("main");
+  assert.equal(skills.skills[0].name, "night-shift-operator");
+  const skillsCall = calls.find(({ args }) => args[2] === "skills.status");
+  assert.deepEqual(JSON.parse(skillsCall.args[skillsCall.args.indexOf("--params") + 1]), { agentId: "main" });
 });
