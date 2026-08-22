@@ -114,7 +114,10 @@ async function handleApi(request, response, url) {
       json(response, 404, { error: "This Workboard card has no Agent Session" });
       return;
     }
-    const result = await workboard.getSession(attempt.sessionKey, { limit: 300 });
+    // Native Workboard retries reuse the same OpenClaw session. A large history
+    // can exceed the Gateway CLI response timeout before we apply the attempt
+    // time-range filter, so keep the RPC window bounded to recent run traffic.
+    const result = await workboard.getSession(attempt.sessionKey, { limit: 80 });
     const nextAttempt = attempts.find((entry) => Number(entry.startedAt) > Number(attempt.startedAt));
     const rangeStart = Number(attempt.startedAt || 0) - 5000;
     const rangeEnd = Number(attempt.endedAt || nextAttempt?.startedAt || Number.POSITIVE_INFINITY) + 5000;
