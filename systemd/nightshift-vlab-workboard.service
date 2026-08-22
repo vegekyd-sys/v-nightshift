@@ -1,0 +1,31 @@
+[Unit]
+Description=Night Shift Workboard VLab
+After=network-online.target openclaw-vlab-browser.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vlab-browser
+Group=vlab-browser
+WorkingDirectory=/srv/vlab-browser/releases/nightshift-workboard/current
+Environment=HOME=/srv/vlab-browser/home
+Environment=OPENCLAW_STATE_DIR=/srv/vlab-browser/state
+Environment=OPENCLAW_CONFIG_PATH=/srv/vlab-browser/state/openclaw.json
+Environment=NIGHTSHIFT_HOST=100.82.39.107
+Environment=NIGHTSHIFT_PORT=24880
+Environment=NIGHTSHIFT_DATA_DIR=/srv/vlab-browser/nightshift
+Environment=NIGHTSHIFT_BOARD=nightshift-lab
+Environment=NIGHTSHIFT_GATEWAY_URL=ws://100.82.39.107:23793
+Environment=NIGHTSHIFT_WORKFLOW_PATH=/srv/vlab-browser/releases/nightshift-workboard/current/examples/workflows/xingqing-content-delivery.v0.2.yaml
+Environment=NIGHTSHIFT_SEED_INSTANCE_PATH=/srv/vlab-browser/releases/nightshift-workboard/current/examples/instances/xingqing-vlab-smoke.json
+ExecStart=/opt/node-v22.23.1/bin/node --no-warnings apps/nightshift-dashboard/server/index.mjs
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/vlab-browser/nightshift
+
+[Install]
+WantedBy=multi-user.target
