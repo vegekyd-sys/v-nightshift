@@ -31,6 +31,9 @@ export function App() {
   const [delivery, setDelivery] = useState(null);
   const [deliveryState, setDeliveryState] = useState("idle");
   const [deliveryError, setDeliveryError] = useState("");
+  const [handoff, setHandoff] = useState(null);
+  const [handoffState, setHandoffState] = useState("idle");
+  const [handoffError, setHandoffError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const [projectReleaseSha, setProjectReleaseSha] = useState(null);
   const refreshInFlight = useRef(null);
@@ -56,29 +59,49 @@ export function App() {
   useEffect(() => {
     const instanceId = selected ? cardLabel(selected, "instance") : null;
     const contentItemId = selected?.metadata?.automation?.contentItemId ?? (selected ? label(selected, "content-item") : null);
-    if (!instanceId) {
+    const stageId = selected?.metadata?.automation?.stageId ?? (selected ? label(selected, "stage") : null);
+    if (!instanceId || !stageId) {
       setDelivery(null);
       setDeliveryState("idle");
       setDeliveryError("");
+      setHandoff(null);
+      setHandoffState("idle");
+      setHandoffError("");
       return undefined;
     }
     let current = true;
     setDelivery(null);
-    setDeliveryState("loading");
+    setDeliveryState("idle");
     setDeliveryError("");
-    const deliveryPath = contentItemId
-      ? `/api/instances/${encodeURIComponent(instanceId)}/content-items/${encodeURIComponent(contentItemId)}/deliverables`
-      : `/api/instances/${encodeURIComponent(instanceId)}/deliverables`;
-    api(deliveryPath)
-      .then((result) => {
+    setHandoff(null);
+    setHandoffState("loading");
+    setHandoffError("");
+    const query = contentItemId ? `?contentItemId=${encodeURIComponent(contentItemId)}` : "";
+    api(`/api/instances/${encodeURIComponent(instanceId)}/stages/${encodeURIComponent(stageId)}/handoff${query}`)
+      .then(async (result) => {
         if (!current) return;
-        setDelivery(result);
-        setDeliveryState("ready");
+        setHandoff(result);
+        setHandoffState("ready");
+        if (!result.deliveryPlacement) return;
+        setDeliveryState("loading");
+        const deliveryPath = contentItemId
+          ? `/api/instances/${encodeURIComponent(instanceId)}/content-items/${encodeURIComponent(contentItemId)}/deliverables`
+          : `/api/instances/${encodeURIComponent(instanceId)}/deliverables`;
+        try {
+          const deliveryResult = await api(deliveryPath);
+          if (!current) return;
+          setDelivery(deliveryResult);
+          setDeliveryState("ready");
+        } catch (reason) {
+          if (!current) return;
+          setDeliveryError(reason.message);
+          setDeliveryState("missing");
+        }
       })
       .catch((reason) => {
         if (!current) return;
-        setDeliveryError(reason.message);
-        setDeliveryState("missing");
+        setHandoffError(reason.message);
+        setHandoffState("error");
       });
     return () => { current = false; };
   }, [selected?.id]);
@@ -120,8 +143,8 @@ export function App() {
       <Sidebar active={active} onChange={setActive} />
       <main className="main-shell">
         {error && <div className="error-banner">{error}</div>}
-        {active === "board" && <LiveBoard data={data} query={query} setQuery={setQuery} selected={selectedForDecision} setSelected={setSelected} refreshing={refreshing} refresh={refresh} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} />}
-        {active === "workflows" && <WorkflowStudio data={data} refresh={refresh} setSelected={setSelected} selected={selectedForDecision} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} onNewProject={(release) => setProjectReleaseSha(release?.workflowSha256 ?? data?.workflows?.[0]?.workflowSha256)} />}
+        {active === "board" && <LiveBoard data={data} query={query} setQuery={setQuery} selected={selectedForDecision} setSelected={setSelected} refreshing={refreshing} refresh={refresh} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} />}
+        {active === "workflows" && <WorkflowStudio data={data} refresh={refresh} setSelected={setSelected} selected={selectedForDecision} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onNewProject={(release) => setProjectReleaseSha(release?.workflowSha256 ?? data?.workflows?.[0]?.workflowSha256)} />}
         {active === "projects" && <Projects data={data} onNewProject={() => setProjectReleaseSha(data?.workflows?.[0]?.workflowSha256)} />}
         {active === "agents" && <Agents data={data} />}
       </main>
@@ -130,7 +153,7 @@ export function App() {
   );
 }
 
-function LiveBoard({ data, query, setQuery, selected, setSelected, refreshing, refresh, decide, retry, delivery, deliveryState, deliveryError }) {
+function LiveBoard({ data, query, setQuery, selected, setSelected, refreshing, refresh, decide, retry, delivery, deliveryState, deliveryError, handoff, handoffState, handoffError }) {
   const cards = useMemo(() => (data?.cards ?? []).filter((card) => !query || card.title.toLowerCase().includes(query.toLowerCase())), [data, query]);
   const count = (statuses) => cards.filter((card) => statuses.includes(card.status)).length;
   return <>
@@ -138,12 +161,12 @@ function LiveBoard({ data, query, setQuery, selected, setSelected, refreshing, r
     <section className="metrics"><Metric label="Active agents" value={count(["running"])} tone="active" /><Metric label="Waiting review" value={count(["review"])} tone="review" /><Metric label="Blocked" value={count(["blocked"])} tone="blocked" /><Metric label="Completed" value={count(["done"])} /></section>
     <section className={`board ${selected ? "with-drawer" : ""}`}>
       <div className="board-columns">{columns.map(([id, title, statuses]) => { const items = cards.filter((card) => statuses.includes(card.status)); return <div className={`board-column column-${id}`} key={id}><div className="column-head"><h2>{title}</h2><span>{items.length}</span></div><div className="column-body">{items.map((card) => <WorkCard key={card.id} card={card} onClick={setSelected} />)}{items.length === 0 && <EmptyColumn />}</div></div>; })}</div>
-      <Drawer card={selected} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} onClose={() => setSelected(null)} onDecide={decide} onRetry={retry} />
+      <Drawer card={selected} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onClose={() => setSelected(null)} onDecide={decide} onRetry={retry} />
     </section>
   </>;
 }
 
-function WorkflowStudio({ data, refresh, setSelected, selected, decide, retry, delivery, deliveryState, deliveryError, onNewProject }) {
+function WorkflowStudio({ data, refresh, setSelected, selected, decide, retry, delivery, deliveryState, deliveryError, handoff, handoffState, handoffError, onNewProject }) {
   const groups = useMemo(() => groupWorkflowReleases(data?.workflows ?? []), [data?.workflows]);
   const [workflowId, setWorkflowId] = useState("");
   const [projectId, setProjectId] = useState("all");
@@ -191,7 +214,7 @@ function WorkflowStudio({ data, refresh, setSelected, selected, decide, retry, d
           {stages.map((stage, index) => <StageLane key={stage.id} stage={stage} index={index} tasks={taskIndex.get(stage.id) ?? []} onSelect={setSelected} />)}
         </div>
       </main>
-      <Drawer card={selected} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} onClose={() => setSelected(null)} onDecide={decide} onRetry={retry} />
+      <Drawer card={selected} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onClose={() => setSelected(null)} onDecide={decide} onRetry={retry} />
     </div>
     {editor && <WorkflowEditor initialSource={editor.source} mode={editor.mode} onClose={() => setEditor(null)} onPublished={async () => { setEditor(null); await refresh(true); }} />}
   </div>;

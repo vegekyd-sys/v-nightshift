@@ -11,7 +11,10 @@ import {
   NightShiftStore,
   normalizeArtifactPath,
   normalizeDeliverablesManifest,
+  normalizeStageHandoff,
+  presentStageHandoff,
   requiredSkillsByRole,
+  stageHandoffPath,
   validateProjectRequest,
   WorkboardGatewayAdapter,
 } from "../../../packages/nightshift-core/src/index.mjs";
@@ -153,6 +156,27 @@ async function handleApi(request, response, url) {
     const cards = url.searchParams.get("refresh") === "1" ? await refreshCards() : cardCache;
     const status = url.searchParams.get("status");
     json(response, 200, { cards: status ? cards.filter((card) => card.status === status) : cards });
+    return;
+  }
+  const stageHandoffMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/stages\/([^/]+)\/handoff$/);
+  if (request.method === "GET" && stageHandoffMatch) {
+    const instanceId = decodeURIComponent(stageHandoffMatch[1]);
+    const stageId = decodeURIComponent(stageHandoffMatch[2]);
+    const contentItemId = url.searchParams.get("contentItemId");
+    const instance = store.getInstance(instanceId);
+    if (!instance) {
+      json(response, 404, { error: "Project not found" });
+      return;
+    }
+    const release = store.getRelease(instance.workflowSha256)?.manifest;
+    if (!release?.spec?.stages?.some((entry) => entry.id === stageId)) {
+      json(response, 404, { error: "Workflow stage not found" });
+      return;
+    }
+    const runs = contentItemId ? store.listContentItemRuns(instanceId) : store.listStageRuns(instanceId);
+    const run = runs.filter((entry) => entry.stageId === stageId && (contentItemId ? entry.contentItemId === contentItemId : true)).at(-1);
+    const manifest = await loadStageHandoff({ contentItemId, instance, release, stageId });
+    json(response, 200, presentStageHandoff({ completed: run?.status === "done", manifest, release, stageId }));
     return;
   }
   const cardSessionMatch = url.pathname.match(/^\/api\/cards\/([^/]+)\/session$/);
@@ -547,6 +571,10 @@ async function loadDeliverables(instanceId, contentItemId = null) {
 
 async function validateCompletion({ contentItemId, instance, release, stageId }) {
   const stage = release?.spec?.stages?.find((entry) => entry.id === stageId);
+  if (release?.spec?.handoff?.version === 1) {
+    const manifest = await loadStageHandoff({ contentItemId, instance, release, stageId, required: true });
+    normalizeStageHandoff(manifest, { contentItemId, instanceId: instance.id, release, stageId });
+  }
   if (!stage?.outputs?.includes("deliveryManifest")) return;
   if (!contentItemId) throw new Error("deliveryManifest completion requires a content item");
   const manifest = await loadDeliverables(instance.id, contentItemId);
@@ -559,6 +587,19 @@ async function validateCompletion({ contentItemId, instance, release, stageId })
   const videoPath = await resolveDeclaredArtifact(manifest, manifest.video.path, contentItemId);
   const actualSha = await sha256File(videoPath);
   if (actualSha !== manifest.video.sha256) throw new Error("deliveryManifest video.sha256 does not match the file");
+}
+
+async function loadStageHandoff({ contentItemId = null, instance, release, required = false, stageId }) {
+  const instanceDir = instance.inputs?.nightshift?.instanceDir ?? resolve(dataDir, "instances", instance.id);
+  const manifestPath = stageHandoffPath({ instanceDir, contentItemId, release, stageId });
+  try {
+    const source = JSON.parse(await readFile(manifestPath, "utf8"));
+    return normalizeStageHandoff(source, { contentItemId, instanceId: instance.id, release, stageId });
+  } catch (error) {
+    if (error.code === "ENOENT" && !required) return null;
+    if (error.code === "ENOENT") throw new Error(`Stage handoff is required: ${stageId}`);
+    throw error;
+  }
 }
 
 async function sha256File(filePath) {

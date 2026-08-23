@@ -26,3 +26,10 @@ export {
   normalizeContentItems,
 } from "./content-items.mjs";
 export { requiredSkillsByRole, validateProjectRequest } from "./project.mjs";
+export {
+  handoffManifestExample,
+  normalizeStageHandoff,
+  presentStageHandoff,
+  stageHandoffContract,
+  stageHandoffPath,
+} from "./handoff.mjs";

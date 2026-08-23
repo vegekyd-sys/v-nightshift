@@ -108,7 +108,7 @@ export function WorkCard({ card, onClick }) {
   );
 }
 
-export function Drawer({ card, delivery, deliveryState, deliveryError, onClose, onDecide, onRetry }) {
+export function Drawer({ card, delivery, deliveryState, deliveryError, handoff, handoffState, handoffError, onClose, onDecide, onRetry }) {
   const [reviewAction, setReviewAction] = useState(null);
   const [evidence, setEvidence] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -179,9 +179,9 @@ export function Drawer({ card, delivery, deliveryState, deliveryError, onClose, 
 
   return (
     <aside className="drawer">
-      <div className="drawer-head"><div><span>项目交付</span><h2>{delivery?.title ?? card.title}</h2></div><button onClick={onClose} aria-label="关闭详情"><X size={18} /></button></div>
+      <div className="drawer-head"><div><span>阶段详情</span><h2>{delivery?.title ?? card.title}</h2></div><button onClick={onClose} aria-label="关闭详情"><X size={18} /></button></div>
       <div className="drawer-status"><StatusIcon status={card.status} /><strong>{card.status}</strong><span>{card.id?.slice(0, 8)}</span></div>
-      <DeliveryPanel delivery={delivery} state={deliveryState} error={deliveryError} showPlaceholder={card.status === "review"} />
+      <StageHandoffPanel handoff={handoff} state={handoffState} error={handoffError} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} />
       <section><h3>Execution</h3><Detail label="Agent" value={card.agentId ?? automation.agentRole ?? "—"} /><Detail label="Stage" value={automation.stageId ?? findLabel(card, "stage")} /><Detail label="Runtime" value={automation.maxRuntime ?? "—"} /><Detail label="Attempts" value={attempts.length} /></section>
       {automation.contentItemId && <section><h3>视频任务</h3><Detail label="ContentItem" value={automation.contentItemId} mono /><Detail label="Route" value={automation.contentRoute ?? findLabel(card, "route")} /></section>}
       <NativeWorkboardActivity card={card} />
@@ -229,6 +229,47 @@ export function Drawer({ card, delivery, deliveryState, deliveryError, onClose, 
   );
 }
 
+function StageHandoffPanel({ handoff, state, error, delivery, deliveryState, deliveryError }) {
+  if (state === "loading") return <section className="handoff-panel handoff-loading"><div className="delivery-skeleton" /><span>正在载入阶段输入与输出…</span></section>;
+  if (!handoff) return <section className="handoff-panel handoff-empty"><AlertTriangle size={17} /><span>{error || "这张卡没有可用的阶段交接信息。"}</span></section>;
+  const previous = handoff.previous?.length ? handoff.previous.map((entry) => entry.title).join("、") : "项目输入";
+  const next = handoff.next?.length ? handoff.next.map((entry) => entry.title).join("、") : "流程结束";
+  return <section className="handoff-panel">
+    <div className="handoff-flow" aria-label="阶段流转"><span>{previous}</span><ChevronRight size={13} /><strong>{handoff.stage.title}</strong><ChevronRight size={13} /><span>{next}</span></div>
+    {!handoff.recorded && <div className="handoff-legacy">历史任务：按 Workflow 推导输入与输出；新任务会记录实际交接摘要。</div>}
+    <HandoffGroup title="Input｜上一步交给本阶段" entries={handoff.inputs} />
+    {handoff.deliveryPlacement === "input" && <DeliveryPanel delivery={delivery} state={deliveryState} error={deliveryError} showPlaceholder contextLabel="本阶段输入" />}
+    <HandoffGroup title="Output｜本阶段交给下一步" entries={handoff.outputs} />
+    {handoff.deliveryPlacement === "output" && <DeliveryPanel delivery={delivery} state={deliveryState} error={deliveryError} showPlaceholder contextLabel="本阶段输出" />}
+  </section>;
+}
+
+function HandoffGroup({ entries = [], title }) {
+  return <div className="handoff-group"><h3>{title}</h3>{entries.length > 0 ? <div className="handoff-items">{entries.map((entry) => <article key={`${entry.sourceStage}:${entry.name}`} className={`handoff-item state-${entry.status}`}><div><strong>{humanArtifactName(entry.name)}</strong><span>{entry.sourceStage}</span></div>{entry.summary && <p>{entry.summary}</p>}<small>{entry.artifact ? entry.artifact.split("/").at(-1) : entry.status === "completed-unregistered" ? "阶段已完成 · 未登记交接摘要" : "等待阶段产出"}</small></article>)}</div> : <p className="handoff-none">没有上一步；本阶段直接使用项目输入。</p>}</div>;
+}
+
+function humanArtifactName(name) {
+  const labels = {
+    approvedAssetVersion: "已批准版本",
+    contentItemsManifest: "内容任务清单",
+    deliveryManifest: "交付清单",
+    finishedAsset: "最终成片",
+    finishedVideoBrief: "成片 Brief",
+    frozenInputManifest: "冻结输入清单",
+    machineQc: "机器 QC",
+    materialReadiness: "素材准备结果",
+    metricsSnapshot: "数据快照",
+    planUrl: "策划案",
+    publicationEvidence: "发布证据",
+    publishTask: "发布任务",
+    publicUrl: "公开链接",
+    requirementSnapshot: "需求快照",
+    retrospective: "复盘建议",
+    routeDecision: "路线判断",
+  };
+  return labels[name] ?? name;
+}
+
 function NativeWorkboardActivity({ card }) {
   const items = nativeActivityItems(card);
   return <section className="native-activity"><div className="native-section-head"><div><h3>Workboard Activity</h3><span>原生卡片事件</span></div><span>{items.length}</span></div>{items.length > 0 ? <ol>{items.slice(-24).map((item) => <li key={item.key}><span className={`activity-dot tone-${item.tone}`} /><div><strong>{item.title}</strong><small>{formatDateTime(item.timestamp)}</small>{item.body && <p>{item.body}</p>}</div></li>)}</ol> : <p className="native-empty">这张卡尚无运行事件。</p>}</section>;
@@ -261,7 +302,7 @@ function SessionPart({ part }) {
   return <div className="session-structured"><span>{part?.type ?? "content"}</span><pre>{JSON.stringify(part, null, 2)}</pre></div>;
 }
 
-function DeliveryPanel({ delivery, state, error, showPlaceholder }) {
+function DeliveryPanel({ delivery, state, error, showPlaceholder, contextLabel = "交付内容" }) {
   if (state === "loading") return <section className="delivery-panel delivery-loading"><div className="delivery-skeleton" /><span>正在载入交付内容…</span></section>;
   if (!delivery) {
     if (!showPlaceholder) return null;
@@ -272,7 +313,7 @@ function DeliveryPanel({ delivery, state, error, showPlaceholder }) {
     delivery.video.width && delivery.video.height ? `${delivery.video.width}×${delivery.video.height}` : null,
   ].filter(Boolean);
   return <section className="delivery-panel">
-    <div className="delivery-heading"><div><span>DELIVERABLES</span><h3>交付内容</h3></div><span className={`qc-badge qc-${delivery.qc.status}`}><ShieldCheck size={13} />QC {delivery.qc.status === "passed" ? "通过" : delivery.qc.status}</span></div>
+    <div className="delivery-heading"><div><span>DELIVERABLE</span><h3>{contextLabel}</h3></div><span className={`qc-badge qc-${delivery.qc.status}`}><ShieldCheck size={13} />QC {delivery.qc.status === "passed" ? "通过" : delivery.qc.status}</span></div>
     <div className="video-frame">
       <video aria-label={delivery.video.title} controls playsInline preload="metadata" poster={delivery.video.posterUrl ?? undefined}>
         <source src={delivery.video.url} type={delivery.video.mimeType} />

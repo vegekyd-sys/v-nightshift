@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { handoffManifestExample, stageHandoffContract, stageHandoffPath } from "./handoff.mjs";
 import { interpolate, stageSkills } from "./workflow.mjs";
 
 const ACTIVE_STATUSES = new Set(["ready", "running"]);
@@ -193,6 +194,20 @@ export function buildAgentBrief(release, instance, stage, contentItem = null) {
   const strategy = contentItem?.route ? stage.routeStrategies?.[contentItem.route] : null;
   const instanceDir = instance.inputs?.nightshift?.instanceDir;
   const itemDir = contentItem && instanceDir ? `${instanceDir}/content-items/${contentItem.id}` : null;
+  const handoffEnabled = release.spec?.handoff?.version === 1 && instanceDir;
+  const handoffContract = handoffEnabled ? stageHandoffContract(release, stage.id) : null;
+  const handoffPath = handoffEnabled ? stageHandoffPath({
+    instanceDir,
+    contentItemId: contentItem?.id ?? null,
+    release,
+    stageId: stage.id,
+  }) : null;
+  const upstreamHandoffPaths = handoffEnabled ? handoffContract.previous.map((upstream) => stageHandoffPath({
+    instanceDir,
+    contentItemId: contentItem?.id ?? null,
+    release,
+    stageId: upstream.id,
+  })) : [];
   return [
     `Night Shift workflow: ${release.metadata.name} (${release.metadata.version})`,
     `Instance: ${instance.id}`,
@@ -208,6 +223,11 @@ export function buildAgentBrief(release, instance, stage, contentItem = null) {
       ? [`Route writeback contract: update only this ContentItem in ${instance.inputs.nightshift.contentItemsManifestPath}; preserve every other item and stable id.`]
       : []),
     ...(itemDir ? [`Content item artifact directory: ${itemDir}`] : []),
+    ...(handoffEnabled ? [
+      `Stage handoff inputs: ${upstreamHandoffPaths.length > 0 ? `read ${upstreamHandoffPaths.join(", ")} and every artifact they reference before acting` : "use the declared project inputs as the authoritative source"}.`,
+      `Stage handoff output: after finishing the declared outputs, write ${handoffPath} using exactly this v1 shape: ${JSON.stringify(handoffManifestExample({ instanceId: instance.id, contentItemId: contentItem?.id ?? null, release, stageId: stage.id }))}`,
+      "The handoff summary is for people; the referenced artifacts are authoritative. Do not silently drop, rewrite, or replace an upstream requirement.",
+    ] : []),
     ...(stage.outputs?.includes("deliveryManifest") && itemDir
       ? [`Delivery contract: write exactly this v1 shape to ${itemDir}/deliverables.json (paths are relative to ${itemDir}): ${JSON.stringify(deliveryManifestExample(instance.id, contentItem))}`]
       : []),

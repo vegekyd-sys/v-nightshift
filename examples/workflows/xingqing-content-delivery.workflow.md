@@ -8,6 +8,7 @@ metadata:
 spec:
   ownerAgentRole: content-operator
   concurrency: {perInstance: 8, maxActiveInstances: 3}
+  handoff: {version: 1, mode: stage-input-output}
   contentItems:
     routes: [AI_GENERATE, SCENE_EDIT]
     maxItems: 30

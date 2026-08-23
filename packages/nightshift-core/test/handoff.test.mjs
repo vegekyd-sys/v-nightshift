@@ -1,0 +1,45 @@
+import assert from "node:assert/strict";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import test from "node:test";
+import {
+  compileWorkflow,
+  handoffManifestExample,
+  loadWorkflow,
+  normalizeStageHandoff,
+  presentStageHandoff,
+  stageHandoffContract,
+  stageHandoffPath,
+} from "../src/index.mjs";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const fixture = resolve(here, "../../../examples/workflows/xingqing-content-delivery.workflow.md");
+
+test("derives each stage input from only its immediate predecessors", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const route = stageHandoffContract(release, "route");
+  assert.deepEqual(route.previous.map((entry) => entry.id), ["plan"]);
+  assert.deepEqual(route.inputs.map((entry) => entry.name), ["requirementSnapshot", "planUrl", "contentItemsManifest"]);
+  assert.deepEqual(route.outputs.map((entry) => entry.name), ["routeDecision"]);
+  assert.deepEqual(route.next.map((entry) => entry.id), ["materials"]);
+  assert.equal(presentStageHandoff({ release, stageId: "route", completed: true }).deliveryPlacement, null);
+});
+
+test("places the finished video only on produce output and downstream input", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  assert.equal(presentStageHandoff({ release, stageId: "produce" }).deliveryPlacement, "output");
+  assert.equal(presentStageHandoff({ release, stageId: "review" }).deliveryPlacement, "input");
+});
+
+test("validates a recorded handoff against workflow input and output names", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const example = handoffManifestExample({ instanceId: "NS-1", contentItemId: "video-1", release, stageId: "route" });
+  const normalized = normalizeStageHandoff(example, { instanceId: "NS-1", contentItemId: "video-1", release, stageId: "route" });
+  assert.equal(normalized.outputs[0].name, "routeDecision");
+  assert.throws(
+    () => normalizeStageHandoff({ ...example, outputs: [] }, { instanceId: "NS-1", contentItemId: "video-1", release, stageId: "route" }),
+    /do not match/,
+  );
+  assert.match(stageHandoffPath({ instanceDir: "/srv/nightshift/NS-1", contentItemId: "video-1", release, stageId: "route" }), /content-items\/video-1\/handoffs\/route\.json$/);
+  assert.match(stageHandoffPath({ instanceDir: "/srv/nightshift/NS-1", release, stageId: "plan" }), /NS-1\/handoffs\/plan\.json$/);
+});
