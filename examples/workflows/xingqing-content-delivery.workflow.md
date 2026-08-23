@@ -3,7 +3,7 @@ apiVersion: nightshift.versa.ai/v1alpha1
 kind: Workflow
 metadata:
   id: xingqing-content-delivery
-  version: 0.4.6
+  version: 0.4.7
   name: 星擎内容交付
 spec:
   ownerAgentRole: content-operator
@@ -148,7 +148,7 @@ next: [publish-feedback]
 
 ### Goal
 
-对已批准版本按授权范围幂等发布、回收真实链接与数据，并形成下一轮建议；等待统计属于本阶段子状态。
+使用 geelark-cloud-phone 将已批准版本发布到授权的 TikTok 账号，回收真实 TikTok 链接与数据，并形成下一轮建议；没有 publicUrl 和发布证据时不得报告完成，等待统计属于本阶段子状态。
 
 ```stage
 actor: agent

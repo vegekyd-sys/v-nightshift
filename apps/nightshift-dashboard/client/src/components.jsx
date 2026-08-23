@@ -14,6 +14,8 @@ import {
   FileCode2,
   GitBranch,
   LayoutDashboard,
+  PanelLeftClose,
+  PanelLeftOpen,
   Play,
   RefreshCw,
   Search,
@@ -40,6 +42,8 @@ export const Icons = {
   FileCode2,
   GitBranch,
   LayoutDashboard,
+  PanelLeftClose,
+  PanelLeftOpen,
   Play,
   RefreshCw,
   Search,
@@ -50,7 +54,7 @@ export const Icons = {
   X,
 };
 
-export function Sidebar({ active, onChange }) {
+export function Sidebar({ active, collapsed, onChange, onToggle }) {
   const items = [
     ["board", "Live Board", LayoutDashboard],
     ["workflows", "Workflows", Workflow],
@@ -58,10 +62,11 @@ export function Sidebar({ active, onChange }) {
     ["agents", "Agents", Bot],
   ];
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar ${collapsed ? "is-collapsed" : ""}`}>
       <div className="brand">
         <span className="brand-mark"><Sparkles size={17} /></span>
         <div><strong>Night Shift</strong><span>Powered by V</span></div>
+        <button className="sidebar-toggle" aria-label={collapsed ? "展开主菜单" : "收起主菜单"} title={collapsed ? "展开主菜单" : "收起主菜单"} onClick={onToggle}>{collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}</button>
       </div>
       <nav>
         {items.map(([id, label, Icon]) => (
@@ -182,6 +187,7 @@ export function Drawer({ card, delivery, deliveryState, deliveryError, handoff, 
       <div className="drawer-head"><div><span>阶段详情</span><h2>{delivery?.title ?? card.title}</h2></div><button onClick={onClose} aria-label="关闭详情"><X size={18} /></button></div>
       <div className="drawer-status"><StatusIcon status={card.status} /><strong>{card.status}</strong><span>{card.id?.slice(0, 8)}</span></div>
       <StageHandoffPanel handoff={handoff} state={handoffState} error={handoffError} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} />
+      {(automation.skills?.length ?? 0) > 0 && <section className="stage-skills"><h3>本阶段使用的 Skills</h3><div>{automation.skills.map((skill) => <span key={skill}><Wrench size={11} />{skill}</span>)}</div></section>}
       <section><h3>Execution</h3><Detail label="Agent" value={card.agentId ?? automation.agentRole ?? "—"} /><Detail label="Stage" value={automation.stageId ?? findLabel(card, "stage")} /><Detail label="Runtime" value={automation.maxRuntime ?? "—"} /><Detail label="Attempts" value={attempts.length} /></section>
       {automation.contentItemId && <section><h3>视频任务</h3><Detail label="ContentItem" value={automation.contentItemId} mono /><Detail label="Route" value={automation.contentRoute ?? findLabel(card, "route")} /></section>}
       <NativeWorkboardActivity card={card} />
@@ -245,7 +251,7 @@ function StageHandoffPanel({ handoff, state, error, delivery, deliveryState, del
 }
 
 function HandoffGroup({ entries = [], title }) {
-  return <div className="handoff-group"><h3>{title}</h3>{entries.length > 0 ? <div className="handoff-items">{entries.map((entry) => <article key={`${entry.sourceStage}:${entry.name}`} className={`handoff-item state-${entry.status}`}><div><strong>{humanArtifactName(entry.name)}</strong><span>{entry.sourceStage}</span></div>{entry.summary && <p>{entry.summary}</p>}<small>{entry.artifact ? entry.artifact.split("/").at(-1) : entry.status === "completed-unregistered" ? "阶段已完成 · 未登记交接摘要" : "等待阶段产出"}</small></article>)}</div> : <p className="handoff-none">没有上一步；本阶段直接使用项目输入。</p>}</div>;
+  return <div className="handoff-group"><h3>{title}</h3>{entries.length > 0 ? <div className="handoff-items">{entries.map((entry) => <article key={`${entry.sourceStage}:${entry.name}`} className={`handoff-item state-${entry.status}`}><div><strong>{humanArtifactName(entry.name)}</strong><span>{entry.sourceStage}</span></div>{entry.summary && <p>{entry.summary}</p>}{entry.artifactUrl ? <a className="handoff-artifact-link" href={entry.artifactUrl} target="_blank" rel="noreferrer"><span>{entry.name === "publicUrl" ? "打开发布页面" : "查看交付证据"}</span><ExternalLink size={12} /></a> : <small className={entry.name === "publicUrl" && entry.status === "completed-unregistered" ? "missing-publication-link" : ""}>{entry.artifact ? entry.artifact.split("/").at(-1) : entry.name === "publicUrl" && entry.status === "completed-unregistered" ? "未登记实际发布链接" : entry.status === "completed-unregistered" ? "阶段已完成 · 未登记交接摘要" : "等待阶段产出"}</small>}</article>)}</div> : <p className="handoff-none">没有上一步；本阶段直接使用项目输入。</p>}</div>;
 }
 
 function humanArtifactName(name) {

@@ -69,6 +69,17 @@ test("validates a recorded handoff against workflow input and output names", asy
   assert.match(stageHandoffPath({ instanceDir: "/srv/nightshift/NS-1", release, stageId: "plan" }), /NS-1\/handoffs\/plan\.json$/);
 });
 
+test("exposes a recorded https publication artifact as a clickable link", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const example = handoffManifestExample({ instanceId: "NS-1", contentItemId: "video-1", release, stageId: "publish-feedback" });
+  const publicUrl = example.outputs.find((entry) => entry.name === "publicUrl");
+  publicUrl.artifact = "https://www.tiktok.com/@example/video/123";
+  const manifest = normalizeStageHandoff(example, { instanceId: "NS-1", contentItemId: "video-1", release, stageId: "publish-feedback" });
+  const presented = presentStageHandoff({ completed: true, manifest, release, stageId: "publish-feedback" });
+  assert.equal(presented.outputs.find((entry) => entry.name === "publicUrl").artifactUrl, publicUrl.artifact);
+  assert.equal(presented.outputs.find((entry) => entry.name === "publicationEvidence").artifactUrl, null);
+});
+
 test("records a human review as the output handed to publication", async () => {
   const release = compileWorkflow(await loadWorkflow(fixture));
   const manifest = humanStageHandoff({

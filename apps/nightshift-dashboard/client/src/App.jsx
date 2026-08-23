@@ -41,6 +41,7 @@ export function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [projectReleaseSha, setProjectReleaseSha] = useState(null);
   const [workflowProjectId, setWorkflowProjectId] = useState(initialLocation.project);
+  const [navigationCollapsed, setNavigationCollapsed] = useState(() => typeof window !== "undefined" && window.localStorage.getItem("nightshift.navigationCollapsed") === "true");
   const refreshInFlight = useRef(null);
   const selectedForDecision = useMemo(() => withDecisionContext(selected, data), [selected, data]);
 
@@ -64,6 +65,10 @@ export function App() {
   useEffect(() => {
     updateDashboardLocation({ view: active });
   }, [active]);
+
+  useEffect(() => {
+    window.localStorage.setItem("nightshift.navigationCollapsed", String(navigationCollapsed));
+  }, [navigationCollapsed]);
 
   useEffect(() => {
     if (!data || deepLinkApplied.current) return;
@@ -162,8 +167,8 @@ export function App() {
   }
 
   return (
-    <div className="app-shell">
-      <Sidebar active={active} onChange={setActive} />
+    <div className={`app-shell ${navigationCollapsed ? "navigation-collapsed" : ""}`}>
+      <Sidebar active={active} collapsed={navigationCollapsed} onChange={setActive} onToggle={() => setNavigationCollapsed((value) => !value)} />
       <main className="main-shell">
         {error && <div className="error-banner">{error}</div>}
         {active === "board" && <LiveBoard data={data} query={query} setQuery={setQuery} selected={selectedForDecision} setSelected={setSelected} refreshing={refreshing} refresh={refresh} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} />}
@@ -179,11 +184,13 @@ export function App() {
 function LiveBoard({ data, query, setQuery, selected, setSelected, refreshing, refresh, decide, retry, delivery, deliveryState, deliveryError, handoff, handoffState, handoffError }) {
   const cards = useMemo(() => (data?.cards ?? []).filter((card) => !query || card.title.toLowerCase().includes(query.toLowerCase())), [data, query]);
   const count = (statuses) => cards.filter((card) => statuses.includes(card.status)).length;
+  const [mobileColumn, setMobileColumn] = useState("running");
   return <>
     <header className="topbar"><div><span className="section-label">Night Shift operations</span><h1>Live Workboard</h1></div><div className="top-actions"><label className="search"><Icons.Search size={16} /><input aria-label="Search cards" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search work" /></label><button onClick={() => refresh(true)} className="refresh-button">{refreshing ? "Refreshing…" : "Refresh"}</button></div></header>
     <section className="metrics"><Metric label="Active agents" value={count(["running"])} tone="active" /><Metric label="Waiting review" value={count(["review"])} tone="review" /><Metric label="Blocked" value={count(["blocked"])} tone="blocked" /><Metric label="Completed" value={count(["done"])} /></section>
+    <nav className="mobile-board-tabs" aria-label="任务状态">{columns.map(([id, title, statuses]) => <button className={mobileColumn === id ? "active" : ""} key={id} onClick={() => setMobileColumn(id)}><span>{title}</span><strong>{count(statuses)}</strong></button>)}</nav>
     <section className={`board ${selected ? "with-drawer" : ""}`}>
-      <div className="board-columns">{columns.map(([id, title, statuses]) => { const items = cards.filter((card) => statuses.includes(card.status)); return <div className={`board-column column-${id}`} key={id}><div className="column-head"><h2>{title}</h2><span>{items.length}</span></div><div className="column-body">{items.map((card) => <WorkCard key={card.id} card={card} onClick={setSelected} />)}{items.length === 0 && <EmptyColumn />}</div></div>; })}</div>
+      <div className="board-columns">{columns.map(([id, title, statuses]) => { const items = cards.filter((card) => statuses.includes(card.status)); return <div className={`board-column column-${id} ${mobileColumn === id ? "mobile-active" : ""}`} key={id}><div className="column-head"><h2>{title}</h2><span>{items.length}</span></div><div className="column-body">{items.map((card) => <WorkCard key={card.id} card={card} onClick={setSelected} />)}{items.length === 0 && <EmptyColumn />}</div></div>; })}</div>
       <Drawer card={selected} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onClose={() => setSelected(null)} onDecide={decide} onRetry={retry} />
     </section>
   </>;
@@ -196,6 +203,7 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
   const [projectId, setProjectId] = useState(initialProjectId ?? "all");
   const [mobileStageId, setMobileStageId] = useState("");
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
+  const [libraryCollapsed, setLibraryCollapsed] = useState(() => typeof window !== "undefined" && window.localStorage.getItem("nightshift.workflowLibraryCollapsed") === "true");
   const [editor, setEditor] = useState(null);
   useEffect(() => {
     if (!groups.length) return;
@@ -223,6 +231,9 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
     if (!data) return;
     updateDashboardLocation({ project: projectId === "all" ? null : projectId, workflow: workflowId || null });
   }, [data, projectId, workflowId]);
+  useEffect(() => {
+    window.localStorage.setItem("nightshift.workflowLibraryCollapsed", String(libraryCollapsed));
+  }, [libraryCollapsed]);
   const visibleProjects = projectId === "all" ? projects : projects.filter((project) => project.id === projectId);
   const pinnedRelease = projectId === "all" ? group?.releases[0] : group?.releases.find((release) => release.workflowSha256 === visibleProjects[0]?.workflowSha256);
   const stages = pinnedRelease?.manifest?.spec?.stages ?? [];
@@ -242,7 +253,8 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
 
   return <div className="workflow-screen workflow-studio">
     <header className="topbar workflow-topbar">
-      <div className="workflow-title"><span className="section-label">V · Workflow control room</span><h1>{group.name}</h1><p className="topbar-copy">V 正在协调多个 Agent 沿同一条生产线并行推进。</p></div>
+      <div className="workflow-title"><span className="section-label">V · Workflow control room</span><h1>{group.name}</h1><p className={`topbar-copy workflow-live-line ${activeTasks.length ? "is-live" : ""}`}><span />{activeTasks.length ? `${activeTasks.length} 个任务运行中` : "本轮调度完成"} · {liveSummary.review ?? 0} 个待审核 · {visibleProjects.length} 个项目</p></div>
+      <div className="workflow-header-stats" aria-label="Workflow 状态"><span><strong>{liveSummary.running ?? 0}</strong>进行中</span><span><strong>{liveSummary.review ?? 0}</strong>待审核</span><span><strong>{liveSummary.done ?? 0}</strong>已完成</span></div>
       <div className="top-actions desktop-workflow-actions"><button onClick={() => setEditor({ mode: "import", source: "" })}><Upload size={15} />导入 Workflow</button><button onClick={() => setEditor({ mode: "edit", source: group.releases[0].sourceMarkdown ?? group.releases[0].sourceYaml })}><FilePenLine size={15} />编辑 Workflow</button><button className="primary" onClick={() => setEditor({ mode: "create", source: newWorkflowSource() })}><Plus size={15} />新建 Workflow</button></div>
       <button className="mobile-workflow-menu-button" aria-label="Workflow 操作" aria-expanded={mobileActionsOpen} onClick={() => setMobileActionsOpen((value) => !value)}><MoreHorizontal size={19} /></button>
       {mobileActionsOpen && <div className="mobile-workflow-menu">
@@ -251,25 +263,16 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
         <button onClick={() => { setMobileActionsOpen(false); setEditor({ mode: "create", source: newWorkflowSource() }); }}><Plus size={15} />新建 Workflow</button>
       </div>}
     </header>
-    <div className={`workflow-workspace ${selected ? "with-drawer" : ""}`}>
+    <div className={`workflow-workspace ${libraryCollapsed ? "library-collapsed" : ""} ${selected ? "with-drawer" : ""}`}>
       <aside className="workflow-library" aria-label="Workflow 列表">
-        <div className="library-head"><strong>Workflows</strong><span>{groups.length}</span></div>
+        <div className="library-head"><strong>Workflows</strong><span>{groups.length}</span><button aria-label={libraryCollapsed ? "展开 Workflow 列表" : "收起 Workflow 列表"} title={libraryCollapsed ? "展开 Workflow 列表" : "收起 Workflow 列表"} onClick={() => setLibraryCollapsed((value) => !value)}>{libraryCollapsed ? <Icons.PanelLeftOpen size={15} /> : <Icons.PanelLeftClose size={15} />}</button></div>
         {groups.map((entry) => {
           const shas = new Set(entry.releases.map((release) => release.workflowSha256));
           const count = (data?.instances ?? []).filter((instance) => shas.has(instance.workflowSha256)).length;
-          return <button className={entry.id === group.id ? "selected" : ""} key={entry.id} onClick={() => { setWorkflowId(entry.id); setProjectId("all"); }}><span className="workflow-signal" /><div><strong>{entry.name}</strong><small>{count} 个项目 · {entry.releases[0].version}</small></div></button>;
+          return <button className={entry.id === group.id ? "selected" : ""} title={entry.name} key={entry.id} onClick={() => { setWorkflowId(entry.id); setProjectId("all"); }}><span className="workflow-signal" /><div><strong>{entry.name}</strong><small>{count} 个项目 · {entry.releases[0].version}</small></div></button>;
         })}
       </aside>
       <main className="workflow-runway">
-        <section className={`workflow-command ${activeTasks.length ? "is-live" : "is-ready"}`}>
-          <div className="v-command-avatar"><img src="/v-avatar.jpg" alt="V" /><span /></div>
-          <div className="command-copy"><span>{activeTasks.length ? "LIVE ORCHESTRATION" : "PRODUCTION LINE READY"}</span><strong>{activeTasks.length ? `V 正在调度 ${activeTasks.length} 个并行任务` : "V 已完成本轮调度，等待新的任务"}</strong><small>{visibleProjects.length} 个项目在当前视野 · 原生 Workboard 实时同步</small></div>
-          <div className="command-agents agent-constellation" aria-label="并行 Agent 任务">
-            {(activeTasks.length ? activeTasks : allTasks.filter((task) => task.status === "review").slice(0, 5)).slice(0, 8).map((task, index) => <span key={`${task.projectId}-${task.stageId}-${index}`} title={task.contentTitle ?? task.projectName}><i /></span>)}
-            {(activeTasks.length || liveSummary.review) > 8 && <b>+{(activeTasks.length || liveSummary.review) - 8}</b>}
-          </div>
-          <div className="command-stats"><div><strong>{liveSummary.running ?? 0}</strong><span>进行中</span></div><div><strong>{liveSummary.review ?? 0}</strong><span>待审核</span></div><div><strong>{liveSummary.done ?? 0}</strong><span>已完成</span></div></div>
-        </section>
         <div className="runway-toolbar">
           <div className="release-identity"><span className="mono">{pinnedRelease?.version}</span><strong>{stages.length} 个阶段</strong><small>SHA {pinnedRelease?.workflowSha256.slice(0, 12)}</small></div>
           <div className="runway-actions">
@@ -460,7 +463,7 @@ function Projects({ data, onNewProject, onOpenProject, refresh }) {
       await refresh(true);
     } catch (reason) { setDeleteError(reason.message); }
   }
-  return <div className="simple-screen projects-screen"><header className="topbar"><div><span className="section-label">V · Workflow instances</span><h1>Projects</h1><p className="topbar-copy">每个项目是一条由 V 驱动、锁定 Workflow 版本的生产线。</p></div><div className="top-actions"><button className="primary" onClick={onNewProject}><Plus size={15} />新建项目</button></div></header><div className="project-table"><div className="table-head"><span>Project</span><span>Workflow</span><span>视频任务</span><span>Status</span><span>Updated</span><span /></div>{(data?.instances ?? []).map((instance) => <div className="table-row" role="button" tabIndex="0" onClick={() => onOpenProject(instance.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onOpenProject(instance.id); }} key={instance.id}><strong>{instance.name}</strong><span className="mono">{instance.workflowSha256.slice(0, 12)}</span><span>{instance.contentItems?.length ?? 0} 条 · {routeSummary(instance.contentItems)}</span><span className={`project-status status-${instance.status}`}>{instance.status}</span><span>{new Date(instance.updatedAt).toLocaleString()}</span><button className="project-delete" aria-label={`删除项目 ${instance.name}`} title="删除项目" onClick={(event) => { event.stopPropagation(); setDeleteError(""); setDeleting(instance); }}><Trash2 size={15} /></button></div>)}</div>{deleting && <div className="confirm-scrim" role="dialog" aria-modal="true" aria-label="删除项目"><div className="confirm-dialog"><span className="confirm-icon"><Trash2 size={20} /></span><h2>删除这个项目？</h2><p><strong>{deleting.name}</strong> 将从 V 的工作视野中移除。运行中的项目不会被强制删除。</p>{deleteError && <div className="confirm-error">{deleteError}</div>}<div><button onClick={() => setDeleting(null)}>取消</button><button className="danger" onClick={() => archiveProject(deleting)}>删除项目</button></div></div></div>}</div>;
+  return <div className="simple-screen projects-screen"><header className="topbar"><div><span className="section-label">V · Workflow instances</span><h1>Projects</h1><p className="topbar-copy">每个项目是一条由 V 驱动、锁定 Workflow 版本的生产线。</p></div><div className="top-actions"><button className="primary" onClick={onNewProject}><Plus size={15} />新建项目</button></div></header><div className="project-table"><div className="table-head"><span>Project</span><span>Workflow</span><span>视频任务</span><span>Status</span><span>Updated</span><span /></div>{(data?.instances ?? []).map((instance) => <div className="table-row" role="button" tabIndex="0" onClick={() => onOpenProject(instance.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onOpenProject(instance.id); }} key={instance.id}><strong className="project-name">{instance.name}</strong><span className="project-workflow mono">{instance.workflowSha256.slice(0, 12)}</span><span className="project-content">{instance.contentItems?.length ?? 0} 条 · {routeSummary(instance.contentItems)}</span><span className={`project-status status-${instance.status}`}>{instance.status}</span><span className="project-updated">{new Date(instance.updatedAt).toLocaleString()}</span><button className="project-delete" aria-label={`删除项目 ${instance.name}`} title="删除项目" onClick={(event) => { event.stopPropagation(); setDeleteError(""); setDeleting(instance); }}><Trash2 size={15} /></button></div>)}</div>{deleting && <div className="confirm-scrim" role="dialog" aria-modal="true" aria-label="删除项目"><div className="confirm-dialog"><span className="confirm-icon"><Trash2 size={20} /></span><h2>删除这个项目？</h2><p><strong>{deleting.name}</strong> 将从 V 的工作视野中移除。运行中的项目不会被强制删除。</p>{deleteError && <div className="confirm-error">{deleteError}</div>}<div><button onClick={() => setDeleting(null)}>取消</button><button className="danger" onClick={() => archiveProject(deleting)}>删除项目</button></div></div></div>}</div>;
 }
 
 function Agents({ data }) {
@@ -468,7 +471,7 @@ function Agents({ data }) {
     ...(data?.cards ?? []).map((card) => card.agentId),
     ...(data?.instances ?? []).flatMap((instance) => Object.values(instance.agentBindings ?? {})),
   ].filter(Boolean))];
-  return <div className="simple-screen"><header className="topbar"><div><span className="section-label">OpenClaw workers</span><h1>Agents</h1></div></header><div className="agent-list">{agents.length ? agents.map((agent) => <div className="agent-row" key={agent}><span className="agent-avatar"><Icons.Bot size={18} /></span><div><strong>{agent}</strong><span>Workflow binding or native Workboard assignment</span></div><span className="live-dot" /></div>) : <p className="empty-copy">No agent binding has been declared.</p>}</div></div>;
+  return <div className="simple-screen agents-screen"><header className="topbar"><div><span className="section-label">OpenClaw workers</span><h1>Agents</h1><p className="topbar-copy">当前参与 Workflow 与原生 Workboard 的 Agent。</p></div></header><div className="agent-list">{agents.length ? agents.map((agent) => <div className="agent-row" key={agent}><span className="agent-avatar"><Icons.Bot size={18} /></span><div><strong>{agent}</strong><span>Workflow binding or native Workboard assignment</span></div><span className="live-dot" /></div>) : <p className="empty-copy">No agent binding has been declared.</p>}</div></div>;
 }
 
 function label(card, prefix) { return card.labels?.find((entry) => entry.startsWith(`${prefix}:`))?.slice(prefix.length + 1); }

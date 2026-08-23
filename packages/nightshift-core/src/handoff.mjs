@@ -140,8 +140,19 @@ function presentEntry(expected, recorded, complete) {
     ...expected,
     summary: recorded?.summary ?? null,
     artifact: recorded?.artifact ?? null,
+    artifactUrl: safeExternalUrl(recorded?.artifact),
     status: recorded ? "recorded" : complete ? "completed-unregistered" : "expected",
   };
+}
+
+function safeExternalUrl(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
 }
 
 function assertSameKeys(actual, expected, kind) {
