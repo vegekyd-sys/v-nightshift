@@ -84,6 +84,8 @@ export class NightShiftStore {
         status TEXT NOT NULL,
         actor TEXT NOT NULL,
         evidence TEXT,
+        binding_json TEXT,
+        binding_hash TEXT,
         approval_card_id TEXT,
         expires_at TEXT,
         created_at TEXT NOT NULL
@@ -100,6 +102,12 @@ export class NightShiftStore {
     const approvalColumns = this.db.prepare("PRAGMA table_info(approvals)").all();
     if (!approvalColumns.some((column) => column.name === "content_item_id")) {
       this.db.exec("ALTER TABLE approvals ADD COLUMN content_item_id TEXT");
+    }
+    if (!approvalColumns.some((column) => column.name === "binding_json")) {
+      this.db.exec("ALTER TABLE approvals ADD COLUMN binding_json TEXT");
+    }
+    if (!approvalColumns.some((column) => column.name === "binding_hash")) {
+      this.db.exec("ALTER TABLE approvals ADD COLUMN binding_hash TEXT");
     }
   }
 
@@ -340,8 +348,8 @@ export class NightShiftStore {
       .prepare(`
         INSERT INTO approvals(
           id, instance_id, stage_id, content_item_id, effect, scope, status, actor, evidence,
-          approval_card_id, expires_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          binding_json, binding_hash, approval_card_id, expires_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         id,
@@ -353,6 +361,8 @@ export class NightShiftStore {
         approval.status,
         approval.actor,
         approval.evidence ?? null,
+        approval.bindings ? JSON.stringify(approval.bindings) : null,
+        approval.bindingHash ?? null,
         approval.cardId ?? null,
         approval.expiresAt ?? null,
         now.toISOString(),
@@ -370,11 +380,16 @@ export class NightShiftStore {
     return this.db
       .prepare(`
         SELECT id, instance_id AS instanceId, stage_id AS stageId, content_item_id AS contentItemId, effect, scope, status,
-               actor, evidence, approval_card_id AS cardId,
+               actor, evidence, binding_json AS bindingJson, binding_hash AS bindingHash, approval_card_id AS cardId,
                expires_at AS expiresAt, created_at AS createdAt
         FROM approvals WHERE instance_id = ? ORDER BY created_at DESC
       `)
-      .all(instanceId);
+      .all(instanceId)
+      .map((approval) => ({
+        ...approval,
+        bindings: approval.bindingJson ? JSON.parse(approval.bindingJson) : null,
+        bindingJson: undefined,
+      }));
   }
 
   appendEvent({ instanceId = null, type, payload = {}, now = new Date(), eventId }) {

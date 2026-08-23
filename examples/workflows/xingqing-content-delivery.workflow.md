@@ -3,7 +3,7 @@ apiVersion: nightshift.versa.ai/v1alpha1
 kind: Workflow
 metadata:
   id: xingqing-content-delivery
-  version: 0.4.8
+  version: 0.4.9
   name: 星擎内容交付
 spec:
   ownerAgentRole: content-operator
@@ -18,6 +18,10 @@ spec:
     customerId: {type: string, required: true}
     briefUrl: {type: string, required: true}
     authorizationScope: {type: object, required: true}
+    publicationTarget:
+      type: object
+      required: false
+      requiredProperties: [accountRecordId, tiktokHandle, geelarkDeviceId, platform, market, language, timezone]
 ---
 
 # 星擎内容交付 Workflow
@@ -157,7 +161,13 @@ scope: content-item
 skills: [lark-base, social-search-apify-first, geelark-cloud-phone]
 needs: [review]
 sideEffects: [external-publication]
-approval: {before: external-publication, scope: asset-and-account}
+approval:
+  before: external-publication
+  scope: asset-and-account
+  bindings:
+    publicationTarget:
+      source: input.publicationTarget
+      requiredFields: [accountRecordId, tiktokHandle, geelarkDeviceId, platform, market, language, timezone]
 outputs: [publishTask, publicUrl, publicationEvidence, metricsSnapshot, retrospective]
 outputContracts:
   publicUrl: {type: https-url, allowedHosts: [tiktok.com]}

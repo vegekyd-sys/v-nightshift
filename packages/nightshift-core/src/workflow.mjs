@@ -131,6 +131,7 @@ export function validateWorkflow(document) {
   }
   validateIdentifier(spec.ownerAgentRole, "spec.ownerAgentRole", issues);
   const contentRoutes = validateContentItemContract(spec.contentItems, issues);
+  validateInputContracts(spec.inputs, issues);
   if (spec.completion !== undefined && (!isObject(spec.completion) || spec.completion.mode !== "strict-v1")) {
     issues.push(issue("completion.mode.invalid", "spec.completion.mode", "completion.mode must be strict-v1"));
   }
@@ -261,6 +262,9 @@ export function validateWorkflow(document) {
           `Approval is required for ${guarded.join(", ")}`,
         ),
       );
+    }
+    if (isObject(stage.approval?.bindings)) {
+      validateApprovalBindings(stage.approval.bindings, `${path}.approval.bindings`, issues);
     }
     if (sideEffects.length > 0) {
       if (!isObject(stage.retry)) {
@@ -395,6 +399,53 @@ function validateOutputContracts(stage, path, issues) {
       if (contract[field] !== undefined && !isObject(contract[field])) issues.push(issue(`stage.outputContracts.${field}.invalid`, `${path}.outputContracts.${name}.${field}`, `${field} must be an object`));
     }
   }
+}
+
+function validateInputContracts(inputs, issues) {
+  if (inputs === undefined) return;
+  if (!isObject(inputs)) {
+    issues.push(issue("inputs.invalid", "spec.inputs", "inputs must be an object"));
+    return;
+  }
+  const types = new Set(["array", "boolean", "number", "object", "string"]);
+  for (const [name, contract] of Object.entries(inputs)) {
+    const path = `spec.inputs.${name}`;
+    if (!isObject(contract)) {
+      issues.push(issue("input.contract.invalid", path, "input contract must be an object"));
+      continue;
+    }
+    if (contract.type !== undefined && !types.has(contract.type)) {
+      issues.push(issue("input.type.invalid", `${path}.type`, "input type is unsupported"));
+    }
+    if (contract.required !== undefined && typeof contract.required !== "boolean") {
+      issues.push(issue("input.required.invalid", `${path}.required`, "required must be boolean"));
+    }
+    if (contract.requiredProperties !== undefined) {
+      if (contract.type !== "object" || !validStringArray(contract.requiredProperties)) {
+        issues.push(issue("input.requiredProperties.invalid", `${path}.requiredProperties`, "requiredProperties requires an object input and a non-empty string array"));
+      }
+    }
+  }
+}
+
+function validateApprovalBindings(bindings, path, issues) {
+  for (const [name, binding] of Object.entries(bindings)) {
+    const bindingPath = `${path}.${name}`;
+    if (!isObject(binding) || !nonEmptyString(binding.source)) {
+      issues.push(issue("approval.binding.invalid", bindingPath, "approval binding requires a source"));
+      continue;
+    }
+    if (!binding.source.startsWith("input.") || /(secret|token|password|credential|api.?key)/i.test(binding.source)) {
+      issues.push(issue("approval.binding.source.invalid", `${bindingPath}.source`, "approval bindings must reference a non-secret project input"));
+    }
+    if (binding.requiredFields !== undefined && !validStringArray(binding.requiredFields)) {
+      issues.push(issue("approval.binding.requiredFields.invalid", `${bindingPath}.requiredFields`, "requiredFields must be a non-empty string array"));
+    }
+  }
+}
+
+function validStringArray(value) {
+  return Array.isArray(value) && value.length > 0 && value.every(nonEmptyString);
 }
 
 function buildGraph(stages) {

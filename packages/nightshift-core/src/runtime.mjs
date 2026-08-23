@@ -4,7 +4,7 @@ import {
   validateWorkflow,
   WorkflowValidationError,
 } from "./workflow.mjs";
-import { buildAgentBrief, planNextActions, requiredApproval, stageTimeoutSeconds } from "./orchestrator.mjs";
+import { buildAgentBrief, planNextActions, requiredApproval, resolveApprovalBinding, stageTimeoutSeconds } from "./orchestrator.mjs";
 
 export class NightShiftRuntime {
   constructor({ board = "nightshift", completionValidator = null, store, workboard }) {
@@ -385,8 +385,17 @@ export class NightShiftRuntime {
     scope,
     stageId,
   }) {
+    const instance = this.store.getInstance(instanceId);
+    const release = instance ? this.store.getRelease(instance.workflowSha256)?.manifest : null;
+    const stage = release?.spec?.stages?.find((entry) => entry.id === stageId);
+    const binding = resolveApprovalBinding(stage ?? {}, instance ?? {}, contentItemId ?? null);
+    if (binding.missingFields.length > 0) {
+      throw new Error(`Approval binding is incomplete: ${binding.missingFields.join(", ")}`);
+    }
     const approval = this.store.recordApproval({
       actor,
+      bindingHash: binding.bindingHash,
+      bindings: binding.values,
       cardId,
       contentItemId,
       effect,
@@ -403,9 +412,6 @@ export class NightShiftRuntime {
     if (run) contentItemId
       ? this.store.upsertContentItemRun({ ...run, status: "done" })
       : this.store.upsertStageRun({ ...run, status: "done" });
-    const instance = this.store.getInstance(instanceId);
-    const release = instance ? this.store.getRelease(instance.workflowSha256)?.manifest : null;
-    const stage = release?.spec?.stages?.find((entry) => entry.id === stageId);
     const requiredScope = stage?.approval?.scope ?? "stage";
     if (stage?.approval?.before === effect && requiredScope === scope) {
       const cards = await this.workboard.listCards();

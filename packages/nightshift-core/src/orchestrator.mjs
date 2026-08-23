@@ -220,6 +220,7 @@ export function buildAgentBrief(release, instance, stage, contentItem = null) {
     stageId: upstream.id,
   })) : [];
   const exactApprovalRecorded = Boolean(stage.approval?.before) && !requiredApproval(stage, instance, new Date(), contentItem?.id ?? null);
+  const approvalBinding = exactApprovalRecorded ? resolveApprovalBinding(stage, instance, contentItem?.id ?? null) : null;
   const lines = [
     `Night Shift workflow: ${release.metadata.name} (${release.metadata.version})`,
     `Instance: ${instance.id}`,
@@ -248,7 +249,10 @@ export function buildAgentBrief(release, instance, stage, contentItem = null) {
       : []),
     `Required outputs: ${(stage.outputs ?? []).join(", ") || "none"}`,
     ...(exactApprovalRecorded ? [
-      `Execution authorization: an exact Workboard approval is recorded for ${stage.approval.before} with scope ${stage.approval.scope ?? "stage"}${contentItem ? ` on content item ${contentItem.id}` : ""}. This approval is authoritative for this stage only and supersedes an earlier project default-deny flag only for this approved action. Do not edit the project inputs.`,
+      `Execution authorization: a later, exact Workboard approval is recorded for ${stage.approval.before} with scope ${stage.approval.scope ?? "stage"}${contentItem ? ` on content item ${contentItem.id}` : ""}. It intentionally opens only this approved action after the project's default-deny baseline; do not treat that earlier baseline as a conflict and do not edit the project inputs.`,
+      ...(approvalBinding && Object.keys(approvalBinding.values).length > 0
+        ? [`Immutable approval bindings: ${JSON.stringify(redactSensitiveInputs(approvalBinding.values))}. Use this exact target; never guess or substitute another account or device.`]
+        : []),
     ] : []),
     ...(release.spec?.completion?.mode === "strict-v1" ? [
       "Strict completion: the control plane will load every declared output artifact and evaluate every completeWhen rule from this Workflow. A summary, internal substitute, or claimed success cannot complete the card. JSON facts must be booleans or concrete values; URL outputs must put the real HTTPS URL directly in the handoff artifact field.",
@@ -314,6 +318,7 @@ function summarizeInputs(inputs) {
     "sceneProjectId",
     "targetVideoCount",
     "authorizationScope",
+    "publicationTarget",
     "nightshift",
   ];
   return Object.fromEntries(keys.filter((key) => inputs[key] !== undefined).map((key) => [key, inputs[key]]));
@@ -348,12 +353,14 @@ export function requiredApproval(stage, instance, now, contentItemId = null) {
   if (!stage.approval?.before) return null;
   const approvals = Array.isArray(instance.approvals) ? instance.approvals : [];
   const requiredScope = stage.approval.scope ?? "stage";
-  const accepted = approvals.some((approval) => {
+  const binding = resolveApprovalBinding(stage, instance, contentItemId);
+  const accepted = binding.missingFields.length === 0 && approvals.some((approval) => {
     if (approval.status !== "approved") return false;
     if (approval.stageId && approval.stageId !== stage.id) return false;
     if ((approval.contentItemId ?? null) !== contentItemId) return false;
     if (approval.effect !== stage.approval.before) return false;
     if (approval.scope !== requiredScope) return false;
+    if (binding.bindingHash && approval.bindingHash !== binding.bindingHash) return false;
     if (approval.expiresAt && new Date(approval.expiresAt) <= now) return false;
     return true;
   });
@@ -361,7 +368,44 @@ export function requiredApproval(stage, instance, now, contentItemId = null) {
   return {
     effect: stage.approval.before,
     scope: requiredScope,
+    ...(Object.keys(binding.values).length > 0 ? { bindings: redactSensitiveInputs(binding.values) } : {}),
+    ...(binding.bindingHash ? { bindingHash: binding.bindingHash } : {}),
+    ...(binding.missingFields.length > 0 ? { missingFields: binding.missingFields } : {}),
   };
+}
+
+export function resolveApprovalBinding(stage, instance, contentItemId = null) {
+  const bindings = stage.approval?.bindings;
+  if (!bindings || typeof bindings !== "object" || Array.isArray(bindings)) {
+    return { bindingHash: null, missingFields: [], values: {} };
+  }
+  const values = {};
+  const missingFields = [];
+  for (const [name, binding] of Object.entries(bindings)) {
+    const value = resolvePath({ input: instance.inputs ?? {}, instance }, binding.source);
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      missingFields.push(name);
+      continue;
+    }
+    values[name] = value;
+    for (const field of binding.requiredFields ?? []) {
+      const fieldValue = resolvePath(value, field);
+      if (fieldValue === undefined || fieldValue === null || fieldValue === "") {
+        missingFields.push(`${name}.${field}`);
+      }
+    }
+  }
+  const payload = { contentItemId, stageId: stage.id, values };
+  return {
+    bindingHash: missingFields.length === 0 ? hashJson(payload) : null,
+    missingFields: [...new Set(missingFields)],
+    values,
+  };
+}
+
+function resolvePath(root, path) {
+  if (typeof path !== "string" || !path.trim()) return undefined;
+  return path.split(".").reduce((value, key) => value?.[key], root);
 }
 
 function timerReady(expression, instance, now) {

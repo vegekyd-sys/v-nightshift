@@ -72,6 +72,15 @@ async function run(input) {
   if (resource === "projects" && action === "pause" && subject) {
     return api(`/api/instances/${encodeURIComponent(subject)}/pause`, { body: "{}", method: "POST" });
   }
+  if (resource === "projects" && action === "inputs" && subject) {
+    const file = option(input, "--file");
+    if (!file) throw new Error("projects inputs requires --file <json>");
+    const inputs = await readJson(file);
+    return api(`/api/instances/${encodeURIComponent(subject)}/inputs`, {
+      body: JSON.stringify({ inputs }),
+      method: "PATCH",
+    });
+  }
   if (resource === "cards" && action === "list") {
     const status = option(input, "--status");
     return api(`/api/cards${status ? `?status=${encodeURIComponent(status)}` : ""}`);
@@ -96,7 +105,7 @@ async function run(input) {
       method: "POST",
     });
   }
-  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|monitor|preflight|create|start|pause | cards list|session|approve|changes|reject|retry");
+  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|monitor|preflight|create|start|pause | projects inputs <id> --file <json> | cards list|session|approve|changes|reject|retry");
 }
 
 async function resolveWorkflow(project) {

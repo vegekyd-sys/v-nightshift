@@ -191,6 +191,7 @@ test("paid production approval is isolated per content item", async () => {
 test("human review and publication remain per-video and idempotent", async () => {
   const release = compileWorkflow(await loadWorkflow(fixture));
   const instance = activeInstance(release);
+  instance.inputs.publicationTarget = publicationTarget();
   const contentItems = [twoItems()[1]];
   let contentItemRuns = doneThrough("video-scene-01", "produce");
   const review = planNextActions({ release, instance, runs: [{ stageId: "plan", status: "done" }], contentItems, contentItemRuns })[0];
@@ -200,7 +201,8 @@ test("human review and publication remain per-video and idempotent", async () =>
   contentItemRuns = doneThrough("video-scene-01", "review");
   const publicationApproval = planNextActions({ release, instance, runs: [{ stageId: "plan", status: "done" }], contentItems, contentItemRuns })[0];
   assert.equal(publicationApproval.type, "request_approval");
-  instance.approvals = [{ stageId: "publish-feedback", contentItemId: "video-scene-01", effect: "external-publication", scope: "asset-and-account", status: "approved" }];
+  assert.equal(publicationApproval.approval.bindings.publicationTarget.tiktokHandle, "@fixture");
+  instance.approvals = [{ stageId: "publish-feedback", contentItemId: "video-scene-01", ...publicationApproval.approval, status: "approved" }];
   const publish = planNextActions({ release, instance, runs: [{ stageId: "plan", status: "done" }], contentItems, contentItemRuns })[0];
   assert.match(publish.idempotencyKey, /video-scene-01:publish-feedback/);
   assert.match(publish.card.notes, /exact Workboard approval is recorded for external-publication/);
@@ -212,12 +214,16 @@ test("human review and publication remain per-video and idempotent", async () =>
 test("approval without the exact effect and scope never unlocks a side effect", async () => {
   const release = compileWorkflow(await loadWorkflow(fixture));
   const instance = activeInstance(release);
+  instance.inputs.publicationTarget = publicationTarget();
   const contentItems = [twoItems()[1]];
   const contentItemRuns = doneThrough("video-scene-01", "review");
   instance.approvals = [{ stageId: "publish-feedback", contentItemId: "video-scene-01", effect: null, scope: null, status: "approved" }];
   const action = planNextActions({ release, instance, runs: [{ stageId: "plan", status: "done" }], contentItems, contentItemRuns })[0];
   assert.equal(action.type, "request_approval");
-  assert.deepEqual(action.approval, { effect: "external-publication", scope: "asset-and-account" });
+  assert.equal(action.approval.effect, "external-publication");
+  assert.equal(action.approval.scope, "asset-and-account");
+  assert.equal(action.approval.bindings.publicationTarget.geelarkDeviceId, "device-1");
+  assert.ok(action.approval.bindingHash);
 
   const blockedAction = planNextActions({
     release,
@@ -227,7 +233,23 @@ test("approval without the exact effect and scope never unlocks a side effect", 
     contentItemRuns: [...contentItemRuns, { contentItemId: "video-scene-01", stageId: "publish-feedback", status: "blocked" }],
   })[0];
   assert.equal(blockedAction.type, "request_approval");
-  assert.deepEqual(blockedAction.approval, { effect: "external-publication", scope: "asset-and-account" });
+  assert.equal(blockedAction.approval.bindingHash, action.approval.bindingHash);
+});
+
+test("changing a bound publication target invalidates the previous approval", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const instance = activeInstance(release);
+  instance.inputs.publicationTarget = publicationTarget();
+  const contentItems = [twoItems()[1]];
+  const contentItemRuns = doneThrough("video-scene-01", "review");
+  const first = planNextActions({ release, instance, runs: [{ stageId: "plan", status: "done" }], contentItems, contentItemRuns })[0];
+  instance.approvals = [{ stageId: "publish-feedback", contentItemId: "video-scene-01", ...first.approval, status: "approved" }];
+  instance.inputs.publicationTarget = { ...instance.inputs.publicationTarget, tiktokHandle: "@changed" };
+
+  const second = planNextActions({ release, instance, runs: [{ stageId: "plan", status: "done" }], contentItems, contentItemRuns })[0];
+
+  assert.equal(second.type, "request_approval");
+  assert.notEqual(second.approval.bindingHash, first.approval.bindingHash);
 });
 
 test("refuses another release and requires an Agent binding", async () => {
@@ -248,6 +270,18 @@ function activeInstance(release) {
     workflowSha256: release.metadata.workflowSha256,
     agentBindings: { "content-operator": "main" },
     inputs: { customerId: "fixture-customer", briefUrl: "https://example.invalid/brief" },
+  };
+}
+
+function publicationTarget() {
+  return {
+    accountRecordId: "account-1",
+    tiktokHandle: "@fixture",
+    geelarkDeviceId: "device-1",
+    platform: "TikTok",
+    market: "US",
+    language: "en-US",
+    timezone: "America/New_York",
   };
 }
 

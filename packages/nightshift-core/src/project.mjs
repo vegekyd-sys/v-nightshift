@@ -18,6 +18,12 @@ export function validateProjectRequest(release, project) {
     if (!inputMatchesType(value, contract.type)) {
       throw new Error(`Project input ${name} must be ${contract.type}`);
     }
+    if (contract.type === "object" && Array.isArray(contract.requiredProperties)) {
+      const missing = contract.requiredProperties.filter((property) => missingValue(value[property]));
+      if (missing.length > 0) {
+        throw new Error(`Project input ${name} is missing required properties: ${missing.join(", ")}`);
+      }
+    }
   }
   const roles = new Set(
     (release.spec.stages ?? [])
@@ -30,6 +36,10 @@ export function validateProjectRequest(release, project) {
     }
   }
   return project;
+}
+
+function missingValue(value) {
+  return value === undefined || value === null || value === "";
 }
 
 export function requiredSkillsByRole(release) {

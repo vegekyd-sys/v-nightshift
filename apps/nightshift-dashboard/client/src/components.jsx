@@ -168,7 +168,8 @@ export function Drawer({ card, delivery, deliveryState, deliveryError, handoff, 
   const automation = card.metadata?.automation ?? {};
   const approval = automation.approval;
   const publicationApproval = approval?.effect === "external-publication";
-  const canSubmit = reviewAction === "approve" || evidence.trim().length > 0;
+  const approvalIncomplete = (approval?.missingFields?.length ?? 0) > 0;
+  const canSubmit = (reviewAction !== "approve" || !approvalIncomplete) && (reviewAction === "approve" || evidence.trim().length > 0);
 
   async function submitDecision() {
     if (!reviewAction || !canSubmit || submitting) return;
@@ -219,7 +220,7 @@ export function Drawer({ card, delivery, deliveryState, deliveryError, handoff, 
         state={sessionState}
       />}
       <section><h3>Evidence & safety</h3><Detail label="Workflow SHA" value={automation.workflowSha256?.slice(0, 12) ?? "—"} mono /><Detail label="Input hash" value={automation.inputHash?.slice(0, 12) ?? "—"} mono /><Detail label="Idempotency" value={automation.nightshiftActionKey ? "protected" : "native card"} /></section>
-      {approval && <section className="publication-approval"><h3>执行确认</h3><p>{publicationApproval ? "本次确认包含外部发布授权；确认后任务才会进入发布步骤。" : "这个阶段需要明确授权后才能继续；确认后任务会进入执行队列。"}</p><Detail label="权限" value={publicationApproval ? "外部发布" : approval.effect} /><Detail label="范围" value={approval.scope ?? "stage"} /></section>}
+      {approval && <section className="publication-approval"><h3>执行确认</h3><p>{publicationApproval ? "本次确认包含外部发布授权；确认后任务才会进入发布步骤。" : "这个阶段需要明确授权后才能继续；确认后任务会进入执行队列。"}</p><Detail label="权限" value={publicationApproval ? "外部发布" : approval.effect} /><Detail label="范围" value={approval.scope ?? "stage"} />{Object.entries(approval.bindings ?? {}).map(([name, value]) => <Detail key={name} label={name === "publicationTarget" ? "发布目标" : name} value={presentApprovalBinding(value)} />)}{approvalIncomplete && <p className="decision-error">发布前还缺少：{approval.missingFields.join("、")}</p>}</section>}
       {card.notes && <section><h3>Operator notes</h3><pre>{card.notes}</pre></section>}
       {(card.status === "review" || approval) && <div className="review-zone">
         {!reviewAction && (approval ? <div className="approval-actions approval-actions-two"><button className="primary" onClick={() => setReviewAction("approve")}>确认执行</button><button className="danger" onClick={() => setReviewAction("reject")}>暂不执行</button></div> : <div className="approval-actions"><button className="primary" onClick={() => setReviewAction("approve")}>通过</button><button onClick={() => setReviewAction("request-changes")}>要求修改</button><button className="danger" onClick={() => setReviewAction("reject")}>拒绝</button></div>)}
@@ -274,6 +275,13 @@ function humanArtifactName(name) {
     routeDecision: "路线判断",
   };
   return labels[name] ?? name;
+}
+
+function presentApprovalBinding(value) {
+  if (!value || typeof value !== "object") return String(value ?? "—");
+  const preferred = [value.tiktokHandle, value.platform, value.market, value.language, value.geelarkDeviceId].filter(Boolean);
+  if (preferred.length > 0) return preferred.join(" · ");
+  return Object.entries(value).map(([key, entry]) => `${key}: ${String(entry)}`).join(" · ");
 }
 
 function NativeWorkboardActivity({ card }) {

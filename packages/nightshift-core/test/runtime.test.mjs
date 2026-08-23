@@ -202,7 +202,8 @@ test("reopens a completed approval card when exact authorization is still missin
   const result = await runtime.tick("NS-RUNTIME-APPROVAL-RECOVERY");
 
   assert.equal(result.actions[0].type, "request_approval");
-  assert.deepEqual(result.actions[0].approval, { effect: "external-publication", scope: "asset-and-account" });
+  assert.equal(result.actions[0].approval.effect, "external-publication");
+  assert.deepEqual(result.actions[0].approval.missingFields, ["publicationTarget"]);
   assert.equal(staleApprovalCard.status, "review");
   assert.ok(store.listEvents("NS-RUNTIME-APPROVAL-RECOVERY").some((event) => event.type === "approval.reopened"));
   store.close();
@@ -218,6 +219,7 @@ test("confirmation resumes a blocked guarded stage and retry cannot bypass appro
     id: "NS-RUNTIME-CONFIRM-EXECUTION",
     workflowSha256: release.workflowSha256,
     agentBindings: { "content-operator": "main" },
+    inputs: { publicationTarget: publicationTarget() },
     contentItems: [{ id: "video-1", title: "First video", route: "SCENE_EDIT" }],
   });
   store.upsertContentItemRun({
@@ -448,6 +450,18 @@ test("rejects a done card when its declared delivery fails validation", async ()
   assert.ok(store.listEvents("NS-RUNTIME-INVALID-DELIVERY").some((event) => event.type === "stage.downstream.reopened"));
   store.close();
 });
+
+function publicationTarget() {
+  return {
+    accountRecordId: "account-1",
+    tiktokHandle: "@fixture",
+    geelarkDeviceId: "device-1",
+    platform: "TikTok",
+    market: "US",
+    language: "en-US",
+    timezone: "America/New_York",
+  };
+}
 
 class FakeWorkboard {
   constructor() {

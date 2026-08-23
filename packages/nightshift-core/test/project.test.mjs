@@ -47,6 +47,18 @@ test("rejects a project with missing inputs or agent bindings", async () => {
     () => validateProjectRequest(release, { ...base, id: "NS-LAB-PROJECT-ID-THAT-IS-LONGER-THAN-THIRTY-ONE" }),
     /1-31 characters/,
   );
+  assert.throws(
+    () => validateProjectRequest(release, {
+      ...base,
+      inputs: {
+        customerId: "customer-2",
+        briefUrl: "https://example.com/brief",
+        authorizationScope: {},
+        publicationTarget: { tiktokHandle: "@fixture" },
+      },
+    }),
+    /publicationTarget is missing required properties/,
+  );
 });
 
 test("collects direct and route-specific Skills for Agent preflight", async () => {
