@@ -5,6 +5,7 @@ import { mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/prom
 import { dirname, extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadPublicAuth, requiresPublicAuth, verifyPublicAuth } from "./public-auth.mjs";
+import { resolveCardDecisionContext } from "./decision-context.mjs";
 import {
   deliverableArtifactPaths,
   humanStageHandoff,
@@ -397,10 +398,16 @@ async function handleApi(request, response, url) {
   const decisionMatch = url.pathname.match(/^\/api\/cards\/([^/]+)\/(approve|request-changes|reject)$/);
   if (request.method === "POST" && decisionMatch) {
     const body = await bodyJson(request);
-    const input = {
-      ...body,
-      cardId: decodeURIComponent(decisionMatch[1]),
-    };
+    const cardId = decodeURIComponent(decisionMatch[1]);
+    const card = cardCache.find((entry) => entry.id === cardId) ?? (await refreshCards()).find((entry) => entry.id === cardId);
+    if (!card) {
+      json(response, 404, { error: "Workboard card not found" });
+      return;
+    }
+    const baseInput = resolveCardDecisionContext({ body, card });
+    const instance = baseInput.instanceId ? store.getInstance(baseInput.instanceId) : null;
+    const release = instance ? store.getRelease(instance.workflowSha256)?.manifest : null;
+    const input = resolveCardDecisionContext({ body, card, instance, release });
     const result = decisionMatch[2] === "approve"
       ? await runtime.approve(input)
       : decisionMatch[2] === "request-changes"
