@@ -41,3 +41,32 @@ test("patches same-owner Workboard concurrency from one to eight and is idempote
   const second = JSON.parse(execFileSync(process.execPath, [script.pathname, `--dist=${dist}`, `--backup-dir=${backup}`], { encoding: "utf8" }));
   assert.equal(second.status, "already-patched");
 });
+
+test("upgrades the accepted three-per-owner patch to eight", () => {
+  const root = mkdtempSync(join(tmpdir(), "workboard-owner-concurrency-upgrade-"));
+  const dist = join(root, "dist");
+  const backup = join(root, "backup");
+  mkdirSync(dist);
+  mkdirSync(backup);
+  const bundle = join(dist, "runtime-api-fixture.js");
+  writeFileSync(bundle, [
+    "const DEFAULT_DISPATCH_MAX_STARTS = 3;",
+    "const DEFAULT_DISPATCH_MAX_PER_OWNER = 3;",
+    "function fixture(cards) {",
+    "\tconst runningByOwner = new Map();",
+    "\tconst selected = [];",
+    "\tfor (const card of cards) {",
+    "\t\tconst owner = card.owner;",
+    "\t\tif ((runningByOwner.get(owner) ?? 0) >= DEFAULT_DISPATCH_MAX_PER_OWNER) continue;",
+    "\t\tselected.push(card);",
+    "\t\trunningByOwner.set(owner, (runningByOwner.get(owner) ?? 0) + 1);",
+    "\t}",
+    "\treturn selected;",
+    "}",
+  ].join("\n"));
+
+  const result = JSON.parse(execFileSync(process.execPath, [script.pathname, `--dist=${dist}`, `--backup-dir=${backup}`], { encoding: "utf8" }));
+  assert.equal(result.maxPerOwner, 8);
+  assert.match(readFileSync(bundle, "utf8"), /DEFAULT_DISPATCH_MAX_PER_OWNER = 8/);
+  assert.match(readFileSync(join(backup, "runtime-api-fixture.js"), "utf8"), /DEFAULT_DISPATCH_MAX_PER_OWNER = 3/);
+});
