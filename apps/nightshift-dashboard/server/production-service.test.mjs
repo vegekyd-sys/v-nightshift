@@ -13,6 +13,7 @@ test("production sandbox allows the OpenClaw CLI health-state write", async () =
     unit,
     /^ReadWritePaths=.*\/home\/openclaw\/\.openclaw\/nightshift.*\/home\/openclaw\/\.openclaw\/state$/m,
   );
+  assert.match(unit, /^Environment=NIGHTSHIFT_PUBLIC_BASE_URL=https:\/\/nightshift\.tianyi\.live$/m);
 });
 
 test("production deploy waits for the Workboard health endpoint", async () => {

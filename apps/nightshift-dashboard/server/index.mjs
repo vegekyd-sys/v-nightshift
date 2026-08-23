@@ -33,6 +33,7 @@ const workflowPath = resolve(
 );
 const board = process.env.NIGHTSHIFT_BOARD ?? "nightshift-lab";
 const publicHost = process.env.NIGHTSHIFT_PUBLIC_HOST ?? "";
+const publicBaseUrl = process.env.NIGHTSHIFT_PUBLIC_BASE_URL ?? "";
 const publicAuth = await loadPublicAuth(process.env.NIGHTSHIFT_BASIC_AUTH_FILE);
 await mkdir(dataDir, { recursive: true });
 const store = new NightShiftStore(join(dataDir, "nightshift.sqlite"));
@@ -901,7 +902,7 @@ function withCardLinks(card) {
 }
 
 function dashboardUrl(parameters = {}) {
-  const origin = publicHost ? `https://${publicHost}` : `http://${host}:${port}`;
+  const origin = publicBaseUrl || (publicHost ? `https://${publicHost}` : `http://${host}:${port}`);
   const url = new URL("/", origin);
   for (const [key, value] of Object.entries(parameters)) {
     if (value) url.searchParams.set(key, value);

@@ -21,6 +21,7 @@ Environment=NIGHTSHIFT_PORT=24879
 Environment=NIGHTSHIFT_DATA_DIR=/home/openclaw/.openclaw/nightshift
 Environment=NIGHTSHIFT_BOARD=nightshift
 Environment=NIGHTSHIFT_PUBLIC_HOST=nightshift.tianyi.live
+Environment=NIGHTSHIFT_PUBLIC_BASE_URL=https://nightshift.tianyi.live
 Environment=NIGHTSHIFT_BASIC_AUTH_FILE=/home/openclaw/.config/nightshift/public-auth.json
 Environment=NIGHTSHIFT_WORKFLOW_PATH=/home/openclaw/releases/nightshift-workboard/current/examples/workflows/xingqing-content-delivery.workflow.md
 ExecStart=/opt/node-v22.23.1/bin/node --no-warnings apps/nightshift-dashboard/server/index.mjs
