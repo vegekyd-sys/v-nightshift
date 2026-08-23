@@ -193,6 +193,7 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
   const deepLinkApplied = useRef(false);
   const [workflowId, setWorkflowId] = useState(initialWorkflowId ?? "");
   const [projectId, setProjectId] = useState(initialProjectId ?? "all");
+  const [mobileStageId, setMobileStageId] = useState("");
   const [editor, setEditor] = useState(null);
   useEffect(() => {
     if (!groups.length) return;
@@ -227,6 +228,12 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
   const allTasks = useMemo(() => [...taskIndex.values()].flat(), [taskIndex]);
   const liveSummary = useMemo(() => summarizeStatuses(allTasks), [allTasks]);
   const activeTasks = useMemo(() => allTasks.filter((task) => task.status === "running"), [allTasks]);
+  useEffect(() => {
+    if (!stages.length) return;
+    if (stages.some((stage) => stage.id === mobileStageId)) return;
+    const attentionStage = stages.find((stage) => (taskIndex.get(stage.id) ?? []).some((task) => ["running", "review", "blocked"].includes(task.status)));
+    setMobileStageId(attentionStage?.id ?? stages[0].id);
+  }, [mobileStageId, stages, taskIndex]);
 
   if (!data) return <div className="workflow-loading"><span className="delivery-skeleton" /><strong>正在载入 Workflow 运行状态</strong></div>;
   if (!group) return <div className="simple-screen"><header className="topbar"><div><h1>Workflows</h1><p className="topbar-copy">导入第一份 workflow.md，建立可执行生产线。</p></div><div className="top-actions"><button className="primary" onClick={() => setEditor({ mode: "create", source: newWorkflowSource() })}><Plus size={15} />新建 Workflow</button></div></header></div>;
@@ -234,7 +241,7 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
   return <div className="workflow-screen workflow-studio">
     <header className="topbar workflow-topbar">
       <div className="workflow-title"><span className="section-label">V · Workflow control room</span><h1>{group.name}</h1><p className="topbar-copy">V 正在协调多个 Agent 沿同一条生产线并行推进。</p></div>
-      <div className="top-actions"><button onClick={() => setEditor({ mode: "import", source: "" })}><Upload size={15} />导入 Workflow</button><button onClick={() => setEditor({ mode: "edit", source: group.releases[0].sourceMarkdown ?? group.releases[0].sourceYaml })}><FilePenLine size={15} />编辑 Workflow</button><button className="primary" onClick={() => setEditor({ mode: "create", source: newWorkflowSource() })}><Plus size={15} />新建 Workflow</button></div>
+      <div className="top-actions"><button onClick={() => setEditor({ mode: "import", source: "" })}><Upload size={15} /><span className="desktop-label">导入 Workflow</span><span className="mobile-label">导入</span></button><button onClick={() => setEditor({ mode: "edit", source: group.releases[0].sourceMarkdown ?? group.releases[0].sourceYaml })}><FilePenLine size={15} /><span className="desktop-label">编辑 Workflow</span><span className="mobile-label">编辑</span></button><button className="primary" onClick={() => setEditor({ mode: "create", source: newWorkflowSource() })}><Plus size={15} /><span className="desktop-label">新建 Workflow</span><span className="mobile-label">新建</span></button></div>
     </header>
     <div className={`workflow-workspace ${selected ? "with-drawer" : ""}`}>
       <aside className="workflow-library" aria-label="Workflow 列表">
@@ -262,9 +269,17 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
             <button className="workflow-project-shortcut" onClick={() => onNewProject(pinnedRelease ?? group.releases[0])}><Plus size={13} />用此 Workflow 新建项目</button>
           </div>
         </div>
+        <nav className="mobile-stage-nav" aria-label="Workflow 阶段">
+          {stages.map((stage, index) => {
+            const tasks = taskIndex.get(stage.id) ?? [];
+            const summary = summarizeStatuses(tasks);
+            const tone = ["running", "review", "blocked", "ready", "done"].find((status) => summary[status]) ?? "empty";
+            return <button className={`${mobileStageId === stage.id ? "selected" : ""} state-${tone}`} key={stage.id} onClick={() => setMobileStageId(stage.id)}><span>{String(index + 1).padStart(2, "0")}</span><strong>{stage.title}</strong><small>{tasks.length ? `${tasks.length} 个任务` : "未开始"}</small></button>;
+          })}
+        </nav>
         <div className="stage-runway" style={{ "--stage-count": stages.length }}>
           <div className="stage-rail" />
-          {stages.map((stage, index) => <StageLane key={stage.id} stage={stage} index={index} tasks={taskIndex.get(stage.id) ?? []} onSelect={setSelected} />)}
+          {stages.map((stage, index) => <StageLane key={stage.id} stage={stage} index={index} mobileSelected={mobileStageId === stage.id} tasks={taskIndex.get(stage.id) ?? []} onSelect={setSelected} />)}
         </div>
       </main>
       <Drawer card={selected} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onClose={() => setSelected(null)} onDecide={decide} onRetry={retry} />
@@ -273,10 +288,10 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
   </div>;
 }
 
-function StageLane({ stage, index, tasks, onSelect }) {
+function StageLane({ stage, index, mobileSelected, tasks, onSelect }) {
   const summary = summarizeStatuses(tasks);
   const isLive = (summary.running ?? 0) > 0;
-  return <section className={`stage-lane ${isLive ? "is-live" : ""}`}>
+  return <section className={`stage-lane ${isLive ? "is-live" : ""} ${mobileSelected ? "mobile-selected" : ""}`}>
     <header><span className="stage-index">{String(index + 1).padStart(2, "0")}</span><div><strong>{stage.title}</strong><small>{stage.scope === "content-item" ? "每条内容" : "整个项目"} · {stage.actor === "human" ? "人工" : "Agent"}</small></div></header>
     <div className="stage-counts">{Object.entries(summary).map(([status, count]) => <span className={`state-${status}`} key={status}>{statusLabel(status)} {count}</span>)}{tasks.length === 0 && <span>尚未开始</span>}</div>
     <div className="stage-tasks">{tasks.map((task) => <button key={`${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}-${task.card?.id ?? task.attempt}`} className={`stage-task state-${task.status}`} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}><span className="task-state" /><div><strong>{task.contentTitle ?? task.projectName}</strong><small>{task.contentTitle ? task.projectName : task.projectId}</small></div><span className="task-action">{task.requiresApproval ? "等待确认执行" : statusLabel(task.status)}</span></button>)}</div>
