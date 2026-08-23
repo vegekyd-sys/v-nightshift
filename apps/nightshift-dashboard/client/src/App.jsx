@@ -6,6 +6,7 @@ import {
   ChevronDown,
   FilePenLine,
   FileUp,
+  MoreHorizontal,
   Plus,
   Save,
   Trash2,
@@ -194,6 +195,7 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
   const [workflowId, setWorkflowId] = useState(initialWorkflowId ?? "");
   const [projectId, setProjectId] = useState(initialProjectId ?? "all");
   const [mobileStageId, setMobileStageId] = useState("");
+  const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
   const [editor, setEditor] = useState(null);
   useEffect(() => {
     if (!groups.length) return;
@@ -241,7 +243,13 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
   return <div className="workflow-screen workflow-studio">
     <header className="topbar workflow-topbar">
       <div className="workflow-title"><span className="section-label">V · Workflow control room</span><h1>{group.name}</h1><p className="topbar-copy">V 正在协调多个 Agent 沿同一条生产线并行推进。</p></div>
-      <div className="top-actions"><button onClick={() => setEditor({ mode: "import", source: "" })}><Upload size={15} /><span className="desktop-label">导入 Workflow</span><span className="mobile-label">导入</span></button><button onClick={() => setEditor({ mode: "edit", source: group.releases[0].sourceMarkdown ?? group.releases[0].sourceYaml })}><FilePenLine size={15} /><span className="desktop-label">编辑 Workflow</span><span className="mobile-label">编辑</span></button><button className="primary" onClick={() => setEditor({ mode: "create", source: newWorkflowSource() })}><Plus size={15} /><span className="desktop-label">新建 Workflow</span><span className="mobile-label">新建</span></button></div>
+      <div className="top-actions desktop-workflow-actions"><button onClick={() => setEditor({ mode: "import", source: "" })}><Upload size={15} />导入 Workflow</button><button onClick={() => setEditor({ mode: "edit", source: group.releases[0].sourceMarkdown ?? group.releases[0].sourceYaml })}><FilePenLine size={15} />编辑 Workflow</button><button className="primary" onClick={() => setEditor({ mode: "create", source: newWorkflowSource() })}><Plus size={15} />新建 Workflow</button></div>
+      <button className="mobile-workflow-menu-button" aria-label="Workflow 操作" aria-expanded={mobileActionsOpen} onClick={() => setMobileActionsOpen((value) => !value)}><MoreHorizontal size={19} /></button>
+      {mobileActionsOpen && <div className="mobile-workflow-menu">
+        <button onClick={() => { setMobileActionsOpen(false); setEditor({ mode: "import", source: "" }); }}><Upload size={15} />导入 Workflow</button>
+        <button onClick={() => { setMobileActionsOpen(false); setEditor({ mode: "edit", source: group.releases[0].sourceMarkdown ?? group.releases[0].sourceYaml }); }}><FilePenLine size={15} />编辑 Workflow</button>
+        <button onClick={() => { setMobileActionsOpen(false); setEditor({ mode: "create", source: newWorkflowSource() }); }}><Plus size={15} />新建 Workflow</button>
+      </div>}
     </header>
     <div className={`workflow-workspace ${selected ? "with-drawer" : ""}`}>
       <aside className="workflow-library" aria-label="Workflow 列表">
@@ -265,6 +273,7 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
         <div className="runway-toolbar">
           <div className="release-identity"><span className="mono">{pinnedRelease?.version}</span><strong>{stages.length} 个阶段</strong><small>SHA {pinnedRelease?.workflowSha256.slice(0, 12)}</small></div>
           <div className="runway-actions">
+            <label className="mobile-workflow-filter"><span>Workflow</span><select value={workflowId} onChange={(event) => { setWorkflowId(event.target.value); setProjectId("all"); }}>{groups.map((entry) => <option key={entry.id} value={entry.id}>{entry.name} · {entry.releases[0].version}</option>)}</select><ChevronDown size={14} /></label>
             <label className="project-filter"><span>查看项目</span><select value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="all">全部项目（{projects.length}）</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><ChevronDown size={14} /></label>
             <button className="workflow-project-shortcut" onClick={() => onNewProject(pinnedRelease ?? group.releases[0])}><Plus size={13} />用此 Workflow 新建项目</button>
           </div>
