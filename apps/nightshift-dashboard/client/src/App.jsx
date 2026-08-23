@@ -293,7 +293,7 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
           <div className="runway-actions">
             <label className="mobile-workflow-filter"><span>Workflow</span><select value={workflowId} onChange={(event) => { setWorkflowId(event.target.value); setProjectId("all"); }}>{groups.map((entry) => <option key={entry.id} value={entry.id}>{entry.name} · {entry.releases[0].version}</option>)}</select><ChevronDown size={14} /></label>
             <label className="project-filter"><span>查看项目</span><select value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="all">全部项目（{projects.length}）</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><ChevronDown size={14} /></label>
-            <button className="workflow-project-shortcut" onClick={() => onNewProject(pinnedRelease ?? group.releases[0])}><Plus size={13} />用此 Workflow 新建项目</button>
+            <button className="workflow-project-shortcut" onClick={() => onNewProject(group.releases[0])}><Plus size={13} />用最新版本新建项目</button>
           </div>
         </div>
         <nav className="mobile-stage-nav" aria-label="Workflow 阶段">
