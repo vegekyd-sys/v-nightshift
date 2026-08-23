@@ -210,11 +210,11 @@ export function buildAgentBrief(release, instance, stage, contentItem = null) {
     release,
     stageId: upstream.id,
   })) : [];
-  return [
+  const lines = [
     `Night Shift workflow: ${release.metadata.name} (${release.metadata.version})`,
     `Instance: ${instance.id}`,
     `Stage: ${stage.id} — ${stage.title}`,
-    ...(contentItem ? [`Content item: ${JSON.stringify(redactSensitiveInputs(contentItem))}`] : []),
+    ...(contentItem ? [`Content item: ${JSON.stringify(summarizeContentItem(contentItem))}`] : []),
     `Objective: ${strategy?.description ?? stage.description ?? "Complete the declared stage."}`,
     `Required skills (load in order): ${stageSkills(stage, contentItem?.route).join(", ") || "none"}`,
     `Input summary: ${JSON.stringify(inlineInputs)}`,
@@ -242,9 +242,14 @@ export function buildAgentBrief(release, instance, stage, contentItem = null) {
     ] : []),
     `Completion checks: ${(stage.completeWhen ?? []).join("; ") || "human decision"}`,
     `Safety: ${(stage.sideEffects ?? []).length ? `requires approved side effects: ${stage.sideEffects.join(", ")}` : "no declared external side effect"}`,
-    "Workboard completion safety: workboard heartbeat/complete/block and the equivalent Gateway RPCs mutate this real card. Never probe, test, or enumerate those RPCs, and never use placeholder input such as summary=test. First finish every required output and verify every completion check. Only then call workboard_complete once; in an isolated Worker where that tool is absent, call `openclaw gateway call workboard.cards.complete --params '{\"id\":\"<Card id from Worker protocol>\",\"token\":\"<Claim token from Worker protocol>\",\"summary\":\"<concise evidence-backed result>\"}' --json` exactly once. Call workboard.cards.block exactly once only for a genuine blocker, with the real evidence-backed reason. Do not search source code or inspect plugin internals. Never print the claim token.",
+    "Workboard completion safety: Never probe, test, or enumerate completion RPCs, and never use placeholder input such as summary=test. Finish every required output and verify every completion check first. Then call workboard_complete exactly once; if unavailable in an isolated Worker, call `openclaw gateway call workboard.cards.complete` exactly once with the real card id, claim token, and evidence summary. Block exactly once only for a genuine blocker. Do not search source code or inspect plugin internals. Never print the claim token.",
     "Return a concise result with evidence links or an explicit blocker. Do not invent missing evidence.",
-  ].join("\n").slice(0, 4000);
+  ];
+  const brief = lines.join("\n");
+  if (brief.length > 4000) {
+    throw new Error(`Night Shift card brief exceeds the native Workboard 4000 character limit (${brief.length})`);
+  }
+  return brief;
 }
 
 function deliveryManifestExample(instanceId, contentItem) {
@@ -295,6 +300,15 @@ function summarizeInputs(inputs) {
     "nightshift",
   ];
   return Object.fromEntries(keys.filter((key) => inputs[key] !== undefined).map((key) => [key, inputs[key]]));
+}
+
+function summarizeContentItem(contentItem) {
+  return redactSensitiveInputs({
+    id: contentItem.id,
+    title: contentItem.title,
+    route: contentItem.route ?? null,
+    status: contentItem.status ?? null,
+  });
 }
 
 function actionKey(release, instance, stage, action, contentItem = null) {

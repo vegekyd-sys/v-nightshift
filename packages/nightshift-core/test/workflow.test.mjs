@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
-import { compileWorkflow, loadWorkflow, planNextActions, validateWorkflow } from "../src/index.mjs";
+import { buildAgentBrief, compileWorkflow, loadWorkflow, planNextActions, validateWorkflow } from "../src/index.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = resolve(here, "../../../examples/workflows/xingqing-content-delivery.workflow.md");
@@ -53,7 +53,7 @@ test("plans the project stage and redacts secrets", async () => {
   assert.match(actions[0].card.notes, /每条计划视频拆成独立 ContentItem/);
   assert.match(actions[0].card.notes, /do not search source code or inspect plugin internals/i);
   assert.match(actions[0].card.notes, /workboard\.cards\.complete/);
-  assert.match(actions[0].card.notes, /Never probe, test, or enumerate those RPCs/);
+  assert.match(actions[0].card.notes, /Never probe, test, or enumerate completion RPCs/);
   assert.match(actions[0].card.notes, /never use placeholder input such as summary=test/);
   assert.match(actions[0].card.notes, /verify every completion check/);
   assert.match(actions[0].card.notes, /exactly once/);
@@ -80,6 +80,35 @@ test("keeps large project blueprints in an authoritative snapshot instead of ove
   assert.match(action.card.notes, /Authoritative project inputs: read \/srv\/nightshift\/NS-LARGE\/project-inputs\.json/);
   assert.match(action.card.notes, /Workboard completion safety/);
   assert.doesNotMatch(action.card.notes, /A detailed creative direction/);
+});
+
+test("keeps every stage brief complete instead of truncating at the native card boundary", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const instance = activeInstance(release);
+  instance.inputs.contentBlueprint = Array.from({ length: 10 }, (_, index) => ({
+    id: `video-${index + 1}`,
+    title: `Overseas video ${index + 1}`,
+    longDirection: "preserve this in the project snapshot ".repeat(30),
+  }));
+  instance.inputs.nightshift = {
+    contentItemsManifestPath: "/srv/nightshift/NS-LARGE/content-items.json",
+    instanceDir: "/srv/nightshift/NS-LARGE",
+    projectInputsPath: "/srv/nightshift/NS-LARGE/project-inputs.json",
+  };
+  const contentItem = {
+    id: "video-1",
+    title: "Overseas video 1",
+    route: "SCENE_EDIT",
+    status: "routing",
+    payload: { script: "This long script belongs in content-items.json. ".repeat(200) },
+  };
+  for (const stage of release.spec.stages) {
+    const notes = buildAgentBrief(release, instance, stage, stage.scope === "content-item" ? contentItem : null);
+    assert.ok(notes.length < 4000, `${stage.id} notes length ${notes.length}`);
+    assert.match(notes, /Workboard completion safety/);
+    assert.match(notes, /Return a concise result with evidence links or an explicit blocker\. Do not invent missing evidence\.$/);
+    assert.doesNotMatch(notes, /This long script belongs/);
+  }
 });
 
 test("fans one project out into independent content-item route cards", async () => {
