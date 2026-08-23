@@ -4,7 +4,7 @@ import {
   validateWorkflow,
   WorkflowValidationError,
 } from "./workflow.mjs";
-import { buildAgentBrief, planNextActions, requiredApproval } from "./orchestrator.mjs";
+import { buildAgentBrief, planNextActions, requiredApproval, stageTimeoutSeconds } from "./orchestrator.mjs";
 
 export class NightShiftRuntime {
   constructor({ board = "nightshift", completionValidator = null, store, workboard }) {
@@ -263,7 +263,11 @@ export class NightShiftRuntime {
       ? this.store.listContentItems(instanceId).find((entry) => entry.id === contentItemId)
       : null;
     if (contentItemId && !contentItem) throw new Error(`Unknown content item ${contentItemId}`);
-    await this.workboard.updateCard(cardId, { notes: buildAgentBrief(release, instance, stage, contentItem) });
+    await this.workboard.updateCard(cardId, {
+      notes: buildAgentBrief(release, instance, stage, contentItem),
+      maxRetries: stage.retry?.maxAttempts ?? 1,
+      maxRuntimeSeconds: stageTimeoutSeconds(stage.timeout),
+    });
     await this.workboard.moveCard(cardId, "ready");
     const runs = contentItemId ? this.store.listContentItemRuns(instanceId) : this.store.listStageRuns(instanceId);
     const run = runs.find((entry) => entry.cardId === cardId && entry.stageId === stageId);

@@ -52,6 +52,8 @@ export class WorkboardGatewayAdapter {
       priority: card.priority ?? "normal",
       agentId: card.assignedAgent ?? undefined,
       labels: [...new Set([...(card.labels ?? []), marker])],
+      maxRetries: card.automation?.maxAttempts ?? undefined,
+      maxRuntimeSeconds: card.automation?.maxRuntimeSeconds ?? undefined,
       notes: card.notes ?? null,
       metadata: {
         automation: {

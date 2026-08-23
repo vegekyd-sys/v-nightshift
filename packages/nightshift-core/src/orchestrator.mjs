@@ -185,9 +185,17 @@ function cardPayload(release, instance, stage, status, contentItem = null) {
       inputHash,
       skills: stageSkills(stage, contentItem?.route),
       maxRuntime: stage.timeout,
+      maxRuntimeSeconds: stageTimeoutSeconds(stage.timeout),
       maxAttempts: stage.retry?.maxAttempts ?? 1,
     },
   };
+}
+
+export function stageTimeoutSeconds(value) {
+  const match = /^\s*(\d+)\s*([smhd])\s*$/i.exec(String(value ?? ""));
+  if (!match) throw new Error(`Unsupported stage timeout ${value}`);
+  const unitSeconds = { s: 1, m: 60, h: 3600, d: 86400 };
+  return Number(match[1]) * unitSeconds[match[2].toLowerCase()];
 }
 
 export function buildAgentBrief(release, instance, stage, contentItem = null) {

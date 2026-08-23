@@ -438,6 +438,7 @@ test("rejects a done card when its declared delivery fails validation", async ()
     stageId: "produce",
   });
   assert.equal(workboard.cards[0].status, "ready");
+  assert.equal(workboard.cards[0].maxRuntimeSeconds, 14_400);
   assert.match(workboard.cards[0].notes, /\{"version":1/);
   deliveryValid = true;
   workboard.cards[0].status = "done";

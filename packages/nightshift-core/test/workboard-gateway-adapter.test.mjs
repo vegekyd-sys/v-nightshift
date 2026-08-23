@@ -45,7 +45,7 @@ test("creates and reuses native cards through Gateway RPC", async () => {
       status: "todo",
       assignedAgent: "main",
       labels: ["instance:NS-1"],
-      automation: { workflowId: "xingqing" },
+      automation: { workflowId: "xingqing", maxAttempts: 2, maxRuntimeSeconds: 14_400 },
     },
   };
   const first = await adapter.applyAction(action);
@@ -53,6 +53,8 @@ test("creates and reuses native cards through Gateway RPC", async () => {
   assert.equal(first.status, "created");
   assert.equal(second.status, "reused");
   assert.equal(first.card.metadata.automation.boardId, "nightshift-lab");
+  assert.equal(first.card.maxRetries, 2);
+  assert.equal(first.card.maxRuntimeSeconds, 14_400);
   assert.ok(calls.every(({ args }) => !args.includes("--token")));
   assert.ok(calls.every(({ args }) => !args.join(" ").includes("test-token")));
   assert.ok(calls.every(({ env }) => env.OPENCLAW_GATEWAY_TOKEN === "test-token"));

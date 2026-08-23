@@ -177,6 +177,7 @@ test("paid production approval is isolated per content item", async () => {
   const approved = planNextActions({ release, instance, runs: [{ stageId: "plan", status: "done" }], contentItems, contentItemRuns });
   assert.equal(approved[0].type, "create_workboard_card");
   assert.equal(approved[0].stageId, "produce");
+  assert.equal(approved[0].card.automation.maxRuntimeSeconds, 14_400);
   assert.match(approved[0].card.notes, /Delivery contract: write exactly this v1 shape/);
   assert.match(approved[0].card.notes, /\{"version":1/);
 });
