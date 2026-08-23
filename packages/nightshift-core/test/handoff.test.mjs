@@ -18,12 +18,36 @@ const fixture = resolve(here, "../../../examples/workflows/xingqing-content-deli
 
 test("derives each stage input from only its immediate predecessors", async () => {
   const release = compileWorkflow(await loadWorkflow(fixture));
+  const plan = stageHandoffContract(release, "plan");
+  assert.deepEqual(plan.inputs, [{ name: "projectInputs", sourceStage: "control-plane" }]);
   const route = stageHandoffContract(release, "route");
   assert.deepEqual(route.previous.map((entry) => entry.id), ["plan"]);
   assert.deepEqual(route.inputs.map((entry) => entry.name), ["requirementSnapshot", "planUrl", "contentItemsManifest"]);
   assert.deepEqual(route.outputs.map((entry) => entry.name), ["routeDecision"]);
   assert.deepEqual(route.next.map((entry) => entry.id), ["materials"]);
   assert.equal(presentStageHandoff({ release, stageId: "route", completed: true }).deliveryPlacement, null);
+});
+
+test("accepts the control-plane project snapshot as the root stage input", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const manifest = normalizeStageHandoff({
+    version: 1,
+    instanceId: "NS-ROOT",
+    contentItemId: null,
+    stageId: "plan",
+    inputs: [{
+      name: "projectInputs",
+      sourceStage: "control-plane",
+      summary: "Complete redacted project brief and constraints",
+      artifact: "project-inputs.json",
+    }],
+    outputs: stageHandoffContract(release, "plan").outputs.map((entry) => ({
+      ...entry,
+      summary: `Recorded ${entry.name}`,
+      artifact: `${entry.name}.json`,
+    })),
+  }, { instanceId: "NS-ROOT", release, stageId: "plan" });
+  assert.equal(manifest.inputs[0].artifact, "project-inputs.json");
 });
 
 test("places the finished video only on produce output and downstream input", async () => {

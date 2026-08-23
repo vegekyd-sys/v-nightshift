@@ -12,11 +12,14 @@ export function stageHandoffContract(release, stageId) {
   const next = stages
     .filter((entry) => (entry.needs ?? []).includes(stage.id))
     .map((entry) => ({ id: entry.id, title: entry.title }));
+  const inputs = previous.length > 0
+    ? previous.flatMap((source) => source.outputs.map((name) => ({ name, sourceStage: source.id })))
+    : [{ name: "projectInputs", sourceStage: "control-plane" }];
   return {
     stage: { id: stage.id, title: stage.title, scope: stage.scope },
     previous,
     next,
-    inputs: previous.flatMap((source) => source.outputs.map((name) => ({ name, sourceStage: source.id }))),
+    inputs,
     outputs: (stage.outputs ?? []).map((name) => ({ name, sourceStage: stage.id })),
   };
 }
