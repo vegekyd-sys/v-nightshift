@@ -107,11 +107,12 @@ async function handleApi(request, response, url) {
     }));
     json(response, 200, {
       board,
-      cards: cardCache,
+      cards: cardCache.map(withCardLinks),
       cardsUpdatedAt,
       events: store.listEvents(null, 80),
-      instances,
-      workflows: store.listReleases(),
+      instances: instances.map(withInstanceLinks),
+      links: dashboardLinks(),
+      workflows: store.listReleases().map(withWorkflowLinks),
     });
     return;
   }
@@ -123,13 +124,14 @@ async function handleApi(request, response, url) {
         version: release.version,
         workflowId: release.workflowId,
         workflowSha256: release.workflowSha256,
+        links: workflowLinks(release),
       })),
     });
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/instances") {
     json(response, 200, {
-      instances: store.listInstances().map((instance) => ({
+      instances: store.listInstances().map((instance) => withInstanceLinks({
         ...instance,
         contentItemCount: store.listContentItems(instance.id).length,
         contentItemRuns: store.listContentItemRuns(instance.id),
@@ -147,7 +149,7 @@ async function handleApi(request, response, url) {
       return;
     }
     json(response, 200, {
-      ...instance,
+      ...withInstanceLinks(instance),
       contentItems: store.listContentItems(instanceId),
       contentItemRuns: store.listContentItemRuns(instanceId),
       stageRuns: store.listStageRuns(instanceId),
@@ -157,7 +159,7 @@ async function handleApi(request, response, url) {
   if (request.method === "GET" && url.pathname === "/api/cards") {
     const cards = url.searchParams.get("refresh") === "1" ? await refreshCards() : cardCache;
     const status = url.searchParams.get("status");
-    json(response, 200, { cards: status ? cards.filter((card) => card.status === status) : cards });
+    json(response, 200, { cards: (status ? cards.filter((card) => card.status === status) : cards).map(withCardLinks) });
     return;
   }
   const stageHandoffMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/stages\/([^/]+)\/handoff$/);
@@ -273,7 +275,7 @@ async function handleApi(request, response, url) {
   }
   if (request.method === "POST" && url.pathname === "/api/workflows/publish") {
     const body = await bodyJson(request);
-    json(response, 200, runtime.publish(body.sourceMarkdown ?? body.sourceYaml ?? ""));
+    json(response, 200, withWorkflowLinks(runtime.publish(body.sourceMarkdown ?? body.sourceYaml ?? "")));
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/workflows/import") {
@@ -285,7 +287,7 @@ async function handleApi(request, response, url) {
       return;
     }
     const draft = runtime.saveDraft(source);
-    const release = body.publish === false ? null : runtime.publish(source);
+    const release = body.publish === false ? null : withWorkflowLinks(runtime.publish(source));
     json(response, release ? 201 : 200, { draft, release });
     return;
   }
@@ -330,6 +332,7 @@ async function handleApi(request, response, url) {
       ...store.getInstance(created.id),
       initialSchedule,
       initialScheduleError,
+      links: projectLinks(created.id),
       preflight,
     });
     return;
@@ -852,6 +855,58 @@ function parseByteRange(header, size) {
   }
   if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || start > end || start >= size) return false;
   return { start, end };
+}
+
+function dashboardLinks() {
+  return {
+    home: dashboardUrl(),
+    liveBoard: dashboardUrl({ view: "board" }),
+    projects: dashboardUrl({ view: "projects" }),
+    workflows: dashboardUrl({ view: "workflows" }),
+  };
+}
+
+function workflowLinks(release) {
+  return {
+    workflow: dashboardUrl({
+      view: "workflows",
+      workflow: release.workflowId ?? release.metadata?.id,
+      release: release.workflowSha256 ?? release.metadata?.workflowSha256,
+    }),
+  };
+}
+
+function projectLinks(instanceId) {
+  return {
+    project: dashboardUrl({ view: "workflows", project: instanceId }),
+  };
+}
+
+function cardLinks(cardId) {
+  return {
+    task: dashboardUrl({ view: "board", card: cardId }),
+  };
+}
+
+function withWorkflowLinks(release) {
+  return { ...release, links: workflowLinks(release) };
+}
+
+function withInstanceLinks(instance) {
+  return { ...instance, links: projectLinks(instance.id) };
+}
+
+function withCardLinks(card) {
+  return { ...card, links: cardLinks(card.id) };
+}
+
+function dashboardUrl(parameters = {}) {
+  const origin = publicHost ? `https://${publicHost}` : `http://${host}:${port}`;
+  const url = new URL("/", origin);
+  for (const [key, value] of Object.entries(parameters)) {
+    if (value) url.searchParams.set(key, value);
+  }
+  return url.toString();
 }
 
 async function serveStatic(response, pathname) {

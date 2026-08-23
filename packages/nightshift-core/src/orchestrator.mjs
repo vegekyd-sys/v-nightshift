@@ -3,6 +3,7 @@ import { handoffManifestExample, stageHandoffContract, stageHandoffPath } from "
 import { interpolate, stageSkills } from "./workflow.mjs";
 
 const ACTIVE_STATUSES = new Set(["ready", "running"]);
+export const WORKBOARD_NOTES_LIMIT = 12000;
 const PRESENT_STATUSES = new Set([
   "ready",
   "running",
@@ -246,8 +247,8 @@ export function buildAgentBrief(release, instance, stage, contentItem = null) {
     "Return a concise result with evidence links or an explicit blocker. Do not invent missing evidence.",
   ];
   const brief = lines.join("\n");
-  if (brief.length > 4000) {
-    throw new Error(`Night Shift card brief exceeds the native Workboard 4000 character limit (${brief.length})`);
+  if (brief.length > WORKBOARD_NOTES_LIMIT) {
+    throw new Error(`Night Shift card brief exceeds the native Workboard ${WORKBOARD_NOTES_LIMIT} character limit (${brief.length})`);
   }
   return brief;
 }

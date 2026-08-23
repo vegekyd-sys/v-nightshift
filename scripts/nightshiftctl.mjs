@@ -28,6 +28,36 @@ async function run(input) {
   }
   if (resource === "projects" && action === "list") return api("/api/instances");
   if (resource === "projects" && action === "get" && subject) return api(`/api/instances/${encodeURIComponent(subject)}`);
+  if (resource === "projects" && action === "monitor" && subject) {
+    const [project, cardsResult] = await Promise.all([
+      api(`/api/instances/${encodeURIComponent(subject)}`),
+      api("/api/cards?refresh=1"),
+    ]);
+    const cards = cardsResult.cards.filter((card) => label(card, "instance") === subject);
+    return {
+      project,
+      summary: {
+        active: cards.filter((card) => card.status === "running").length,
+        blocked: cards.filter((card) => card.status === "blocked").length,
+        done: cards.filter((card) => card.status === "done").length,
+        queued: cards.filter((card) => ["ready", "todo", "planned"].includes(card.status)).length,
+        review: cards.filter((card) => card.status === "review").length,
+      },
+      tasks: cards.map((card) => ({
+        agentId: card.agentId ?? null,
+        attempts: Array.isArray(card.metadata?.attempts) ? card.metadata.attempts.length : card.sessionKey ? 1 : 0,
+        cardId: card.id,
+        contentItemId: card.metadata?.automation?.contentItemId ?? label(card, "content-item"),
+        links: card.links,
+        runId: card.runId ?? card.metadata?.attempts?.at(-1)?.runId ?? null,
+        sessionKey: card.sessionKey ?? card.metadata?.attempts?.at(-1)?.sessionKey ?? null,
+        stageId: card.metadata?.automation?.stageId ?? label(card, "stage"),
+        status: card.status,
+        title: card.title,
+        updatedAt: card.updatedAt,
+      })),
+    };
+  }
   if (resource === "projects" && ["preflight", "create"].includes(action) && subject) {
     const project = await readJson(subject);
     await resolveWorkflow(project);
@@ -46,6 +76,10 @@ async function run(input) {
     const status = option(input, "--status");
     return api(`/api/cards${status ? `?status=${encodeURIComponent(status)}` : ""}`);
   }
+  if (resource === "cards" && action === "session" && subject) {
+    const runId = option(input, "--run-id");
+    return api(`/api/cards/${encodeURIComponent(subject)}/session${runId ? `?runId=${encodeURIComponent(runId)}` : ""}`);
+  }
   if (resource === "cards" && ["approve", "changes", "reject", "retry"].includes(action) && subject) {
     const card = await findCard(subject);
     const automation = card.metadata?.automation ?? {};
@@ -62,7 +96,7 @@ async function run(input) {
       method: "POST",
     });
   }
-  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|preflight|create|start|pause | cards list|approve|changes|reject|retry");
+  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|monitor|preflight|create|start|pause | cards list|session|approve|changes|reject|retry");
 }
 
 async function resolveWorkflow(project) {

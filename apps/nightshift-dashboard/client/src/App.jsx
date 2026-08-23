@@ -23,7 +23,9 @@ const columns = [
 ];
 
 export function App() {
-  const [active, setActive] = useState("board");
+  const initialLocation = useRef(readDashboardLocation()).current;
+  const deepLinkApplied = useRef(false);
+  const [active, setActive] = useState(initialLocation.view);
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
@@ -55,6 +57,24 @@ export function App() {
     const timer = setInterval(() => refresh(false).catch(() => undefined), 10000);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    updateDashboardLocation({ view: active });
+  }, [active]);
+
+  useEffect(() => {
+    if (!data || deepLinkApplied.current) return;
+    if (initialLocation.card) {
+      const card = (data.cards ?? []).find((entry) => entry.id === initialLocation.card);
+      if (card) setSelected(card);
+    }
+    deepLinkApplied.current = true;
+  }, [data, initialLocation.card]);
+
+  useEffect(() => {
+    if (!data || !deepLinkApplied.current) return;
+    updateDashboardLocation({ card: selected?.id ?? null });
+  }, [data, selected?.id]);
 
   useEffect(() => {
     const instanceId = selected ? cardLabel(selected, "instance") : null;
@@ -144,7 +164,7 @@ export function App() {
       <main className="main-shell">
         {error && <div className="error-banner">{error}</div>}
         {active === "board" && <LiveBoard data={data} query={query} setQuery={setQuery} selected={selectedForDecision} setSelected={setSelected} refreshing={refreshing} refresh={refresh} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} />}
-        {active === "workflows" && <WorkflowStudio data={data} refresh={refresh} setSelected={setSelected} selected={selectedForDecision} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onNewProject={(release) => setProjectReleaseSha(release?.workflowSha256 ?? data?.workflows?.[0]?.workflowSha256)} />}
+        {active === "workflows" && <WorkflowStudio data={data} refresh={refresh} initialProjectId={initialLocation.project} initialWorkflowId={initialLocation.workflow} setSelected={setSelected} selected={selectedForDecision} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onNewProject={(release) => setProjectReleaseSha(release?.workflowSha256 ?? data?.workflows?.[0]?.workflowSha256)} />}
         {active === "projects" && <Projects data={data} onNewProject={() => setProjectReleaseSha(data?.workflows?.[0]?.workflowSha256)} />}
         {active === "agents" && <Agents data={data} />}
       </main>
@@ -166,19 +186,34 @@ function LiveBoard({ data, query, setQuery, selected, setSelected, refreshing, r
   </>;
 }
 
-function WorkflowStudio({ data, refresh, setSelected, selected, decide, retry, delivery, deliveryState, deliveryError, handoff, handoffState, handoffError, onNewProject }) {
+function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, setSelected, selected, decide, retry, delivery, deliveryState, deliveryError, handoff, handoffState, handoffError, onNewProject }) {
   const groups = useMemo(() => groupWorkflowReleases(data?.workflows ?? []), [data?.workflows]);
-  const [workflowId, setWorkflowId] = useState("");
-  const [projectId, setProjectId] = useState("all");
+  const deepLinkApplied = useRef(false);
+  const [workflowId, setWorkflowId] = useState(initialWorkflowId ?? "");
+  const [projectId, setProjectId] = useState(initialProjectId ?? "all");
   const [editor, setEditor] = useState(null);
   useEffect(() => {
     if (!groups.length) return;
+    if (!deepLinkApplied.current && initialProjectId) {
+      const project = (data?.instances ?? []).find((entry) => entry.id === initialProjectId);
+      const release = (data?.workflows ?? []).find((entry) => entry.workflowSha256 === project?.workflowSha256);
+      if (release) setWorkflowId(release.workflowId);
+      deepLinkApplied.current = true;
+      return;
+    }
     if (!groups.some((group) => group.id === workflowId)) setWorkflowId(groups[0].id);
-  }, [groups, workflowId]);
+  }, [data?.instances, data?.workflows, groups, initialProjectId, workflowId]);
   const group = groups.find((entry) => entry.id === workflowId) ?? groups[0];
   const releaseShas = useMemo(() => new Set(group?.releases.map((release) => release.workflowSha256) ?? []), [group]);
   const projects = useMemo(() => (data?.instances ?? []).filter((instance) => releaseShas.has(instance.workflowSha256)), [data?.instances, releaseShas]);
-  useEffect(() => { if (projectId !== "all" && !projects.some((project) => project.id === projectId)) setProjectId("all"); }, [projectId, projects]);
+  useEffect(() => {
+    if (projectId === "all" || projects.some((project) => project.id === projectId)) return;
+    const project = (data?.instances ?? []).find((entry) => entry.id === projectId);
+    const release = (data?.workflows ?? []).find((entry) => entry.workflowSha256 === project?.workflowSha256);
+    if (release && release.workflowId !== workflowId) return;
+    setProjectId("all");
+  }, [data?.instances, data?.workflows, projectId, projects, workflowId]);
+  useEffect(() => { updateDashboardLocation({ project: projectId === "all" ? null : projectId, workflow: workflowId || null }); }, [projectId, workflowId]);
   const visibleProjects = projectId === "all" ? projects : projects.filter((project) => project.id === projectId);
   const pinnedRelease = projectId === "all" ? group?.releases[0] : group?.releases.find((release) => release.workflowSha256 === visibleProjects[0]?.workflowSha256);
   const stages = pinnedRelease?.manifest?.spec?.stages ?? [];
@@ -371,7 +406,7 @@ function ProjectInput({ name, contract, value, onChange }) {
   return <label className="project-field"><span>{labelText}{contract.required ? " *" : ""}</span><input type={contract.type === "number" ? "number" : name.toLowerCase().includes("url") ? "url" : "text"} value={value ?? ""} onChange={(event) => onChange(contract.type === "number" ? Number(event.target.value) : event.target.value)} required={contract.required === true} placeholder={projectInputPlaceholder(name)} /></label>;
 }
 
-function Projects({ data, onNewProject }) { return <div className="simple-screen"><header className="topbar"><div><span className="section-label">Workflow instances</span><h1>Projects</h1><p className="topbar-copy">一个 Project 是某个客户或策划案在一个固定 Workflow 版本上的运行实例。</p></div><div className="top-actions"><button className="primary" onClick={onNewProject}><Plus size={15} />新建项目</button></div></header><div className="project-table"><div className="table-head"><span>Project</span><span>Workflow</span><span>视频任务</span><span>Status</span><span>Updated</span></div>{(data?.instances ?? []).map((instance) => <div className="table-row" key={instance.id}><strong>{instance.name}</strong><span className="mono">{instance.workflowSha256.slice(0, 12)}</span><span>{instance.contentItems?.length ?? 0} 条 · {routeSummary(instance.contentItems)}</span><span>{instance.status}</span><span>{new Date(instance.updatedAt).toLocaleString()}</span></div>)}</div></div>; }
+function Projects({ data, onNewProject }) { return <div className="simple-screen"><header className="topbar"><div><span className="section-label">Workflow instances</span><h1>Projects</h1><p className="topbar-copy">一个 Project 是某个客户或策划案在一个固定 Workflow 版本上的运行实例。</p></div><div className="top-actions"><button className="primary" onClick={onNewProject}><Plus size={15} />新建项目</button></div></header><div className="project-table"><div className="table-head"><span>Project</span><span>Workflow</span><span>视频任务</span><span>Status</span><span>Updated</span></div>{(data?.instances ?? []).map((instance) => <a className="table-row" href={instance.links?.project ?? `/?view=workflows&project=${encodeURIComponent(instance.id)}`} key={instance.id}><strong>{instance.name}</strong><span className="mono">{instance.workflowSha256.slice(0, 12)}</span><span>{instance.contentItems?.length ?? 0} 条 · {routeSummary(instance.contentItems)}</span><span>{instance.status}</span><span>{new Date(instance.updatedAt).toLocaleString()}</span></a>)}</div></div>; }
 
 function Agents({ data }) {
   const agents = [...new Set([
@@ -482,6 +517,28 @@ function projectInputPlaceholder(name) {
 function parseJsonValue(value) {
   try { return JSON.parse(value); }
   catch { return value; }
+}
+
+function readDashboardLocation() {
+  if (typeof window === "undefined") return { card: null, project: null, view: "board", workflow: null };
+  const parameters = new URLSearchParams(window.location.search);
+  const view = ["board", "workflows", "projects", "agents"].includes(parameters.get("view")) ? parameters.get("view") : "board";
+  return {
+    card: parameters.get("card"),
+    project: parameters.get("project"),
+    view,
+    workflow: parameters.get("workflow"),
+  };
+}
+
+function updateDashboardLocation(patch) {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  for (const [key, value] of Object.entries(patch)) {
+    if (value) url.searchParams.set(key, value);
+    else url.searchParams.delete(key);
+  }
+  window.history.replaceState(null, "", url);
 }
 
 function defaultStage(number) {

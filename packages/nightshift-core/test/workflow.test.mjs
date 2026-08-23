@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
-import { buildAgentBrief, compileWorkflow, loadWorkflow, planNextActions, validateWorkflow } from "../src/index.mjs";
+import { buildAgentBrief, compileWorkflow, loadWorkflow, planNextActions, validateWorkflow, WORKBOARD_NOTES_LIMIT } from "../src/index.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = resolve(here, "../../../examples/workflows/xingqing-content-delivery.workflow.md");
@@ -76,7 +76,7 @@ test("keeps large project blueprints in an authoritative snapshot instead of ove
     projectInputsPath: "/srv/nightshift/NS-LARGE/project-inputs.json",
   };
   const [action] = planNextActions({ release, instance });
-  assert.ok(action.card.notes.length <= 4000);
+  assert.ok(action.card.notes.length <= WORKBOARD_NOTES_LIMIT);
   assert.match(action.card.notes, /Authoritative project inputs: read \/srv\/nightshift\/NS-LARGE\/project-inputs\.json/);
   assert.match(action.card.notes, /Workboard completion safety/);
   assert.doesNotMatch(action.card.notes, /A detailed creative direction/);
@@ -104,7 +104,7 @@ test("keeps every stage brief complete instead of truncating at the native card 
   };
   for (const stage of release.spec.stages) {
     const notes = buildAgentBrief(release, instance, stage, stage.scope === "content-item" ? contentItem : null);
-    assert.ok(notes.length < 4000, `${stage.id} notes length ${notes.length}`);
+    assert.ok(notes.length < WORKBOARD_NOTES_LIMIT, `${stage.id} notes length ${notes.length}`);
     assert.match(notes, /Workboard completion safety/);
     assert.match(notes, /Return a concise result with evidence links or an explicit blocker\. Do not invent missing evidence\.$/);
     assert.doesNotMatch(notes, /This long script belongs/);
