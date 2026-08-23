@@ -204,6 +204,19 @@ export class NightShiftStore {
     return this.getInstance(id);
   }
 
+  archiveInstance(id, now = new Date()) {
+    const current = this.getInstance(id);
+    if (!current) throw new Error(`Unknown instance ${id}`);
+    const archived = this.updateInstanceStatus(id, "archived", now);
+    this.appendEvent({
+      instanceId: id,
+      type: "instance.archived",
+      payload: { previousStatus: current.status },
+      now,
+    });
+    return archived;
+  }
+
   updateInstanceInputs(id, patch, now = new Date()) {
     const current = this.getInstance(id);
     if (!current) throw new Error(`Unknown instance ${id}`);

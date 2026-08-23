@@ -99,7 +99,7 @@ async function handleApi(request, response, url) {
   }
   if (request.method === "GET" && url.pathname === "/api/bootstrap") {
     if (url.searchParams.get("refresh") === "1") await refreshCards();
-    const instances = store.listInstances().map((instance) => ({
+    const instances = store.listInstances().filter((instance) => instance.status !== "archived").map((instance) => ({
       ...instance,
       contentItems: store.listContentItems(instance.id),
       contentItemRuns: store.listContentItemRuns(instance.id),
@@ -107,7 +107,7 @@ async function handleApi(request, response, url) {
     }));
     json(response, 200, {
       board,
-      cards: cardCache.map(withCardLinks),
+      cards: visibleCards(cardCache, instances).map(withCardLinks),
       cardsUpdatedAt,
       events: store.listEvents(null, 80),
       instances: instances.map(withInstanceLinks),
@@ -131,7 +131,7 @@ async function handleApi(request, response, url) {
   }
   if (request.method === "GET" && url.pathname === "/api/instances") {
     json(response, 200, {
-      instances: store.listInstances().map((instance) => withInstanceLinks({
+      instances: store.listInstances().filter((instance) => instance.status !== "archived").map((instance) => withInstanceLinks({
         ...instance,
         contentItemCount: store.listContentItems(instance.id).length,
         contentItemRuns: store.listContentItemRuns(instance.id),
@@ -156,10 +156,35 @@ async function handleApi(request, response, url) {
     });
     return;
   }
+  if (request.method === "DELETE" && instanceReadMatch) {
+    const instanceId = decodeURIComponent(instanceReadMatch[1]);
+    const instance = store.getInstance(instanceId);
+    if (!instance || instance.status === "archived") {
+      json(response, 404, { error: "Project not found" });
+      return;
+    }
+    const projectCards = cardCache.filter((card) => cardInstanceId(card) === instanceId);
+    const running = projectCards.filter((card) => card.status === "running");
+    if (running.length > 0) {
+      json(response, 409, { error: `项目仍有 ${running.length} 个 Agent 正在工作，请等待完成或先暂停项目` });
+      return;
+    }
+    for (const card of projectCards.filter((entry) => !["done", "cancelled"].includes(entry.status))) {
+      await workboard.moveCard(card.id, "cancelled");
+    }
+    const archived = store.archiveInstance(instanceId);
+    refreshCards().catch((error) => {
+      lastSchedulerError = error.message;
+    });
+    json(response, 200, { id: archived.id, status: archived.status });
+    return;
+  }
   if (request.method === "GET" && url.pathname === "/api/cards") {
     const cards = url.searchParams.get("refresh") === "1" ? await refreshCards() : cardCache;
     const status = url.searchParams.get("status");
-    json(response, 200, { cards: (status ? cards.filter((card) => card.status === status) : cards).map(withCardLinks) });
+    const instances = store.listInstances().filter((instance) => instance.status !== "archived");
+    const filtered = visibleCards(cards, instances);
+    json(response, 200, { cards: (status ? filtered.filter((card) => card.status === status) : filtered).map(withCardLinks) });
     return;
   }
   const stageHandoffMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/stages\/([^/]+)\/handoff$/);
@@ -898,6 +923,25 @@ function withInstanceLinks(instance) {
 
 function withCardLinks(card) {
   return { ...card, links: cardLinks(card.id) };
+}
+
+function cardInstanceId(card) {
+  return card.metadata?.automation?.instanceId ??
+    (card.labels ?? []).find((entry) => entry.startsWith("instance:"))?.slice("instance:".length) ??
+    null;
+}
+
+function visibleCards(cards, instances) {
+  const archived = new Set(
+    store.listInstances()
+      .filter((instance) => instance.status === "archived")
+      .map((instance) => instance.id),
+  );
+  const visible = new Set(instances.map((instance) => instance.id));
+  return cards.filter((card) => {
+    const instanceId = cardInstanceId(card);
+    return !instanceId || visible.has(instanceId) || !archived.has(instanceId);
+  });
 }
 
 function dashboardUrl(parameters = {}) {

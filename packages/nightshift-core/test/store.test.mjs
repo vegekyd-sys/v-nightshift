@@ -75,3 +75,23 @@ test("one workflow release owns many isolated customer instances", async () => {
   assert.equal(store.listContentItems("NS-CUSTOMER-B")[0].title, "customer-b video");
   store.close();
 });
+
+test("archiving a project keeps it recoverable and records an audit event", async () => {
+  const source = await import("node:fs/promises").then(({ readFile }) => readFile(fixture, "utf8"));
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const store = new NightShiftStore();
+  store.saveRelease(release, source);
+  store.createInstance({
+    id: "NS-ARCHIVE-1",
+    name: "Archive test",
+    workflowSha256: release.metadata.workflowSha256,
+    status: "paused",
+  });
+
+  const archived = store.archiveInstance("NS-ARCHIVE-1", new Date("2026-08-23T12:00:00Z"));
+
+  assert.equal(archived.status, "archived");
+  assert.equal(store.listEvents("NS-ARCHIVE-1")[0].type, "instance.archived");
+  assert.equal(store.listEvents("NS-ARCHIVE-1")[0].payload.previousStatus, "paused");
+  store.close();
+});

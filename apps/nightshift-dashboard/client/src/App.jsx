@@ -8,6 +8,7 @@ import {
   FileUp,
   Plus,
   Save,
+  Trash2,
   Upload,
   X,
 } from "lucide-react";
@@ -38,6 +39,7 @@ export function App() {
   const [handoffError, setHandoffError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const [projectReleaseSha, setProjectReleaseSha] = useState(null);
+  const [workflowProjectId, setWorkflowProjectId] = useState(initialLocation.project);
   const refreshInFlight = useRef(null);
   const selectedForDecision = useMemo(() => withDecisionContext(selected, data), [selected, data]);
 
@@ -164,8 +166,8 @@ export function App() {
       <main className="main-shell">
         {error && <div className="error-banner">{error}</div>}
         {active === "board" && <LiveBoard data={data} query={query} setQuery={setQuery} selected={selectedForDecision} setSelected={setSelected} refreshing={refreshing} refresh={refresh} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} />}
-        {active === "workflows" && <WorkflowStudio data={data} refresh={refresh} initialProjectId={initialLocation.project} initialWorkflowId={initialLocation.workflow} setSelected={setSelected} selected={selectedForDecision} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onNewProject={(release) => setProjectReleaseSha(release?.workflowSha256 ?? data?.workflows?.[0]?.workflowSha256)} />}
-        {active === "projects" && <Projects data={data} onNewProject={() => setProjectReleaseSha(data?.workflows?.[0]?.workflowSha256)} />}
+        {active === "workflows" && <WorkflowStudio data={data} refresh={refresh} initialProjectId={workflowProjectId} initialWorkflowId={initialLocation.workflow} setSelected={setSelected} selected={selectedForDecision} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onNewProject={(release) => setProjectReleaseSha(release?.workflowSha256 ?? data?.workflows?.[0]?.workflowSha256)} />}
+        {active === "projects" && <Projects data={data} refresh={refresh} onNewProject={() => setProjectReleaseSha(data?.workflows?.[0]?.workflowSha256)} onOpenProject={(projectId) => { setWorkflowProjectId(projectId); updateDashboardLocation({ project: projectId, view: "workflows" }); setActive("workflows"); }} />}
         {active === "agents" && <Agents data={data} />}
       </main>
       {projectReleaseSha && <ProjectEditor releases={data?.workflows ?? []} initialReleaseSha={projectReleaseSha} onClose={() => setProjectReleaseSha(null)} onCreated={(result) => { setProjectReleaseSha(null); setActive("projects"); if (result.initialScheduleError) setError(`项目已创建，首次调度将在下一轮重试：${result.initialScheduleError}`); refresh(true).catch((reason) => setError(reason.message)); }} />}
@@ -222,13 +224,16 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
   const pinnedRelease = projectId === "all" ? group?.releases[0] : group?.releases.find((release) => release.workflowSha256 === visibleProjects[0]?.workflowSha256);
   const stages = pinnedRelease?.manifest?.spec?.stages ?? [];
   const taskIndex = useMemo(() => indexStageTasks(stages, visibleProjects, data?.cards ?? []), [stages, visibleProjects, data?.cards]);
+  const allTasks = useMemo(() => [...taskIndex.values()].flat(), [taskIndex]);
+  const liveSummary = useMemo(() => summarizeStatuses(allTasks), [allTasks]);
+  const activeTasks = useMemo(() => allTasks.filter((task) => task.status === "running"), [allTasks]);
 
   if (!data) return <div className="workflow-loading"><span className="delivery-skeleton" /><strong>正在载入 Workflow 运行状态</strong></div>;
   if (!group) return <div className="simple-screen"><header className="topbar"><div><h1>Workflows</h1><p className="topbar-copy">导入第一份 workflow.md，建立可执行生产线。</p></div><div className="top-actions"><button className="primary" onClick={() => setEditor({ mode: "create", source: newWorkflowSource() })}><Plus size={15} />新建 Workflow</button></div></header></div>;
 
   return <div className="workflow-screen workflow-studio">
     <header className="topbar workflow-topbar">
-      <div><span className="section-label">Workflow operations</span><h1>{group.name}</h1><p className="topbar-copy">每个项目沿同一条阶段轨道运行；点击任务即可查看证据、处理审核或解除阻塞。</p></div>
+      <div className="workflow-title"><span className="section-label">V · Workflow control room</span><h1>{group.name}</h1><p className="topbar-copy">V 正在协调多个 Agent 沿同一条生产线并行推进。</p></div>
       <div className="top-actions"><button onClick={() => setEditor({ mode: "import", source: "" })}><Upload size={15} />导入 Workflow</button><button onClick={() => setEditor({ mode: "edit", source: group.releases[0].sourceMarkdown ?? group.releases[0].sourceYaml })}><FilePenLine size={15} />编辑 Workflow</button><button className="primary" onClick={() => setEditor({ mode: "create", source: newWorkflowSource() })}><Plus size={15} />新建 Workflow</button></div>
     </header>
     <div className={`workflow-workspace ${selected ? "with-drawer" : ""}`}>
@@ -241,6 +246,15 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
         })}
       </aside>
       <main className="workflow-runway">
+        <section className={`workflow-command ${activeTasks.length ? "is-live" : "is-ready"}`}>
+          <div className="v-command-avatar"><img src="/v-avatar.jpg" alt="V" /><span /></div>
+          <div className="command-copy"><span>{activeTasks.length ? "LIVE ORCHESTRATION" : "PRODUCTION LINE READY"}</span><strong>{activeTasks.length ? `V 正在调度 ${activeTasks.length} 个并行任务` : "V 已完成本轮调度，等待新的任务"}</strong><small>{visibleProjects.length} 个项目在当前视野 · 原生 Workboard 实时同步</small></div>
+          <div className="command-agents" aria-label="并行 Agent 任务">
+            {(activeTasks.length ? activeTasks : allTasks.filter((task) => task.status === "review").slice(0, 5)).slice(0, 8).map((task, index) => <span key={`${task.projectId}-${task.stageId}-${index}`} title={task.contentTitle ?? task.projectName}><img src="/v-avatar.jpg" alt="" /></span>)}
+            {(activeTasks.length || liveSummary.review) > 8 && <b>+{(activeTasks.length || liveSummary.review) - 8}</b>}
+          </div>
+          <div className="command-stats"><div><strong>{liveSummary.running ?? 0}</strong><span>进行中</span></div><div><strong>{liveSummary.review ?? 0}</strong><span>待审核</span></div><div><strong>{liveSummary.done ?? 0}</strong><span>已完成</span></div></div>
+        </section>
         <div className="runway-toolbar">
           <div className="release-identity"><span className="mono">{pinnedRelease?.version}</span><strong>{stages.length} 个阶段</strong><small>SHA {pinnedRelease?.workflowSha256.slice(0, 12)}</small></div>
           <div className="runway-actions">
@@ -261,10 +275,11 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
 
 function StageLane({ stage, index, tasks, onSelect }) {
   const summary = summarizeStatuses(tasks);
-  return <section className="stage-lane">
+  const isLive = (summary.running ?? 0) > 0;
+  return <section className={`stage-lane ${isLive ? "is-live" : ""}`}>
     <header><span className="stage-index">{String(index + 1).padStart(2, "0")}</span><div><strong>{stage.title}</strong><small>{stage.scope === "content-item" ? "每条内容" : "整个项目"} · {stage.actor === "human" ? "人工" : "Agent"}</small></div></header>
     <div className="stage-counts">{Object.entries(summary).map(([status, count]) => <span className={`state-${status}`} key={status}>{statusLabel(status)} {count}</span>)}{tasks.length === 0 && <span>尚未开始</span>}</div>
-    <div className="stage-tasks">{tasks.map((task) => <button key={`${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}-${task.card?.id ?? task.attempt}`} className={`stage-task state-${task.status}`} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}><span className="task-state" /><div><strong>{task.contentTitle ?? task.projectName}</strong><small>{task.contentTitle ? task.projectName : task.projectId}</small></div><span className="task-action">{task.requiresApproval ? "等待确认执行" : statusLabel(task.status)}</span></button>)}</div>
+    <div className="stage-tasks">{tasks.map((task) => <button key={`${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}-${task.card?.id ?? task.attempt}`} className={`stage-task state-${task.status}`} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}><span className="task-state" /><span className="task-agent"><img src="/v-avatar.jpg" alt="" /></span><div><strong>{task.contentTitle ?? task.projectName}</strong><small>{task.contentTitle ? task.projectName : task.projectId}</small></div><span className="task-action">{task.requiresApproval ? "等待确认执行" : statusLabel(task.status)}</span></button>)}</div>
   </section>;
 }
 
@@ -403,14 +418,26 @@ function ProjectInput({ name, contract, value, onChange }) {
   const labelText = projectInputLabel(name);
   if (name === "authorizationScope") {
     const scope = value ?? {};
-    return <fieldset className="authorization-field"><legend>{labelText}</legend><label><input type="checkbox" checked={scope.paidProduction === true} onChange={(event) => onChange({ ...scope, paidProduction: event.target.checked })} /><span>允许进入付费生产审批</span></label><label><input type="checkbox" checked={scope.externalPublication === true} onChange={(event) => onChange({ ...scope, externalPublication: event.target.checked })} /><span>允许申请外部发布</span></label><label><input type="checkbox" checked={scope.vlabOnly !== false} onChange={(event) => onChange({ ...scope, vlabOnly: event.target.checked })} /><span>仅在 VLab 运行</span></label></fieldset>;
+    return <fieldset className="authorization-field"><legend>{labelText}</legend><label><input type="checkbox" checked={scope.paidProduction === true} onChange={(event) => onChange({ ...scope, paidProduction: event.target.checked })} /><span>允许进入付费生产审批</span></label><label><input type="checkbox" checked={scope.externalPublication === true} onChange={(event) => onChange({ ...scope, externalPublication: event.target.checked })} /><span>允许申请外部发布</span></label><label><input type="checkbox" checked={scope.vlabOnly !== false} onChange={(event) => onChange({ ...scope, vlabOnly: event.target.checked })} /><span>仅由 V 内部执行</span></label></fieldset>;
   }
   if (contract.type === "boolean") return <label className="project-field checkbox-field"><input type="checkbox" checked={value === true} onChange={(event) => onChange(event.target.checked)} /><span>{labelText}</span></label>;
   if (contract.type === "object" || contract.type === "array") return <label className="project-field wide"><span>{labelText}{contract.required ? " *" : ""}</span><textarea value={typeof value === "string" ? value : JSON.stringify(value ?? (contract.type === "array" ? [] : {}), null, 2)} onChange={(event) => onChange(parseJsonValue(event.target.value))} /></label>;
   return <label className="project-field"><span>{labelText}{contract.required ? " *" : ""}</span><input type={contract.type === "number" ? "number" : name.toLowerCase().includes("url") ? "url" : "text"} value={value ?? ""} onChange={(event) => onChange(contract.type === "number" ? Number(event.target.value) : event.target.value)} required={contract.required === true} placeholder={projectInputPlaceholder(name)} /></label>;
 }
 
-function Projects({ data, onNewProject }) { return <div className="simple-screen"><header className="topbar"><div><span className="section-label">Workflow instances</span><h1>Projects</h1><p className="topbar-copy">一个 Project 是某个客户或策划案在一个固定 Workflow 版本上的运行实例。</p></div><div className="top-actions"><button className="primary" onClick={onNewProject}><Plus size={15} />新建项目</button></div></header><div className="project-table"><div className="table-head"><span>Project</span><span>Workflow</span><span>视频任务</span><span>Status</span><span>Updated</span></div>{(data?.instances ?? []).map((instance) => <a className="table-row" href={instance.links?.project ?? `/?view=workflows&project=${encodeURIComponent(instance.id)}`} key={instance.id}><strong>{instance.name}</strong><span className="mono">{instance.workflowSha256.slice(0, 12)}</span><span>{instance.contentItems?.length ?? 0} 条 · {routeSummary(instance.contentItems)}</span><span>{instance.status}</span><span>{new Date(instance.updatedAt).toLocaleString()}</span></a>)}</div></div>; }
+function Projects({ data, onNewProject, onOpenProject, refresh }) {
+  const [deleting, setDeleting] = useState(null);
+  const [deleteError, setDeleteError] = useState("");
+  async function archiveProject(instance) {
+    setDeleteError("");
+    try {
+      await api(`/api/instances/${encodeURIComponent(instance.id)}`, { method: "DELETE" });
+      setDeleting(null);
+      await refresh(true);
+    } catch (reason) { setDeleteError(reason.message); }
+  }
+  return <div className="simple-screen projects-screen"><header className="topbar"><div><span className="section-label">V · Workflow instances</span><h1>Projects</h1><p className="topbar-copy">每个项目是一条由 V 驱动、锁定 Workflow 版本的生产线。</p></div><div className="top-actions"><button className="primary" onClick={onNewProject}><Plus size={15} />新建项目</button></div></header><div className="project-table"><div className="table-head"><span>Project</span><span>Workflow</span><span>视频任务</span><span>Status</span><span>Updated</span><span /></div>{(data?.instances ?? []).map((instance) => <div className="table-row" role="button" tabIndex="0" onClick={() => onOpenProject(instance.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onOpenProject(instance.id); }} key={instance.id}><strong>{instance.name}</strong><span className="mono">{instance.workflowSha256.slice(0, 12)}</span><span>{instance.contentItems?.length ?? 0} 条 · {routeSummary(instance.contentItems)}</span><span className={`project-status status-${instance.status}`}>{instance.status}</span><span>{new Date(instance.updatedAt).toLocaleString()}</span><button className="project-delete" aria-label={`删除项目 ${instance.name}`} title="删除项目" onClick={(event) => { event.stopPropagation(); setDeleteError(""); setDeleting(instance); }}><Trash2 size={15} /></button></div>)}</div>{deleting && <div className="confirm-scrim" role="dialog" aria-modal="true" aria-label="删除项目"><div className="confirm-dialog"><span className="confirm-icon"><Trash2 size={20} /></span><h2>删除这个项目？</h2><p><strong>{deleting.name}</strong> 将从 V 的工作视野中移除。运行中的项目不会被强制删除。</p>{deleteError && <div className="confirm-error">{deleteError}</div>}<div><button onClick={() => setDeleting(null)}>取消</button><button className="danger" onClick={() => archiveProject(deleting)}>删除项目</button></div></div></div>}</div>;
+}
 
 function Agents({ data }) {
   const agents = [...new Set([

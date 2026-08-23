@@ -60,8 +60,8 @@ export function Sidebar({ active, onChange }) {
   return (
     <aside className="sidebar">
       <div className="brand">
-        <span className="brand-mark"><Sparkles size={17} /></span>
-        <div><strong>Night Shift</strong><span>AI operations</span></div>
+        <span className="brand-mark"><img src="/v-avatar.jpg" alt="V" /></span>
+        <div><strong>Night Shift</strong><span>Powered by V</span></div>
       </div>
       <nav>
         {items.map(([id, label, Icon]) => (
@@ -72,7 +72,7 @@ export function Sidebar({ active, onChange }) {
       </nav>
       <div className="sidebar-foot">
         <span className="live-dot" />
-        <div><strong>VLab connected</strong><span>Workboard native</span></div>
+        <div><strong>V connected</strong><span>Workboard native</span></div>
       </div>
     </aside>
   );
