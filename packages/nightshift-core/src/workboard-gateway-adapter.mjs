@@ -88,6 +88,16 @@ export class WorkboardGatewayAdapter {
     return this.call("sessions.get", { key: sessionKey, limit });
   }
 
+  async completeCard(id, input = {}) {
+    const result = await this.call("workboard.cards.complete", { id, ...input });
+    return result.card;
+  }
+
+  async blockCard(id, input = {}) {
+    const result = await this.call("workboard.cards.block", { id, ...input });
+    return result.card;
+  }
+
   async getSkillsStatus(agentId) {
     if (!agentId) throw new Error("An Agent id is required for Skill preflight");
     return this.call("skills.status", { agentId });

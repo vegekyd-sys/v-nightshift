@@ -38,6 +38,104 @@ test("persists a stage card and advances after native completion", async () => {
   store.close();
 });
 
+test("recovers a terminal Agent Session after validated outputs and advances", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const validated = [];
+  const runtime = new NightShiftRuntime({
+    store,
+    workboard,
+    completionValidator: async ({ stageId }) => validated.push(stageId),
+  });
+  const release = runtime.publish(source);
+  runtime.startInstance({
+    id: "NS-RUNTIME-TERMINAL-RECOVERY",
+    workflowSha256: release.workflowSha256,
+    agentBindings: { "content-operator": "main" },
+  });
+  workboard.cards.push({
+    id: "card-terminal",
+    status: "running",
+    sessionKey: "agent:main:subagent:workboard-terminal",
+    execution: { status: "running", startedAt: 100 },
+    labels: ["instance:NS-RUNTIME-TERMINAL-RECOVERY", "stage:plan"],
+  });
+  workboard.sessions.set("agent:main:subagent:workboard-terminal", {
+    messages: [{
+      role: "assistant",
+      content: [{ type: "text", text: "Plan outputs are complete" }],
+      stopReason: "stop",
+      timestamp: 200,
+    }],
+  });
+
+  await runtime.reconcile("NS-RUNTIME-TERMINAL-RECOVERY");
+
+  assert.deepEqual(validated, ["plan"]);
+  assert.equal(workboard.cards[0].status, "done");
+  assert.equal(workboard.completeCalls.length, 1);
+  assert.equal(store.listStageRuns("NS-RUNTIME-TERMINAL-RECOVERY")[0].status, "done");
+  assert.ok(store.listEvents("NS-RUNTIME-TERMINAL-RECOVERY").some((event) => event.type === "stage.terminal.recovered"));
+  store.close();
+});
+
+test("does not recover an older terminal message from a previous run", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard });
+  const release = runtime.publish(source);
+  runtime.startInstance({ id: "NS-RUNTIME-OLD-TERMINAL", workflowSha256: release.workflowSha256 });
+  workboard.cards.push({
+    id: "card-current-run",
+    status: "running",
+    sessionKey: "agent:main:subagent:workboard-current-run",
+    execution: { status: "running", startedAt: 300 },
+    labels: ["instance:NS-RUNTIME-OLD-TERMINAL", "stage:plan"],
+  });
+  workboard.sessions.set("agent:main:subagent:workboard-current-run", {
+    messages: [{ role: "assistant", content: [{ type: "text", text: "Old completion" }], stopReason: "stop", timestamp: 200 }],
+  });
+
+  await runtime.reconcile("NS-RUNTIME-OLD-TERMINAL");
+
+  assert.equal(workboard.cards[0].status, "running");
+  assert.equal(workboard.completeCalls.length, 0);
+  store.close();
+});
+
+test("blocks a terminal Agent Session when its output contract fails", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({
+    store,
+    workboard,
+    completionValidator: async () => { throw new Error("handoff missing"); },
+  });
+  const release = runtime.publish(source);
+  runtime.startInstance({ id: "NS-RUNTIME-TERMINAL-BLOCK", workflowSha256: release.workflowSha256 });
+  workboard.cards.push({
+    id: "card-terminal-invalid",
+    status: "running",
+    sessionKey: "agent:main:subagent:workboard-terminal-invalid",
+    execution: { status: "running", startedAt: 100 },
+    labels: ["instance:NS-RUNTIME-TERMINAL-BLOCK", "stage:plan"],
+  });
+  workboard.sessions.set("agent:main:subagent:workboard-terminal-invalid", {
+    messages: [{ role: "assistant", content: [{ type: "text", text: "I am done" }], stopReason: "stop", timestamp: 200 }],
+  });
+
+  await runtime.reconcile("NS-RUNTIME-TERMINAL-BLOCK");
+
+  assert.equal(workboard.cards[0].status, "blocked");
+  assert.equal(workboard.blockCalls.length, 1);
+  assert.match(workboard.blockCalls[0].reason, /handoff missing/);
+  assert.ok(store.listEvents("NS-RUNTIME-TERMINAL-BLOCK").some((event) => event.type === "stage.terminal.blocked"));
+  store.close();
+});
+
 test("approval card completion does not skip the guarded agent stage", async () => {
   const source = await readFile(workflowPath, "utf8");
   const store = new NightShiftStore();
@@ -353,7 +451,10 @@ test("rejects a done card when its declared delivery fails validation", async ()
 class FakeWorkboard {
   constructor() {
     this.cards = [];
+    this.blockCalls = [];
+    this.completeCalls = [];
     this.dispatchCalls = [];
+    this.sessions = new Map();
   }
 
   async listCards() {
@@ -393,5 +494,25 @@ class FakeWorkboard {
   async dispatch(maxStarts) {
     this.dispatchCalls.push(maxStarts);
     return { started: [] };
+  }
+
+  async getSession(sessionKey) {
+    return this.sessions.get(sessionKey) ?? { messages: [] };
+  }
+
+  async completeCard(id, input) {
+    this.completeCalls.push({ id, ...input });
+    const card = this.cards.find((entry) => entry.id === id);
+    card.status = "done";
+    card.execution = { ...(card.execution ?? {}), status: "done" };
+    return card;
+  }
+
+  async blockCard(id, input) {
+    this.blockCalls.push({ id, ...input });
+    const card = this.cards.find((entry) => entry.id === id);
+    card.status = "blocked";
+    card.execution = { ...(card.execution ?? {}), status: "blocked" };
+    return card;
   }
 }

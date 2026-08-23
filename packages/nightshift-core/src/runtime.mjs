@@ -77,9 +77,18 @@ export class NightShiftRuntime {
       if (labels.includes("nightshift:approval")) continue;
       let status = card.status;
       let summary = card.metadata?.automation?.summary ?? null;
-      if (status === "done" && this.completionValidator) {
-        const stageId = stageLabel.slice("stage:".length);
-        const contentItemId = contentItemLabel?.slice("content-item:".length) ?? null;
+      const stageId = stageLabel.slice("stage:".length);
+      const contentItemId = contentItemLabel?.slice("content-item:".length) ?? null;
+      let completionAlreadyValidated = false;
+      if (status === "running") {
+        const recovered = await this.recoverTerminalCard({ card, contentItemId, instance, release, stageId });
+        if (recovered) {
+          status = recovered.status;
+          summary = recovered.summary;
+          completionAlreadyValidated = recovered.status === "done";
+        }
+      }
+      if (status === "done" && this.completionValidator && !completionAlreadyValidated) {
         try {
           await this.completionValidator({ card, contentItemId, instance, release, stageId });
           await this.restoreDownstreamCards({
@@ -109,7 +118,7 @@ export class NightShiftRuntime {
       }
       const run = {
         instanceId,
-        stageId: stageLabel.slice("stage:".length),
+        stageId,
         attempt: card.metadata?.automation?.attempt ?? 1,
         cardId: card.id,
         status,
@@ -122,6 +131,55 @@ export class NightShiftRuntime {
       }
     }
     return this.store.listStageRuns(instanceId);
+  }
+
+  async recoverTerminalCard({ card, contentItemId, instance, release, stageId }) {
+    if (!card.sessionKey || card.execution?.status !== "running") return null;
+    if (typeof this.workboard.getSession !== "function") return null;
+    if (typeof this.workboard.completeCard !== "function" || typeof this.workboard.blockCard !== "function") return null;
+    let session;
+    try {
+      session = await this.workboard.getSession(card.sessionKey, { limit: 12 });
+    } catch {
+      return null;
+    }
+    const messages = Array.isArray(session?.messages) ? session.messages : [];
+    const latest = messages.at(-1);
+    const startedAt = Number(card.execution?.startedAt ?? card.metadata?.attempts?.at(-1)?.startedAt ?? 0);
+    const terminalAt = Number(latest?.timestamp ?? latest?.__openclaw?.recordTimestampMs ?? 0);
+    if (latest?.role !== "assistant" || latest.stopReason !== "stop" || terminalAt < startedAt) return null;
+    const terminalText = messageText(latest);
+    try {
+      if (this.completionValidator) {
+        await this.completionValidator({ card, contentItemId, instance, release, stageId });
+      }
+      const summary = boundedSummary(terminalText || `${stageId} completed with validated outputs`);
+      const completed = await this.workboard.completeCard(card.id, {
+        summary,
+        proof: {
+          status: "passed",
+          label: "Night Shift terminal reconciliation",
+          note: "Agent Session ended normally and the pinned Workflow output contract passed validation.",
+        },
+      });
+      Object.assign(card, completed);
+      this.store.appendEvent({
+        instanceId: instance.id,
+        type: "stage.terminal.recovered",
+        payload: { cardId: card.id, contentItemId, stageId, terminalAt },
+      });
+      return { status: "done", summary };
+    } catch (error) {
+      const reason = boundedReason(`Terminal Agent Session did not satisfy the Workflow output contract: ${error.message}`);
+      const blocked = await this.workboard.blockCard(card.id, { reason });
+      Object.assign(card, blocked);
+      this.store.appendEvent({
+        instanceId: instance.id,
+        type: "stage.terminal.blocked",
+        payload: { cardId: card.id, contentItemId, error: error.message, stageId, terminalAt },
+      });
+      return { status: "blocked", summary: reason };
+    }
   }
 
   async blockDownstreamCards({ cards, contentItemId, failedStageId, instanceId, release }) {
@@ -407,6 +465,26 @@ export class NightShiftRuntime {
       : this.store.upsertStageRun({ ...run, status: "blocked" });
     return approval;
   }
+}
+
+function messageText(message) {
+  if (typeof message?.content === "string") return message.content.trim();
+  if (!Array.isArray(message?.content)) return "";
+  return message.content
+    .filter((entry) => entry?.type === "text" && typeof entry.text === "string")
+    .map((entry) => entry.text.trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function boundedSummary(value) {
+  const normalized = String(value ?? "").trim();
+  return normalized.length <= 1900 ? normalized : `${normalized.slice(0, 1897)}...`;
+}
+
+function boundedReason(value) {
+  const normalized = String(value ?? "").trim();
+  return normalized.length <= 950 ? normalized : `${normalized.slice(0, 947)}...`;
 }
 
 function workflowComplete(release, projectRuns, contentItems, contentItemRuns) {
