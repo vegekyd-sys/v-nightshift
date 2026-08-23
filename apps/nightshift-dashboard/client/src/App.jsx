@@ -207,13 +207,17 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
   const releaseShas = useMemo(() => new Set(group?.releases.map((release) => release.workflowSha256) ?? []), [group]);
   const projects = useMemo(() => (data?.instances ?? []).filter((instance) => releaseShas.has(instance.workflowSha256)), [data?.instances, releaseShas]);
   useEffect(() => {
+    if (!data) return;
     if (projectId === "all" || projects.some((project) => project.id === projectId)) return;
     const project = (data?.instances ?? []).find((entry) => entry.id === projectId);
     const release = (data?.workflows ?? []).find((entry) => entry.workflowSha256 === project?.workflowSha256);
     if (release && release.workflowId !== workflowId) return;
     setProjectId("all");
   }, [data?.instances, data?.workflows, projectId, projects, workflowId]);
-  useEffect(() => { updateDashboardLocation({ project: projectId === "all" ? null : projectId, workflow: workflowId || null }); }, [projectId, workflowId]);
+  useEffect(() => {
+    if (!data) return;
+    updateDashboardLocation({ project: projectId === "all" ? null : projectId, workflow: workflowId || null });
+  }, [data, projectId, workflowId]);
   const visibleProjects = projectId === "all" ? projects : projects.filter((project) => project.id === projectId);
   const pinnedRelease = projectId === "all" ? group?.releases[0] : group?.releases.find((release) => release.workflowSha256 === visibleProjects[0]?.workflowSha256);
   const stages = pinnedRelease?.manifest?.spec?.stages ?? [];
