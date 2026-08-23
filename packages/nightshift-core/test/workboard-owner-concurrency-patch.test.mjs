@@ -7,7 +7,7 @@ import test from "node:test";
 
 const script = new URL("../../../scripts/apply-workboard-owner-concurrency-patch.mjs", import.meta.url);
 
-test("patches same-owner Workboard concurrency from one to three and is idempotent", () => {
+test("patches same-owner Workboard concurrency from one to eight and is idempotent", () => {
   const root = mkdtempSync(join(tmpdir(), "workboard-owner-concurrency-"));
   const dist = join(root, "dist");
   const backup = join(root, "backup");
@@ -31,7 +31,7 @@ test("patches same-owner Workboard concurrency from one to three and is idempote
 
   execFileSync(process.execPath, [script.pathname, `--dist=${dist}`, `--backup-dir=${backup}`]);
   const patched = readFileSync(bundle, "utf8");
-  assert.match(patched, /DEFAULT_DISPATCH_MAX_PER_OWNER = 3/);
+  assert.match(patched, /DEFAULT_DISPATCH_MAX_PER_OWNER = 8/);
   assert.doesNotMatch(patched, /^\+const/m);
   assert.match(patched, />= DEFAULT_DISPATCH_MAX_PER_OWNER/);
   assert.match(patched, /runningByOwner\.set\(owner, \(runningByOwner\.get\(owner\) \?\? 0\) \+ 1\)/);

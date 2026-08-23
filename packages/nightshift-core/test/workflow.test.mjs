@@ -18,6 +18,8 @@ test("compiles the seven-stage workflow.md deterministically", async () => {
   ]);
   assert.equal(first.spec.stages[1].scope, "content-item");
   assert.deepEqual(first.spec.contentItems.routes, ["AI_GENERATE", "SCENE_EDIT"]);
+  assert.equal(first.spec.concurrency.perInstance, 8);
+  assert.equal(first.spec.concurrency.maxActiveInstances, 3);
 });
 
 test("the same compiler accepts a non-Xingqing workflow without content items", async () => {

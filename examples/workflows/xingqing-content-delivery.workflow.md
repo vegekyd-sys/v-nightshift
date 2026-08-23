@@ -3,11 +3,11 @@ apiVersion: nightshift.versa.ai/v1alpha1
 kind: Workflow
 metadata:
   id: xingqing-content-delivery
-  version: 0.4.5
+  version: 0.4.6
   name: 星擎内容交付
 spec:
   ownerAgentRole: content-operator
-  concurrency: {perInstance: 4, maxActiveInstances: 3}
+  concurrency: {perInstance: 8, maxActiveInstances: 3}
   contentItems:
     routes: [AI_GENERATE, SCENE_EDIT]
     maxItems: 30
