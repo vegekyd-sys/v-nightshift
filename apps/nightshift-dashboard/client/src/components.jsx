@@ -60,7 +60,7 @@ export function Sidebar({ active, onChange }) {
   return (
     <aside className="sidebar">
       <div className="brand">
-        <span className="brand-mark"><img src="/v-avatar.jpg" alt="V" /></span>
+        <span className="brand-mark"><Sparkles size={17} /></span>
         <div><strong>Night Shift</strong><span>Powered by V</span></div>
       </div>
       <nav>

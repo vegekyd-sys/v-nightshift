@@ -249,8 +249,8 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
         <section className={`workflow-command ${activeTasks.length ? "is-live" : "is-ready"}`}>
           <div className="v-command-avatar"><img src="/v-avatar.jpg" alt="V" /><span /></div>
           <div className="command-copy"><span>{activeTasks.length ? "LIVE ORCHESTRATION" : "PRODUCTION LINE READY"}</span><strong>{activeTasks.length ? `V 正在调度 ${activeTasks.length} 个并行任务` : "V 已完成本轮调度，等待新的任务"}</strong><small>{visibleProjects.length} 个项目在当前视野 · 原生 Workboard 实时同步</small></div>
-          <div className="command-agents" aria-label="并行 Agent 任务">
-            {(activeTasks.length ? activeTasks : allTasks.filter((task) => task.status === "review").slice(0, 5)).slice(0, 8).map((task, index) => <span key={`${task.projectId}-${task.stageId}-${index}`} title={task.contentTitle ?? task.projectName}><img src="/v-avatar.jpg" alt="" /></span>)}
+          <div className="command-agents agent-constellation" aria-label="并行 Agent 任务">
+            {(activeTasks.length ? activeTasks : allTasks.filter((task) => task.status === "review").slice(0, 5)).slice(0, 8).map((task, index) => <span key={`${task.projectId}-${task.stageId}-${index}`} title={task.contentTitle ?? task.projectName}><i /></span>)}
             {(activeTasks.length || liveSummary.review) > 8 && <b>+{(activeTasks.length || liveSummary.review) - 8}</b>}
           </div>
           <div className="command-stats"><div><strong>{liveSummary.running ?? 0}</strong><span>进行中</span></div><div><strong>{liveSummary.review ?? 0}</strong><span>待审核</span></div><div><strong>{liveSummary.done ?? 0}</strong><span>已完成</span></div></div>
@@ -279,7 +279,7 @@ function StageLane({ stage, index, tasks, onSelect }) {
   return <section className={`stage-lane ${isLive ? "is-live" : ""}`}>
     <header><span className="stage-index">{String(index + 1).padStart(2, "0")}</span><div><strong>{stage.title}</strong><small>{stage.scope === "content-item" ? "每条内容" : "整个项目"} · {stage.actor === "human" ? "人工" : "Agent"}</small></div></header>
     <div className="stage-counts">{Object.entries(summary).map(([status, count]) => <span className={`state-${status}`} key={status}>{statusLabel(status)} {count}</span>)}{tasks.length === 0 && <span>尚未开始</span>}</div>
-    <div className="stage-tasks">{tasks.map((task) => <button key={`${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}-${task.card?.id ?? task.attempt}`} className={`stage-task state-${task.status}`} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}><span className="task-state" /><span className="task-agent"><img src="/v-avatar.jpg" alt="" /></span><div><strong>{task.contentTitle ?? task.projectName}</strong><small>{task.contentTitle ? task.projectName : task.projectId}</small></div><span className="task-action">{task.requiresApproval ? "等待确认执行" : statusLabel(task.status)}</span></button>)}</div>
+    <div className="stage-tasks">{tasks.map((task) => <button key={`${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}-${task.card?.id ?? task.attempt}`} className={`stage-task state-${task.status}`} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}><span className="task-state" /><div><strong>{task.contentTitle ?? task.projectName}</strong><small>{task.contentTitle ? task.projectName : task.projectId}</small></div><span className="task-action">{task.requiresApproval ? "等待确认执行" : statusLabel(task.status)}</span></button>)}</div>
   </section>;
 }
 
