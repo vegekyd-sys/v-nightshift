@@ -191,6 +191,8 @@ function cardPayload(release, instance, stage, status, contentItem = null) {
 
 export function buildAgentBrief(release, instance, stage, contentItem = null) {
   const safeInputs = redactSensitiveInputs(instance.inputs ?? {});
+  const projectInputsPath = instance.inputs?.nightshift?.projectInputsPath;
+  const inlineInputs = projectInputsPath ? summarizeInputs(safeInputs) : safeInputs;
   const strategy = contentItem?.route ? stage.routeStrategies?.[contentItem.route] : null;
   const instanceDir = instance.inputs?.nightshift?.instanceDir;
   const itemDir = contentItem && instanceDir ? `${instanceDir}/content-items/${contentItem.id}` : null;
@@ -215,7 +217,10 @@ export function buildAgentBrief(release, instance, stage, contentItem = null) {
     ...(contentItem ? [`Content item: ${JSON.stringify(redactSensitiveInputs(contentItem))}`] : []),
     `Objective: ${strategy?.description ?? stage.description ?? "Complete the declared stage."}`,
     `Required skills (load in order): ${stageSkills(stage, contentItem?.route).join(", ") || "none"}`,
-    `Inputs: ${JSON.stringify(safeInputs)}`,
+    `Input summary: ${JSON.stringify(inlineInputs)}`,
+    ...(projectInputsPath
+      ? [`Authoritative project inputs: read ${projectInputsPath} before acting. The snapshot contains the complete redacted project brief and constraints; do not replace it with this summary.`]
+      : []),
     ...(stage.id === "plan" && instance.inputs?.nightshift?.contentItemsManifestPath
       ? [`Content backlog contract: write {"contentItems":[{"id":"stable-id","title":"...","route":"AI_GENERATE|SCENE_EDIT|null","status":"planned|routing"}]} to ${instance.inputs.nightshift.contentItemsManifestPath}. The control plane imports this file and fans out Workboard tasks.`]
       : []),
@@ -239,7 +244,7 @@ export function buildAgentBrief(release, instance, stage, contentItem = null) {
     `Safety: ${(stage.sideEffects ?? []).length ? `requires approved side effects: ${stage.sideEffects.join(", ")}` : "no declared external side effect"}`,
     "Workboard completion safety: workboard heartbeat/complete/block and the equivalent Gateway RPCs mutate this real card. Never probe, test, or enumerate those RPCs, and never use placeholder input such as summary=test. First finish every required output and verify every completion check. Only then call workboard_complete once; in an isolated Worker where that tool is absent, call `openclaw gateway call workboard.cards.complete --params '{\"id\":\"<Card id from Worker protocol>\",\"token\":\"<Claim token from Worker protocol>\",\"summary\":\"<concise evidence-backed result>\"}' --json` exactly once. Call workboard.cards.block exactly once only for a genuine blocker, with the real evidence-backed reason. Do not search source code or inspect plugin internals. Never print the claim token.",
     "Return a concise result with evidence links or an explicit blocker. Do not invent missing evidence.",
-  ].join("\n").slice(0, 8000);
+  ].join("\n").slice(0, 4000);
 }
 
 function deliveryManifestExample(instanceId, contentItem) {
@@ -265,7 +270,7 @@ function deliveryManifestExample(instanceId, contentItem) {
   };
 }
 
-function redactSensitiveInputs(value, key = "") {
+export function redactSensitiveInputs(value, key = "") {
   if (/(secret|token|password|credential|api.?key)/i.test(key)) return "[REDACTED]";
   if (Array.isArray(value)) return value.map((entry) => redactSensitiveInputs(entry));
   if (value && typeof value === "object") {
@@ -277,6 +282,19 @@ function redactSensitiveInputs(value, key = "") {
     );
   }
   return value;
+}
+
+function summarizeInputs(inputs) {
+  const keys = [
+    "customerId",
+    "customerName",
+    "briefUrl",
+    "sceneProjectId",
+    "targetVideoCount",
+    "authorizationScope",
+    "nightshift",
+  ];
+  return Object.fromEntries(keys.filter((key) => inputs[key] !== undefined).map((key) => [key, inputs[key]]));
 }
 
 function actionKey(release, instance, stage, action, contentItem = null) {

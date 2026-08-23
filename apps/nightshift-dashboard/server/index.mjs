@@ -14,6 +14,7 @@ import {
   normalizeDeliverablesManifest,
   normalizeStageHandoff,
   presentStageHandoff,
+  redactSensitiveInputs,
   requiredSkillsByRole,
   stageHandoffPath,
   validateProjectRequest,
@@ -354,14 +355,12 @@ async function handleApi(request, response, url) {
   }
   if (request.method === "PATCH" && instanceInputMatch) {
     const body = await bodyJson(request);
-    json(
-      response,
-      200,
-      runtime.updateInstanceInputs(
-        decodeURIComponent(instanceInputMatch[1]),
-        body.inputs ?? {},
-      ),
+    const updated = runtime.updateInstanceInputs(
+      decodeURIComponent(instanceInputMatch[1]),
+      body.inputs ?? {},
     );
+    await writeProjectInputsSnapshot(updated);
+    json(response, 200, updated);
     return;
   }
   const contentItemsMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/content-items$/);
@@ -477,16 +476,33 @@ async function startInstance(instance) {
   assertInstanceId(instance.id);
   const instanceDir = resolve(dataDir, "instances", instance.id);
   await mkdir(instanceDir, { recursive: true });
-  return runtime.startInstance({
+  const prepared = {
     ...instance,
     inputs: {
       ...(instance.inputs ?? {}),
       nightshift: {
         instanceDir,
         contentItemsManifestPath: join(instanceDir, "content-items.json"),
+        projectInputsPath: join(instanceDir, "project-inputs.json"),
       },
     },
-  });
+  };
+  await writeProjectInputsSnapshot(prepared);
+  return runtime.startInstance(prepared);
+}
+
+async function writeProjectInputsSnapshot(instance) {
+  const snapshotPath = instance.inputs?.nightshift?.projectInputsPath;
+  if (!snapshotPath) return;
+  await mkdir(dirname(snapshotPath), { recursive: true });
+  const temporaryPath = `${snapshotPath}.tmp`;
+  const snapshot = {
+    version: 1,
+    instanceId: instance.id,
+    inputs: redactSensitiveInputs(instance.inputs ?? {}),
+  };
+  await writeFile(temporaryPath, `${JSON.stringify(snapshot, null, 2)}\n`, { mode: 0o600 });
+  await rename(temporaryPath, snapshotPath);
 }
 
 async function preflightProjectSkills(release, project) {

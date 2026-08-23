@@ -61,6 +61,27 @@ test("plans the project stage and redacts secrets", async () => {
   assert.doesNotMatch(actions[0].card.notes, /must-not-appear/);
 });
 
+test("keeps large project blueprints in an authoritative snapshot instead of overflowing native card notes", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const instance = activeInstance(release);
+  instance.inputs.contentBlueprint = Array.from({ length: 10 }, (_, index) => ({
+    id: `video-${index + 1}`,
+    title: `Overseas video ${index + 1}`,
+    angle: "A detailed creative direction that belongs in the full project input snapshot.",
+    constraints: "Preserve every customer fact, language requirement, route choice, and source-evidence boundary.",
+  }));
+  instance.inputs.nightshift = {
+    contentItemsManifestPath: "/srv/nightshift/NS-LARGE/content-items.json",
+    instanceDir: "/srv/nightshift/NS-LARGE",
+    projectInputsPath: "/srv/nightshift/NS-LARGE/project-inputs.json",
+  };
+  const [action] = planNextActions({ release, instance });
+  assert.ok(action.card.notes.length <= 4000);
+  assert.match(action.card.notes, /Authoritative project inputs: read \/srv\/nightshift\/NS-LARGE\/project-inputs\.json/);
+  assert.match(action.card.notes, /Workboard completion safety/);
+  assert.doesNotMatch(action.card.notes, /A detailed creative direction/);
+});
+
 test("fans one project out into independent content-item route cards", async () => {
   const release = compileWorkflow(await loadWorkflow(fixture));
   const instance = activeInstance(release);
