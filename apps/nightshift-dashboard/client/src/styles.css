@@ -192,7 +192,12 @@ body { background:radial-gradient(circle at 72% -20%,rgba(128,92,214,.14),transp
 .mobile-board-tabs { display:none; }
 
 .workflow-topbar { min-height:96px; height:96px; display:grid; grid-template-columns:minmax(260px,1fr) auto auto; align-items:center; gap:18px; padding-block:15px; }
-.workflow-title h1 { margin-top:3px; font-size:26px; }
+.workflow-title { display:flex; align-items:center; gap:13px; min-width:0; }
+.workflow-title-copy { min-width:0; }
+.workflow-title h1 { overflow:hidden; margin-top:3px; font-size:26px; text-overflow:ellipsis; white-space:nowrap; }
+.workflow-v-avatar { position:relative; width:46px; height:46px; flex:0 0 auto; display:block; border:1px solid rgba(169,140,255,.58); border-radius:15px; padding:2px; background:#15111e; box-shadow:0 0 0 5px rgba(169,140,255,.045); }
+.workflow-v-avatar img { width:100%; height:100%; display:block; border-radius:12px; object-fit:cover; }
+.workflow-v-avatar i { position:absolute; right:-1px; bottom:1px; width:10px; height:10px; border:2px solid #111520; border-radius:50%; background:var(--accent); box-shadow:0 0 10px rgba(158,244,223,.7); }
 .workflow-live-line { display:flex; align-items:center; gap:7px; margin:6px 0 0; }
 .workflow-live-line>span { width:6px; height:6px; flex:0 0 auto; border-radius:50%; background:#637083; }
 .workflow-live-line.is-live>span { background:var(--accent); box-shadow:0 0 10px rgba(158,244,223,.7); }
@@ -276,6 +281,10 @@ body { background:radial-gradient(circle at 72% -20%,rgba(128,92,214,.14),transp
   .workflow-screen { height:calc(100dvh - 66px); }
   .workflow-topbar { min-height:72px; height:72px; flex:0 0 72px; display:flex; padding:10px 14px; }
   .workflow-title h1 { font-size:18px; }
+  .workflow-title { gap:9px; }
+  .workflow-v-avatar { width:34px; height:34px; border-radius:11px; padding:2px; box-shadow:0 0 0 3px rgba(169,140,255,.035); }
+  .workflow-v-avatar img { border-radius:8px; }
+  .workflow-v-avatar i { width:8px; height:8px; }
   .workflow-live-line { margin-top:5px!important; font-size:7px!important; }
   .workflow-header-stats { display:none; }
   .workflow-workspace,.workflow-workspace.with-drawer,.workflow-workspace.library-collapsed,.workflow-workspace.library-collapsed.with-drawer { height:auto; grid-template-columns:1fr; }
