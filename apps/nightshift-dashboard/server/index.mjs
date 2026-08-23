@@ -53,7 +53,6 @@ const contentManifestHashes = new Map();
 await ensureWorkflow();
 await ensureSeedInstance();
 await refreshCards();
-await reconcileSeededInstances(cardCache);
 const schedulerTimer = setInterval(() => {
   runScheduler();
 }, 30000);
@@ -441,12 +440,6 @@ async function ensureSeedInstance() {
   const seed = JSON.parse(await readFile(resolve(seedPath), "utf8"));
   const release = store.listReleases()[0];
   await startInstance({ ...seed, workflowSha256: release.workflowSha256 });
-}
-
-async function reconcileSeededInstances(cards) {
-  for (const instance of store.listInstances()) {
-    await runtime.reconcile(instance.id, cards);
-  }
 }
 
 function runScheduler() {
