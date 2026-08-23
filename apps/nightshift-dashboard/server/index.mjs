@@ -52,7 +52,6 @@ const contentManifestHashes = new Map();
 
 await ensureWorkflow();
 await ensureSeedInstance();
-await refreshCards();
 const schedulerTimer = setInterval(() => {
   runScheduler();
 }, 30000);
