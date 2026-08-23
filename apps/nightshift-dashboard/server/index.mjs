@@ -18,6 +18,7 @@ import {
   redactSensitiveInputs,
   requiredSkillsByRole,
   stageHandoffPath,
+  validateDeclaredCompletion,
   validateProjectRequest,
   WorkboardGatewayAdapter,
 } from "../../../packages/nightshift-core/src/index.mjs";
@@ -419,6 +420,35 @@ async function handleApi(request, response, url) {
     return;
   }
   const decisionMatch = url.pathname.match(/^\/api\/cards\/([^/]+)\/(approve|request-changes|reject)$/);
+  if (request.method === "POST" && url.pathname === "/api/cards/bulk/approve") {
+    const body = await bodyJson(request);
+    const cardIds = [...new Set(Array.isArray(body.cardIds) ? body.cardIds : [])];
+    if (cardIds.length === 0 || cardIds.length > 100 || cardIds.some((id) => typeof id !== "string" || !id.trim())) {
+      json(response, 422, { error: "cardIds must contain between 1 and 100 card IDs" });
+      return;
+    }
+    const cards = await refreshCards();
+    const decisions = cardIds.map((cardId) => {
+      const card = cards.find((entry) => entry.id === cardId);
+      if (!card) throw new Error(`Workboard card not found: ${cardId}`);
+      if (card.status !== "review") throw new Error(`Card is not waiting for review: ${cardId}`);
+      return { card, input: decisionInput({ body, card }) };
+    });
+    const results = [];
+    for (const decision of decisions) {
+      try {
+        const result = await runtime.approve(decision.input);
+        await recordHumanStageHandoff(decision.input);
+        results.push({ cardId: decision.card.id, ok: true, status: result.status });
+      } catch (error) {
+        results.push({ cardId: decision.card.id, error: error.message, ok: false });
+      }
+    }
+    await refreshCards();
+    const failed = results.filter((entry) => !entry.ok);
+    json(response, failed.length ? 207 : 200, { approved: results.length - failed.length, failed: failed.length, ok: failed.length === 0, results });
+    return;
+  }
   if (request.method === "POST" && decisionMatch) {
     const body = await bodyJson(request);
     const cardId = decodeURIComponent(decisionMatch[1]);
@@ -427,10 +457,7 @@ async function handleApi(request, response, url) {
       json(response, 404, { error: "Workboard card not found" });
       return;
     }
-    const baseInput = resolveCardDecisionContext({ body, card });
-    const instance = baseInput.instanceId ? store.getInstance(baseInput.instanceId) : null;
-    const release = instance ? store.getRelease(instance.workflowSha256)?.manifest : null;
-    const input = resolveCardDecisionContext({ body, card, instance, release });
+    const input = decisionInput({ body, card });
     const result = decisionMatch[2] === "approve"
       ? await runtime.approve(input)
       : decisionMatch[2] === "request-changes"
@@ -450,6 +477,13 @@ async function handleApi(request, response, url) {
     return;
   }
   json(response, 404, { error: "Not found" });
+}
+
+function decisionInput({ body, card }) {
+  const baseInput = resolveCardDecisionContext({ body, card });
+  const instance = baseInput.instanceId ? store.getInstance(baseInput.instanceId) : null;
+  const release = instance ? store.getRelease(instance.workflowSha256)?.manifest : null;
+  return resolveCardDecisionContext({ body, card, instance, release });
 }
 
 async function ensureWorkflow() {
@@ -617,9 +651,19 @@ async function loadDeliverables(instanceId, contentItemId = null) {
 
 async function validateCompletion({ contentItemId, instance, release, stageId }) {
   const stage = release?.spec?.stages?.find((entry) => entry.id === stageId);
+  let handoff = null;
   if (release?.spec?.handoff?.version === 1) {
     const manifest = await loadStageHandoff({ contentItemId, instance, release, stageId, required: true });
-    normalizeStageHandoff(manifest, { contentItemId, instanceId: instance.id, release, stageId });
+    handoff = normalizeStageHandoff(manifest, { contentItemId, instanceId: instance.id, release, stageId });
+  }
+  if (release?.spec?.completion?.mode === "strict-v1") {
+    await validateDeclaredCompletion({
+      checkUrl: checkCompletionUrl,
+      instanceCreatedAt: instance.createdAt,
+      loadArtifact: (artifact) => loadInstanceArtifact({ artifact, contentItemId, instance }),
+      manifest: handoff,
+      stage,
+    });
   }
   if (!stage?.outputs?.includes("deliveryManifest")) return;
   if (!contentItemId) throw new Error("deliveryManifest completion requires a content item");
@@ -633,6 +677,40 @@ async function validateCompletion({ contentItemId, instance, release, stageId })
   const videoPath = await resolveDeclaredArtifact(manifest, manifest.video.path, contentItemId);
   const actualSha = await sha256File(videoPath);
   if (actualSha !== manifest.video.sha256) throw new Error("deliveryManifest video.sha256 does not match the file");
+}
+
+async function loadInstanceArtifact({ artifact, contentItemId = null, instance }) {
+  const normalizedPath = normalizeArtifactPath(artifact);
+  const configuredRoot = instance.inputs?.nightshift?.instanceDir ?? resolve(dataDir, "instances", instance.id);
+  const instanceRoot = await realpath(configuredRoot);
+  const roots = contentItemId ? [resolve(instanceRoot, "content-items", contentItemId), instanceRoot] : [instanceRoot];
+  let candidate = null;
+  for (const root of roots) {
+    try {
+      const resolved = await realpath(resolve(root, normalizedPath));
+      if (resolved.startsWith(`${instanceRoot}${sep}`)) { candidate = resolved; break; }
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+  if (!candidate) throw new Error(`Completion artifact not found: ${normalizedPath}`);
+  const info = await stat(candidate);
+  if (!info.isFile()) throw new Error("Completion artifact is not a file");
+  const extension = extname(candidate).toLowerCase();
+  if (extension === ".json") return { exists: true, json: JSON.parse(await readFile(candidate, "utf8")), mtimeMs: info.mtimeMs };
+  if ([".md", ".markdown", ".txt", ".yaml", ".yml"].includes(extension)) return { exists: true, mtimeMs: info.mtimeMs, text: await readFile(candidate, "utf8") };
+  return { exists: true, mtimeMs: info.mtimeMs };
+}
+
+async function checkCompletionUrl(url) {
+  try {
+    const response = await fetch(url, { method: "HEAD", redirect: "follow", signal: AbortSignal.timeout(8000) });
+    if (response.ok) return true;
+    if (![403, 405].includes(response.status)) return false;
+    const fallback = await fetch(url, { headers: { Range: "bytes=0-0" }, redirect: "follow", signal: AbortSignal.timeout(8000) });
+    await fallback.body?.cancel();
+    return fallback.ok;
+  } catch { return false; }
 }
 
 async function loadStageHandoff({ contentItemId = null, instance, release, required = false, stageId }) {

@@ -172,13 +172,23 @@ export function App() {
       <main className="main-shell">
         {error && <div className="error-banner">{error}</div>}
         {active === "board" && <LiveBoard data={data} query={query} setQuery={setQuery} selected={selectedForDecision} setSelected={setSelected} refreshing={refreshing} refresh={refresh} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} />}
-        {active === "workflows" && <WorkflowStudio data={data} refresh={refresh} initialProjectId={workflowProjectId} initialWorkflowId={initialLocation.workflow} setSelected={setSelected} selected={selectedForDecision} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onNewProject={(release) => setProjectReleaseSha(release?.workflowSha256 ?? data?.workflows?.[0]?.workflowSha256)} />}
+        {active === "workflows" && <WorkflowStudio data={data} refresh={refresh} initialProjectId={workflowProjectId} initialWorkflowId={initialLocation.workflow} setSelected={setSelected} selected={selectedForDecision} decide={decide} approveMany={approveMany} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onNewProject={(release) => setProjectReleaseSha(release?.workflowSha256 ?? data?.workflows?.[0]?.workflowSha256)} />}
         {active === "projects" && <Projects data={data} refresh={refresh} onNewProject={() => setProjectReleaseSha(data?.workflows?.[0]?.workflowSha256)} onOpenProject={(projectId) => { setWorkflowProjectId(projectId); updateDashboardLocation({ project: projectId, view: "workflows" }); setActive("workflows"); }} />}
         {active === "agents" && <Agents data={data} />}
       </main>
       {projectReleaseSha && <ProjectEditor releases={data?.workflows ?? []} initialReleaseSha={projectReleaseSha} onClose={() => setProjectReleaseSha(null)} onCreated={(result) => { setProjectReleaseSha(null); setActive("projects"); if (result.initialScheduleError) setError(`项目已创建，首次调度将在下一轮重试：${result.initialScheduleError}`); refresh(true).catch((reason) => setError(reason.message)); }} />}
     </div>
   );
+
+  async function approveMany(cards, evidence) {
+    const result = await api("/api/cards/bulk/approve", {
+      method: "POST",
+      body: JSON.stringify({ actor: "Workboard operator", cardIds: cards.map((card) => card.id), evidence }),
+    });
+    if (!result.ok) throw new Error(`已通过 ${result.approved} 条，另有 ${result.failed} 条失败，请刷新后重试`);
+    await refresh(true);
+    return result;
+  }
 }
 
 function LiveBoard({ data, query, setQuery, selected, setSelected, refreshing, refresh, decide, retry, delivery, deliveryState, deliveryError, handoff, handoffState, handoffError }) {
@@ -196,13 +206,17 @@ function LiveBoard({ data, query, setQuery, selected, setSelected, refreshing, r
   </>;
 }
 
-function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, setSelected, selected, decide, retry, delivery, deliveryState, deliveryError, handoff, handoffState, handoffError, onNewProject }) {
+function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, setSelected, selected, decide, approveMany, retry, delivery, deliveryState, deliveryError, handoff, handoffState, handoffError, onNewProject }) {
   const groups = useMemo(() => groupWorkflowReleases(data?.workflows ?? []), [data?.workflows]);
   const deepLinkApplied = useRef(false);
   const [workflowId, setWorkflowId] = useState(initialWorkflowId ?? "");
   const [projectId, setProjectId] = useState(initialProjectId ?? "all");
   const [mobileStageId, setMobileStageId] = useState("");
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
+  const [bulkApproval, setBulkApproval] = useState(null);
+  const [bulkEvidence, setBulkEvidence] = useState("");
+  const [bulkSaving, setBulkSaving] = useState(false);
+  const [bulkError, setBulkError] = useState("");
   const [libraryCollapsed, setLibraryCollapsed] = useState(() => typeof window !== "undefined" && window.localStorage.getItem("nightshift.workflowLibraryCollapsed") === "true");
   const [editor, setEditor] = useState(null);
   useEffect(() => {
@@ -272,6 +286,7 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
           return <button className={entry.id === group.id ? "selected" : ""} title={entry.name} key={entry.id} onClick={() => { setWorkflowId(entry.id); setProjectId("all"); }}><span className="workflow-signal" /><div><strong>{entry.name}</strong><small>{count} 个项目 · {entry.releases[0].version}</small></div></button>;
         })}
       </aside>
+      {libraryCollapsed && <button className="workflow-library-peek" aria-label="展开 Workflow 列表" title="展开 Workflow 列表" onClick={() => setLibraryCollapsed(false)}><Icons.PanelLeftOpen size={16} /></button>}
       <main className="workflow-runway">
         <div className="runway-toolbar">
           <div className="release-identity"><span className="mono">{pinnedRelease?.version}</span><strong>{stages.length} 个阶段</strong><small>SHA {pinnedRelease?.workflowSha256.slice(0, 12)}</small></div>
@@ -291,22 +306,26 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
         </nav>
         <div className="stage-runway" style={{ "--stage-count": stages.length }}>
           <div className="stage-rail" />
-          {stages.map((stage, index) => <StageLane key={stage.id} stage={stage} index={index} mobileSelected={mobileStageId === stage.id} tasks={taskIndex.get(stage.id) ?? []} onSelect={setSelected} />)}
+          {stages.map((stage, index) => <StageLane key={stage.id} stage={stage} index={index} mobileSelected={mobileStageId === stage.id} tasks={taskIndex.get(stage.id) ?? []} onSelect={setSelected} onBulkApprove={(cards) => { setBulkApproval({ cards, stage }); setBulkEvidence(""); setBulkError(""); }} />)}
         </div>
       </main>
       <Drawer card={selected} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onClose={() => setSelected(null)} onDecide={decide} onRetry={retry} />
     </div>
     {editor && <WorkflowEditor initialSource={editor.source} mode={editor.mode} onClose={() => setEditor(null)} onPublished={async () => { setEditor(null); await refresh(true); }} />}
+    {bulkApproval && <div className="workflow-modal bulk-approval-modal" role="dialog" aria-modal="true" aria-label="批量审核">
+      <div className="bulk-approval-dialog"><span className="section-label">Batch review</span><h2>批量通过 {bulkApproval.cards.length} 条任务</h2><p>每条任务仍会生成独立审批记录。付费生产、外部发布等动作继续严格使用各自 Workflow 声明的权限与范围。</p><textarea aria-label="批量审核备注" value={bulkEvidence} onChange={(event) => setBulkEvidence(event.target.value)} placeholder="审核备注（可选）" />{bulkError && <p className="decision-error">{bulkError}</p>}<div><button onClick={() => setBulkApproval(null)} disabled={bulkSaving}>取消</button><button className="primary" disabled={bulkSaving} onClick={async () => { setBulkSaving(true); setBulkError(""); try { await approveMany(bulkApproval.cards, bulkEvidence); setBulkApproval(null); } catch (reason) { setBulkError(reason.message); } finally { setBulkSaving(false); } }}>{bulkSaving ? "处理中…" : "确认批量通过"}</button></div></div>
+    </div>}
   </div>;
 }
 
-function StageLane({ stage, index, mobileSelected, tasks, onSelect }) {
+function StageLane({ stage, index, mobileSelected, tasks, onSelect, onBulkApprove }) {
   const summary = summarizeStatuses(tasks);
   const isLive = (summary.running ?? 0) > 0;
+  const reviewCards = tasks.filter((task) => task.status === "review" && task.card).map((task) => task.card);
   return <section className={`stage-lane ${isLive ? "is-live" : ""} ${mobileSelected ? "mobile-selected" : ""}`}>
     <header><span className="stage-index">{String(index + 1).padStart(2, "0")}</span><div><strong>{stage.title}</strong><small>{stage.scope === "content-item" ? "每条内容" : "整个项目"} · {stage.actor === "human" ? "人工" : "Agent"}</small></div></header>
-    <div className="stage-counts">{Object.entries(summary).map(([status, count]) => <span className={`state-${status}`} key={status}>{statusLabel(status)} {count}</span>)}{tasks.length === 0 && <span>尚未开始</span>}</div>
-    <div className="stage-tasks">{tasks.map((task) => <button key={`${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}-${task.card?.id ?? task.attempt}`} className={`stage-task state-${task.status}`} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}><span className="task-state" /><div><strong>{task.contentTitle ?? task.projectName}</strong><small>{task.contentTitle ? task.projectName : task.projectId}</small></div><span className="task-action">{task.requiresApproval ? "等待确认执行" : statusLabel(task.status)}</span></button>)}</div>
+    <div className="stage-counts">{Object.entries(summary).map(([status, count]) => <span className={`state-${status}`} key={status}>{statusLabel(status)} {count}</span>)}{tasks.length === 0 && <span>尚未开始</span>}{reviewCards.length > 1 && <button className="bulk-review-button" onClick={() => onBulkApprove(reviewCards)}>批量通过 {reviewCards.length}</button>}</div>
+    <div className="stage-tasks">{tasks.map((task) => <button key={`${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}-${task.card?.id ?? task.attempt}`} className={`stage-task state-${task.status}`} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}><span className="task-state" /><div><strong>{task.contentTitle ?? task.projectName}</strong><small>{task.contentTitle ? task.projectName : task.projectId}</small></div><span className="task-action">{taskActionLabel(task)}</span></button>)}</div>
   </section>;
 }
 
@@ -521,6 +540,7 @@ function emptyWorkflow() {
     spec: {
       ownerAgentRole: "operator",
       concurrency: { perInstance: 2, maxActiveInstances: 3 },
+      completion: { mode: "strict-v1" },
       inputs: {},
       stages: [defaultStage(1)],
     },
@@ -643,6 +663,7 @@ function indexStageTasks(stages, projects, cards) {
         ...run,
         card,
         contentTitle: content?.title,
+        guardedEffect: stageById.get(run.stageId)?.approval?.before ?? null,
         projectId: project.id,
         projectName: project.name,
         requiresApproval: missingApprovalFor(project, stageById.get(run.stageId), run.contentItemId),
@@ -664,6 +685,7 @@ function indexStageTasks(stages, projects, cards) {
       card,
       contentItemId,
       contentTitle: content?.title,
+      guardedEffect: stageById.get(stageId)?.approval?.before ?? null,
       isApproval: true,
       projectId,
       projectName: project.name,
@@ -752,6 +774,18 @@ function preferTask(candidate, current) {
 
 function statusLabel(status) {
   return ({ ready: "待开始", running: "进行中", review: "待审核", blocked: "已阻塞", done: "已完成", cancelled: "已取消" })[status] ?? status;
+}
+
+function taskActionLabel(task) {
+  const effect = guardedEffectLabel(task.guardedEffect);
+  if (task.requiresApproval && effect) return `确认${effect}`;
+  if (task.status === "done" && effect) return `${effect}完成`;
+  if (task.status === "blocked" && effect) return `${effect}未完成`;
+  return task.requiresApproval ? "等待确认执行" : statusLabel(task.status);
+}
+
+function guardedEffectLabel(effect) {
+  return ({ "external-publication": "外部发布", "paid-production": "付费生产", destructive: "高风险操作", "permission-change": "权限变更" })[effect] ?? null;
 }
 
 function csv(value) { return value.split(",").map((entry) => entry.trim()).filter(Boolean); }

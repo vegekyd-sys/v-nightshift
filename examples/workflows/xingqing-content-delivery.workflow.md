@@ -3,11 +3,12 @@ apiVersion: nightshift.versa.ai/v1alpha1
 kind: Workflow
 metadata:
   id: xingqing-content-delivery
-  version: 0.4.7
+  version: 0.4.8
   name: 星擎内容交付
 spec:
   ownerAgentRole: content-operator
   concurrency: {perInstance: 8, maxActiveInstances: 3}
+  completion: {mode: strict-v1}
   handoff: {version: 1, mode: stage-input-output}
   contentItems:
     routes: [AI_GENERATE, SCENE_EDIT]
@@ -158,7 +159,13 @@ needs: [review]
 sideEffects: [external-publication]
 approval: {before: external-publication, scope: asset-and-account}
 outputs: [publishTask, publicUrl, publicationEvidence, metricsSnapshot, retrospective]
-completeWhen: [output.publicUrl.reachable, output.publicationEvidence.accountMatches, output.metricsSnapshot.traceableOrUnknown, output.retrospective.evidenceLinked]
+outputContracts:
+  publicUrl: {type: https-url, allowedHosts: [tiktok.com]}
+  publicationEvidence:
+    type: json
+    equals: {platform: tiktok, published: true, accountMatches: true}
+    matches: {publicUrl: output.publicUrl.url}
+completeWhen: [output.publicUrl.hostAllowed, output.publicUrl.reachable, output.publicationEvidence.published, output.publicationEvidence.accountMatches, output.publicationEvidence.publishedAt, output.metricsSnapshot.traceableOrUnknown, output.retrospective.evidenceLinked]
 timeout: 7d
 retry: {maxAttempts: 4, idempotencyKey: "${instance.id}:${contentItem.id}:publish-feedback"}
 ```

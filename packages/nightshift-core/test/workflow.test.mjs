@@ -20,6 +20,8 @@ test("compiles the seven-stage workflow.md deterministically", async () => {
   assert.deepEqual(first.spec.contentItems.routes, ["AI_GENERATE", "SCENE_EDIT"]);
   assert.equal(first.spec.concurrency.perInstance, 8);
   assert.equal(first.spec.concurrency.maxActiveInstances, 3);
+  assert.equal(first.spec.completion.mode, "strict-v1");
+  assert.deepEqual(first.spec.stages.at(-1).outputContracts.publicUrl, { type: "https-url", allowedHosts: ["tiktok.com"] });
 });
 
 test("the same compiler accepts a non-Xingqing workflow without content items", async () => {
@@ -40,6 +42,10 @@ test("rejects duplicate IDs, cycles, and unapproved side effects", async () => {
   const cyclic = structuredClone(await loadWorkflow(fixture));
   cyclic.spec.stages[0].needs = ["publish-feedback"];
   assert.ok(validateWorkflow(cyclic).some((entry) => entry.code === "workflow.cycle"));
+
+  const unknownOutputContract = structuredClone(await loadWorkflow(fixture));
+  unknownOutputContract.spec.stages.at(-1).outputContracts.unknown = { type: "json" };
+  assert.ok(validateWorkflow(unknownOutputContract).some((entry) => entry.code === "stage.outputContracts.output.unknown"));
 });
 
 test("plans the project stage and redacts secrets", async () => {
@@ -197,6 +203,10 @@ test("human review and publication remain per-video and idempotent", async () =>
   instance.approvals = [{ stageId: "publish-feedback", contentItemId: "video-scene-01", effect: "external-publication", scope: "asset-and-account", status: "approved" }];
   const publish = planNextActions({ release, instance, runs: [{ stageId: "plan", status: "done" }], contentItems, contentItemRuns })[0];
   assert.match(publish.idempotencyKey, /video-scene-01:publish-feedback/);
+  assert.match(publish.card.notes, /exact Workboard approval is recorded for external-publication/);
+  assert.match(publish.card.notes, /control plane will load every declared output artifact/);
+  assert.match(publish.card.notes, /Output contract publicUrl/);
+  assert.match(publish.card.notes, /tiktok\.com/);
 });
 
 test("approval without the exact effect and scope never unlocks a side effect", async () => {

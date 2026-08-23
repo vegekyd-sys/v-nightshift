@@ -219,6 +219,7 @@ export function buildAgentBrief(release, instance, stage, contentItem = null) {
     release,
     stageId: upstream.id,
   })) : [];
+  const exactApprovalRecorded = Boolean(stage.approval?.before) && !requiredApproval(stage, instance, new Date(), contentItem?.id ?? null);
   const lines = [
     `Night Shift workflow: ${release.metadata.name} (${release.metadata.version})`,
     `Instance: ${instance.id}`,
@@ -246,6 +247,13 @@ export function buildAgentBrief(release, instance, stage, contentItem = null) {
       ? [`Delivery contract: write exactly this v1 shape to ${itemDir}/deliverables.json (paths are relative to ${itemDir}): ${JSON.stringify(deliveryManifestExample(instance.id, contentItem))}`]
       : []),
     `Required outputs: ${(stage.outputs ?? []).join(", ") || "none"}`,
+    ...(exactApprovalRecorded ? [
+      `Execution authorization: an exact Workboard approval is recorded for ${stage.approval.before} with scope ${stage.approval.scope ?? "stage"}${contentItem ? ` on content item ${contentItem.id}` : ""}. This approval is authoritative for this stage only and supersedes an earlier project default-deny flag only for this approved action. Do not edit the project inputs.`,
+    ] : []),
+    ...(release.spec?.completion?.mode === "strict-v1" ? [
+      "Strict completion: the control plane will load every declared output artifact and evaluate every completeWhen rule from this Workflow. A summary, internal substitute, or claimed success cannot complete the card. JSON facts must be booleans or concrete values; URL outputs must put the real HTTPS URL directly in the handoff artifact field.",
+      ...Object.entries(stage.outputContracts ?? {}).map(([name, contract]) => `Output contract ${name}: ${JSON.stringify(contract)}`),
+    ] : []),
     ...(stage.id === "brief" && itemDir ? [
       `Brief output contract: read ${itemDir}/routeDecision.json and ${itemDir}/frozenInputManifest.json, then write ${itemDir}/finishedVideoBrief.md. It must explicitly record routeMatchesContentItem, inputsFrozen, and productionReady; include target duration, narrative structure, a shot table bound to exact frozen source_url/start_sec/end_sec values, TTS or no-TTS behavior, subtitle/audio rules, missing-footage handling, and final QC acceptance. Do not inspect Night Shift source code to infer this contract.`,
     ] : []),

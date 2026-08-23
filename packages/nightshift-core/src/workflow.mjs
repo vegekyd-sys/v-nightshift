@@ -131,6 +131,9 @@ export function validateWorkflow(document) {
   }
   validateIdentifier(spec.ownerAgentRole, "spec.ownerAgentRole", issues);
   const contentRoutes = validateContentItemContract(spec.contentItems, issues);
+  if (spec.completion !== undefined && (!isObject(spec.completion) || spec.completion.mode !== "strict-v1")) {
+    issues.push(issue("completion.mode.invalid", "spec.completion.mode", "completion.mode must be strict-v1"));
+  }
 
   const stages = Array.isArray(spec.stages) ? spec.stages : [];
   if (stages.length === 0) {
@@ -278,6 +281,7 @@ export function validateWorkflow(document) {
         );
       }
     }
+    if (stage.outputContracts !== undefined) validateOutputContracts(stage, path, issues);
     if (isObject(stage.retry)) {
       if (!Number.isInteger(stage.retry.maxAttempts) || stage.retry.maxAttempts < 1) {
         issues.push(
@@ -370,6 +374,27 @@ export function interpolate(template, values) {
     }
     return String(value);
   });
+}
+
+function validateOutputContracts(stage, path, issues) {
+  if (!isObject(stage.outputContracts)) {
+    issues.push(issue("stage.outputContracts.invalid", `${path}.outputContracts`, "outputContracts must be an object"));
+    return;
+  }
+  const outputs = new Set(stringArray(stage.outputs));
+  for (const [name, contract] of Object.entries(stage.outputContracts)) {
+    if (!outputs.has(name)) issues.push(issue("stage.outputContracts.output.unknown", `${path}.outputContracts.${name}`, `Unknown output ${name}`));
+    if (!isObject(contract) || !["json", "https-url", "file", "text"].includes(contract.type)) {
+      issues.push(issue("stage.outputContracts.type.invalid", `${path}.outputContracts.${name}.type`, "Output contract type must be json, https-url, file, or text"));
+      continue;
+    }
+    if (contract.allowedHosts !== undefined && (!Array.isArray(contract.allowedHosts) || contract.allowedHosts.length === 0 || contract.allowedHosts.some((entry) => !nonEmptyString(entry)))) {
+      issues.push(issue("stage.outputContracts.allowedHosts.invalid", `${path}.outputContracts.${name}.allowedHosts`, "allowedHosts must be a non-empty string array"));
+    }
+    for (const field of ["equals", "matches"]) {
+      if (contract[field] !== undefined && !isObject(contract[field])) issues.push(issue(`stage.outputContracts.${field}.invalid`, `${path}.outputContracts.${name}.${field}`, `${field} must be an object`));
+    }
+  }
 }
 
 function buildGraph(stages) {
