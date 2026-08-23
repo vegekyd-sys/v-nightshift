@@ -252,6 +252,57 @@ test("changing a bound publication target invalidates the previous approval", as
   assert.notEqual(second.approval.bindingHash, first.approval.bindingHash);
 });
 
+test("serializes publication cards that share one external device", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const instance = activeInstance(release);
+  instance.inputs.publicationTarget = publicationTarget();
+  const contentItems = twoItems().map((item) => ({ ...item, route: "SCENE_EDIT" }));
+  const completed = contentItems.flatMap((item) => doneThrough(item.id, "review"));
+  const approvals = planNextActions({
+    release,
+    instance,
+    runs: [{ stageId: "plan", status: "done" }],
+    contentItems,
+    contentItemRuns: completed,
+  });
+  instance.approvals = approvals.map((action) => ({
+    stageId: "publish-feedback",
+    contentItemId: action.contentItemId,
+    ...action.approval,
+    status: "approved",
+  }));
+
+  const first = planNextActions({
+    release,
+    instance,
+    runs: [{ stageId: "plan", status: "done" }],
+    contentItems,
+    contentItemRuns: completed,
+  });
+
+  assert.equal(first.length, 1);
+  assert.equal(first[0].card.automation.resourceKey, "geelark:device-1");
+
+  const during = planNextActions({
+    release,
+    instance,
+    runs: [{ stageId: "plan", status: "done" }],
+    contentItems,
+    contentItemRuns: [...completed, { contentItemId: first[0].contentItemId, stageId: "publish-feedback", status: "running" }],
+  });
+  assert.deepEqual(during, []);
+
+  const after = planNextActions({
+    release,
+    instance,
+    runs: [{ stageId: "plan", status: "done" }],
+    contentItems,
+    contentItemRuns: [...completed, { contentItemId: first[0].contentItemId, stageId: "publish-feedback", status: "done" }],
+  });
+  assert.equal(after.length, 1);
+  assert.notEqual(after[0].contentItemId, first[0].contentItemId);
+});
+
 test("refuses another release and requires an Agent binding", async () => {
   const release = compileWorkflow(await loadWorkflow(fixture));
   const instance = activeInstance(release);

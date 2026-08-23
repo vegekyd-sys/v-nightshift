@@ -34,6 +34,8 @@ export function planNextActions({
   ).length;
   const limit = release.spec.concurrency?.perInstance ?? 1;
   if (activeCount >= limit) return [];
+  const itemById = new Map(contentItems.map((item) => [item.id, item]));
+  const reservedResources = activeResourceLocks({ instance, itemById, latestItemRuns, latestRuns, stageById });
 
   const actions = [];
   for (const stage of stages) {
@@ -76,14 +78,17 @@ export function planNextActions({
         }
         const type = stage.actor === "human" ? "create_review_card" : "create_workboard_card";
         if (!["agent", "system", "human"].includes(stage.actor)) continue;
+        const resourceKey = stage.actor === "human" ? null : stageResourceLock(stage, instance, contentItem);
+        if (resourceKey && reservedResources.has(resourceKey)) continue;
         actions.push({
           type,
           instanceId: instance.id,
           contentItemId: contentItem.id,
           stageId: stage.id,
           idempotencyKey: actionKey(release, instance, stage, stage.actor === "human" ? "review" : "run", contentItem),
-          card: cardPayload(release, instance, stage, stage.actor === "human" ? "review" : "ready", contentItem),
+          card: cardPayload(release, instance, stage, stage.actor === "human" ? "review" : "ready", contentItem, resourceKey),
         });
+        if (resourceKey) reservedResources.add(resourceKey);
       }
       continue;
     }
@@ -139,20 +144,23 @@ export function planNextActions({
     }
 
     if (stage.actor === "agent" || stage.actor === "system") {
+      const resourceKey = stageResourceLock(stage, instance);
+      if (resourceKey && reservedResources.has(resourceKey)) continue;
       actions.push({
         type: "create_workboard_card",
         instanceId: instance.id,
         stageId: stage.id,
         idempotencyKey: actionKey(release, instance, stage, "run"),
-        card: cardPayload(release, instance, stage, "ready"),
+        card: cardPayload(release, instance, stage, "ready", null, resourceKey),
       });
+      if (resourceKey) reservedResources.add(resourceKey);
     }
   }
 
   return actions;
 }
 
-function cardPayload(release, instance, stage, status, contentItem = null) {
+function cardPayload(release, instance, stage, status, contentItem = null, resourceKey = null) {
   const inputHash = instance.inputHash ?? hashJson(instance.inputs ?? {});
   const agentRole = stage.agentRole ?? release.spec.ownerAgentRole;
   const assignedAgent = stage.actor === "agent" ? instance.agentBindings?.[agentRole] : null;
@@ -187,8 +195,34 @@ function cardPayload(release, instance, stage, status, contentItem = null) {
       maxRuntime: stage.timeout,
       maxRuntimeSeconds: stageTimeoutSeconds(stage.timeout),
       maxAttempts: stage.retry?.maxAttempts ?? 1,
+      resourceKey,
     },
   };
+}
+
+function activeResourceLocks({ instance, itemById, latestItemRuns, latestRuns, stageById }) {
+  const locks = new Set();
+  for (const run of latestRuns.values()) {
+    if (!ACTIVE_STATUSES.has(run.status)) continue;
+    const key = stageResourceLock(stageById.get(run.stageId), instance);
+    if (key) locks.add(key);
+  }
+  for (const run of latestItemRuns.values()) {
+    if (!ACTIVE_STATUSES.has(run.status)) continue;
+    const key = stageResourceLock(stageById.get(run.stageId), instance, itemById.get(run.contentItemId));
+    if (key) locks.add(key);
+  }
+  return locks;
+}
+
+function stageResourceLock(stage, instance, contentItem = null) {
+  if (!stage?.resourceLock) return null;
+  return interpolate(stage.resourceLock, {
+    contentItem: contentItem ?? {},
+    input: instance.inputs ?? {},
+    instance,
+    stage,
+  });
 }
 
 export function stageTimeoutSeconds(value) {

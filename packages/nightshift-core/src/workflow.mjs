@@ -251,6 +251,9 @@ export function validateWorkflow(document) {
         issue("stage.timeout.required", `${path}.timeout`, "timeout is required"),
       );
     }
+    if (stage.resourceLock !== undefined && !nonEmptyString(stage.resourceLock)) {
+      issues.push(issue("stage.resourceLock.invalid", `${path}.resourceLock`, "resourceLock must be a non-empty interpolation string"));
+    }
 
     const sideEffects = stringArray(stage.sideEffects);
     const guarded = sideEffects.filter((value) => GUARDED_SIDE_EFFECTS.has(value));

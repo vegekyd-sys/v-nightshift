@@ -3,7 +3,7 @@ apiVersion: nightshift.versa.ai/v1alpha1
 kind: Workflow
 metadata:
   id: xingqing-content-delivery
-  version: 0.4.9
+  version: 0.4.10
   name: 星擎内容交付
 spec:
   ownerAgentRole: content-operator
@@ -168,6 +168,7 @@ approval:
     publicationTarget:
       source: input.publicationTarget
       requiredFields: [accountRecordId, tiktokHandle, geelarkDeviceId, platform, market, language, timezone]
+resourceLock: "geelark:${input.publicationTarget.geelarkDeviceId}"
 outputs: [publishTask, publicUrl, publicationEvidence, metricsSnapshot, retrospective]
 outputContracts:
   publicUrl: {type: https-url, allowedHosts: [tiktok.com]}
