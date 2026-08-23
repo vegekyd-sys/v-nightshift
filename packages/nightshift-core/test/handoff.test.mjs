@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   compileWorkflow,
   handoffManifestExample,
+  humanStageHandoff,
   loadWorkflow,
   normalizeStageHandoff,
   presentStageHandoff,
@@ -42,4 +43,22 @@ test("validates a recorded handoff against workflow input and output names", asy
   );
   assert.match(stageHandoffPath({ instanceDir: "/srv/nightshift/NS-1", contentItemId: "video-1", release, stageId: "route" }), /content-items\/video-1\/handoffs\/route\.json$/);
   assert.match(stageHandoffPath({ instanceDir: "/srv/nightshift/NS-1", release, stageId: "plan" }), /NS-1\/handoffs\/plan\.json$/);
+});
+
+test("records a human review as the output handed to publication", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const manifest = humanStageHandoff({
+    actor: "Reviewer",
+    approvalArtifact: "workboard-approval:card-1",
+    contentItemId: "video-1",
+    evidence: "Approved after visual review",
+    instanceDir: "/srv/nightshift/NS-1",
+    instanceId: "NS-1",
+    release,
+    stageId: "review",
+  });
+  assert.deepEqual(manifest.inputs.map((entry) => entry.name), ["finishedAsset", "machineQc", "deliveryManifest"]);
+  assert.deepEqual(manifest.outputs.map((entry) => entry.name), ["approvedAssetVersion"]);
+  assert.equal(manifest.outputs[0].summary, "Approved after visual review");
+  assert.equal(manifest.outputs[0].artifact, "workboard-approval:card-1");
 });

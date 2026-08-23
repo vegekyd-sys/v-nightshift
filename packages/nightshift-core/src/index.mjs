@@ -28,6 +28,7 @@ export {
 export { requiredSkillsByRole, validateProjectRequest } from "./project.mjs";
 export {
   handoffManifestExample,
+  humanStageHandoff,
   normalizeStageHandoff,
   presentStageHandoff,
   stageHandoffContract,

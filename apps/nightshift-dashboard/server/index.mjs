@@ -1,12 +1,13 @@
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, readFile, realpath, stat } from "node:fs/promises";
-import { extname, join, normalize, resolve, sep } from "node:path";
+import { mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { dirname, extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadPublicAuth, requiresPublicAuth, verifyPublicAuth } from "./public-auth.mjs";
 import {
   deliverableArtifactPaths,
+  humanStageHandoff,
   NightShiftRuntime,
   NightShiftStore,
   normalizeArtifactPath,
@@ -402,6 +403,7 @@ async function handleApi(request, response, url) {
       : decisionMatch[2] === "request-changes"
         ? await runtime.requestChanges(input)
         : await runtime.reject(input);
+    if (decisionMatch[2] === "approve") await recordHumanStageHandoff(input);
     await refreshCards();
     json(response, 200, result);
     return;
@@ -600,6 +602,29 @@ async function loadStageHandoff({ contentItemId = null, instance, release, requi
     if (error.code === "ENOENT") throw new Error(`Stage handoff is required: ${stageId}`);
     throw error;
   }
+}
+
+async function recordHumanStageHandoff({ actor, cardId, contentItemId = null, evidence, instanceId, stageId }) {
+  const instance = store.getInstance(instanceId);
+  const release = instance ? store.getRelease(instance.workflowSha256)?.manifest : null;
+  const stage = release?.spec?.stages?.find((entry) => entry.id === stageId);
+  if (!instance || !release || stage?.actor !== "human" || release.spec?.handoff?.version !== 1) return;
+  const instanceDir = instance.inputs?.nightshift?.instanceDir ?? resolve(dataDir, "instances", instance.id);
+  const manifestPath = stageHandoffPath({ instanceDir, contentItemId, release, stageId });
+  const manifest = humanStageHandoff({
+    actor,
+    approvalArtifact: `workboard-approval:${cardId}`,
+    contentItemId,
+    evidence,
+    instanceDir,
+    instanceId,
+    release,
+    stageId,
+  });
+  await mkdir(dirname(manifestPath), { recursive: true });
+  const temporaryPath = `${manifestPath}.tmp`;
+  await writeFile(temporaryPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+  await rename(temporaryPath, manifestPath);
 }
 
 async function sha256File(filePath) {

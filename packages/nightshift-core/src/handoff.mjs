@@ -85,6 +85,35 @@ export function handoffManifestExample({ contentItemId = null, instanceId, relea
   };
 }
 
+export function humanStageHandoff({
+  actor,
+  approvalArtifact,
+  contentItemId = null,
+  evidence,
+  instanceDir,
+  instanceId,
+  release,
+  stageId,
+}) {
+  const contract = stageHandoffContract(release, stageId);
+  return normalizeStageHandoff({
+    version: 1,
+    instanceId,
+    contentItemId,
+    stageId,
+    inputs: contract.inputs.map((entry) => ({
+      ...entry,
+      summary: `Received from ${entry.sourceStage}`,
+      artifact: stageHandoffPath({ instanceDir, contentItemId, release, stageId: entry.sourceStage }),
+    })),
+    outputs: contract.outputs.map((entry) => ({
+      ...entry,
+      summary: evidence || `Approved by ${actor || "Workboard operator"}`,
+      artifact: approvalArtifact,
+    })),
+  }, { contentItemId, instanceId, release, stageId });
+}
+
 export function handoffArtifactRoot(path) {
   return dirname(dirname(path));
 }
