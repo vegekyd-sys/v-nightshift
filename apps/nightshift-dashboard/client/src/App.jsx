@@ -278,8 +278,8 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
       </div>}
     </header>
     <div className={`workflow-workspace ${libraryCollapsed ? "library-collapsed" : ""} ${selected ? "with-drawer" : ""}`}>
-      <aside className="workflow-library" aria-label="Workflow 列表">
-        <div className="library-head"><strong>Workflows</strong><span>{groups.length}</span><button aria-label={libraryCollapsed ? "展开 Workflow 列表" : "收起 Workflow 列表"} title={libraryCollapsed ? "展开 Workflow 列表" : "收起 Workflow 列表"} onClick={() => setLibraryCollapsed((value) => !value)}>{libraryCollapsed ? <Icons.PanelLeftOpen size={15} /> : <Icons.PanelLeftClose size={15} />}</button></div>
+      <aside className="workflow-library" aria-label="Workflow 列表" aria-hidden={libraryCollapsed} inert={libraryCollapsed ? true : undefined}>
+        <div className="library-head"><strong>Workflows</strong><span>{groups.length}</span><button aria-label="收起 Workflow 列表" title="收起 Workflow 列表" onClick={() => setLibraryCollapsed(true)}><Icons.PanelLeftClose size={15} /></button></div>
         {groups.map((entry) => {
           const shas = new Set(entry.releases.map((release) => release.workflowSha256));
           const count = (data?.instances ?? []).filter((instance) => shas.has(instance.workflowSha256)).length;
