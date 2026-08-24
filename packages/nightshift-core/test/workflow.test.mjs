@@ -150,6 +150,20 @@ test("selects route-specific material skills without creating a second workflow"
   assert.deepEqual(actions[1].card.automation.skills, ["shooting-checklist-v3", "scene-cli", "material-verification"]);
 });
 
+test("AI brief requires finished-video-brief and exact Skill audit evidence", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const actions = planNextActions({
+    release,
+    instance: activeInstance(release),
+    runs: [{ stageId: "plan", status: "done" }],
+    contentItems: [twoItems()[0]],
+    contentItemRuns: doneThrough("video-ai-01", "materials"),
+  });
+  assert.deepEqual(actions[0].card.automation.skills, ["finished-video-brief", "lark-doc", "makaron"]);
+  assert.match(actions[0].card.notes, /Skill evidence gate/);
+  assert.match(actions[0].card.notes, /Atomic attempt scope/);
+});
+
 test("brief cards declare the executable artifact contract", async () => {
   const release = compileWorkflow(await loadWorkflow(fixture));
   const instance = activeInstance(release);
@@ -186,6 +200,24 @@ test("paid production approval is isolated per content item", async () => {
   assert.equal(approved[0].card.automation.maxRuntimeSeconds, 14_400);
   assert.match(approved[0].card.notes, /Delivery contract: write exactly this v1 shape/);
   assert.match(approved[0].card.notes, /\{"version":1/);
+  assert.deepEqual(approved[0].card.automation.sideEffects, ["paid-production"]);
+  assert.match(approved[0].card.notes, /External-operation gate/);
+});
+
+test("SCENE_EDIT production requires temporal duplicate evidence", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const instance = activeInstance(release);
+  instance.inputs.nightshift = { instanceDir: "/srv/nightshift/NS-LAB-001" };
+  instance.approvals = [{ stageId: "produce", contentItemId: "video-scene-01", effect: "paid-production", scope: "content-item", status: "approved" }];
+  const action = planNextActions({
+    release,
+    instance,
+    runs: [{ stageId: "plan", status: "done" }],
+    contentItems: [twoItems()[1]],
+    contentItemRuns: doneThrough("video-scene-01", "brief"),
+  })[0];
+  assert.match(action.card.notes, /check-video-duplicates\.mjs/);
+  assert.match(action.card.notes, /duplicate-check\.json/);
 });
 
 test("human review and publication remain per-video and idempotent", async () => {

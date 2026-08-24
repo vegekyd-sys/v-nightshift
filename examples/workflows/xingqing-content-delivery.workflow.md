@@ -3,7 +3,7 @@ apiVersion: nightshift.versa.ai/v1alpha1
 kind: Workflow
 metadata:
   id: xingqing-content-delivery
-  version: 0.4.10
+  version: 0.4.11
   name: 星擎内容交付
 spec:
   ownerAgentRole: content-operator
@@ -100,8 +100,8 @@ actor: agent
 scope: content-item
 routeStrategies:
   AI_GENERATE:
-    skills: [lark-doc, makaron]
-    description: 生成 AI 视频 Brief，包含镜头目标、参考资产、提示约束、品牌事实、时长画幅和验收条件。
+    skills: [finished-video-brief, lark-doc, makaron]
+    description: 先按 finished-video-brief 契约生成 AI 视频 Brief，再交给 Makaron；包含镜头目标、参考资产、提示约束、品牌事实、时长画幅和验收条件。
   SCENE_EDIT:
     skills: [montage-script-writer, scene-cli]
     description: 生成剪辑 Brief，包含逐段 Scene 绑定、时间范围、叙事结构、字幕音频规则和验收条件。
@@ -122,7 +122,13 @@ next: [produce]
 ```stage
 actor: agent
 scope: content-item
-skills: [makaron, background-worker-contract]
+routeStrategies:
+  AI_GENERATE:
+    skills: [finished-video-brief, makaron, background-worker-contract]
+    description: 只执行当前 AI_GENERATE ContentItem 的冻结 Brief，并生成可审计的逐条交付与 QC。
+  SCENE_EDIT:
+    skills: [finished-video-brief, makaron, background-worker-contract]
+    description: 只执行当前 SCENE_EDIT ContentItem 的冻结 Brief，并运行时间维度重复/近重复检测。
 needs: [brief]
 sideEffects: [paid-production]
 approval: {before: paid-production, scope: content-item}

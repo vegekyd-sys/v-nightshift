@@ -451,6 +451,35 @@ test("rejects a done card when its declared delivery fails validation", async ()
   store.close();
 });
 
+test("moves a terminal project to done and subsequent scheduler ticks stay idle", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard });
+  const release = runtime.publish(source);
+  runtime.startInstance({
+    id: "NS-RUNTIME-TERMINAL",
+    workflowSha256: release.workflowSha256,
+    agentBindings: { "content-operator": "main" },
+    contentItems: [{ id: "video-1", title: "Terminal video", route: "AI_GENERATE" }],
+  });
+  store.upsertStageRun({ instanceId: "NS-RUNTIME-TERMINAL", stageId: "plan", status: "done" });
+  for (const stage of release.manifest.spec.stages.filter((entry) => entry.scope === "content-item")) {
+    store.upsertContentItemRun({
+      instanceId: "NS-RUNTIME-TERMINAL",
+      contentItemId: "video-1",
+      stageId: stage.id,
+      status: "done",
+    });
+  }
+  const terminal = await runtime.tick("NS-RUNTIME-TERMINAL");
+  assert.equal(terminal.instance.status, "done");
+  const idle = await runtime.tick("NS-RUNTIME-TERMINAL", { dispatch: true });
+  assert.deepEqual(idle.actions, []);
+  assert.deepEqual(workboard.dispatchCalls, []);
+  store.close();
+});
+
 function publicationTarget() {
   return {
     accountRecordId: "account-1",

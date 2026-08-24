@@ -65,6 +65,50 @@ test("persists immutable releases, instances, stage runs, approvals, and audit e
   store.close();
 });
 
+test("rejects an in-place mutation of a published workflow version", async () => {
+  const original = compileWorkflow(await loadWorkflow(fixture));
+  const store = new NightShiftStore();
+  store.saveRelease(original, "original");
+  const changedDocument = await loadWorkflow(fixture);
+  changedDocument.spec.stages[0].title = "Mutated after publish";
+  const changed = compileWorkflow(changedDocument);
+  assert.notEqual(changed.metadata.workflowSha256, original.metadata.workflowSha256);
+  assert.throws(() => store.saveRelease(changed, "changed"), /UNIQUE constraint failed/i);
+  assert.equal(store.listReleases().length, 1);
+  store.close();
+});
+
+test("external operation ledger deduplicates side effects and preserves terminal success", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const store = new NightShiftStore();
+  store.saveRelease(release, await import("node:fs/promises").then(({ readFile }) => readFile(fixture, "utf8")));
+  store.createInstance({ id: "NS-OP-1", workflowSha256: release.metadata.workflowSha256 });
+  const operation = {
+    idempotencyKey: "release:produce:NS-OP-1:video-1",
+    instanceId: "NS-OP-1",
+    contentItemId: "video-1",
+    stageId: "produce",
+    ownerCardId: "card-1",
+    requestHash: "request-sha",
+  };
+  assert.equal(store.reserveExternalOperation(operation).reused, false);
+  assert.equal(store.reserveExternalOperation(operation).reused, true);
+  assert.throws(() => store.reserveExternalOperation({ ...operation, requestHash: "changed" }), /different request hash/i);
+  store.checkpointExternalOperation(operation.idempotencyKey, {
+    status: "executing",
+    externalTaskId: "task-1",
+    checkpoint: { state: "submitted" },
+  });
+  const completed = store.checkpointExternalOperation(operation.idempotencyKey, {
+    status: "succeeded",
+    result: { assetId: "asset-1" },
+  });
+  assert.equal(completed.externalTaskId, "task-1");
+  assert.deepEqual(completed.result, { assetId: "asset-1" });
+  assert.throws(() => store.checkpointExternalOperation(operation.idempotencyKey, { status: "executing" }), /immutable/i);
+  store.close();
+});
+
 test("one workflow release owns many isolated customer instances", async () => {
   const source = await import("node:fs/promises").then(({ readFile }) => readFile(fixture, "utf8"));
   const release = compileWorkflow(await loadWorkflow(fixture));

@@ -5,6 +5,7 @@ const PATH_FIELDS = [
   ["video", "path"],
   ["video", "posterPath"],
   ["qc", "reportPath"],
+  ["qc", "duplicateCheck", "reportPath"],
 ];
 
 export function normalizeDeliverablesManifest(input, { instanceId, contentItemId = null }) {
@@ -27,17 +28,17 @@ export function normalizeDeliverablesManifest(input, { instanceId, contentItemId
     qc: normalizeQc(input.qc),
     review: normalizeReview(input.review),
   };
-  for (const [section, field] of PATH_FIELDS) {
-    const value = manifest[section]?.[field];
-    if (value) manifest[section][field] = normalizeArtifactPath(value);
+  for (const path of PATH_FIELDS) {
+    const value = getPath(manifest, path);
+    if (value) setPath(manifest, path, normalizeArtifactPath(value));
   }
   return manifest;
 }
 
 export function deliverableArtifactPaths(manifest) {
   const paths = new Set();
-  for (const [section, field] of PATH_FIELDS) {
-    const value = manifest[section]?.[field];
+  for (const path of PATH_FIELDS) {
+    const value = getPath(manifest, path);
     if (value) paths.add(value);
   }
   return paths;
@@ -84,9 +85,23 @@ function normalizeQc(value = {}) {
   return {
     status: ["passed", "failed", "warning"].includes(value.status) ? value.status : "warning",
     reportPath: optionalText(value.reportPath),
+    duplicateCheck: normalizeDuplicateCheck(value.duplicateCheck),
     summary: Array.isArray(value.summary)
       ? value.summary.slice(0, 12).map((entry) => cleanText(entry, "", 240)).filter(Boolean)
       : [],
+  };
+}
+
+function normalizeDuplicateCheck(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return {
+    status: ["passed", "failed"].includes(value.status) ? value.status : "failed",
+    method: optionalText(value.method, 120),
+    threshold: unitNumber(value.threshold),
+    maxDuplicateRatio: unitNumber(value.maxDuplicateRatio),
+    duplicateRatio: unitNumber(value.duplicateRatio),
+    comparedPairs: nonNegativeInteger(value.comparedPairs),
+    reportPath: optionalText(value.reportPath),
   };
 }
 
@@ -96,6 +111,16 @@ function normalizeReview(value = {}) {
     stageId: optionalText(value.stageId, 160),
     status: optionalText(value.status, 64),
   };
+}
+
+function getPath(value, path) {
+  return path.reduce((current, key) => current?.[key], value);
+}
+
+function setPath(value, path, next) {
+  let current = value;
+  for (const key of path.slice(0, -1)) current = current[key];
+  current[path.at(-1)] = next;
 }
 
 function cleanText(value, fallback, max = 500) {
@@ -124,4 +149,14 @@ function positiveNumber(value) {
 function positiveInteger(value) {
   const number = Number(value);
   return Number.isInteger(number) && number > 0 ? number : null;
+}
+
+function nonNegativeInteger(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 0 ? number : null;
+}
+
+function unitNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 && number <= 1 ? number : null;
 }

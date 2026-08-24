@@ -90,6 +90,20 @@ export class NightShiftStore {
         expires_at TEXT,
         created_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS external_operations (
+        idempotency_key TEXT PRIMARY KEY,
+        instance_id TEXT NOT NULL REFERENCES instances(id),
+        content_item_id TEXT,
+        stage_id TEXT NOT NULL,
+        owner_card_id TEXT NOT NULL,
+        request_hash TEXT NOT NULL,
+        status TEXT NOT NULL,
+        external_task_id TEXT,
+        checkpoint_json TEXT,
+        result_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS audit_events (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
         event_id TEXT NOT NULL UNIQUE,
@@ -392,6 +406,77 @@ export class NightShiftStore {
       }));
   }
 
+  reserveExternalOperation(operation, now = new Date()) {
+    const timestamp = now.toISOString();
+    const existing = this.getExternalOperation(operation.idempotencyKey);
+    if (existing) {
+      if (existing.requestHash !== operation.requestHash) {
+        throw new Error("External operation idempotency key was reused with a different request hash");
+      }
+      return { ...existing, reused: true };
+    }
+    this.db.prepare(`
+      INSERT INTO external_operations(
+        idempotency_key, instance_id, content_item_id, stage_id, owner_card_id,
+        request_hash, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?, ?)
+    `).run(
+      operation.idempotencyKey,
+      operation.instanceId,
+      operation.contentItemId ?? null,
+      operation.stageId,
+      operation.ownerCardId,
+      operation.requestHash,
+      timestamp,
+      timestamp,
+    );
+    this.appendEvent({
+      instanceId: operation.instanceId,
+      type: "external-operation.reserved",
+      payload: { idempotencyKey: operation.idempotencyKey, ownerCardId: operation.ownerCardId, stageId: operation.stageId },
+      now,
+    });
+    return { ...this.getExternalOperation(operation.idempotencyKey), reused: false };
+  }
+
+  checkpointExternalOperation(idempotencyKey, patch, now = new Date()) {
+    const current = this.getExternalOperation(idempotencyKey);
+    if (!current) throw new Error("Unknown external operation");
+    const allowed = new Set(["reserved", "executing", "succeeded", "failed", "unknown"]);
+    const status = patch.status ?? current.status;
+    if (!allowed.has(status)) throw new Error("Invalid external operation status");
+    if (current.status === "succeeded" && status !== "succeeded") {
+      throw new Error("Succeeded external operations are immutable");
+    }
+    this.db.prepare(`
+      UPDATE external_operations SET status = ?, external_task_id = ?, checkpoint_json = ?, result_json = ?, updated_at = ?
+      WHERE idempotency_key = ?
+    `).run(
+      status,
+      patch.externalTaskId ?? current.externalTaskId,
+      patch.checkpoint === undefined ? JSON.stringify(current.checkpoint) : JSON.stringify(patch.checkpoint),
+      patch.result === undefined ? JSON.stringify(current.result) : JSON.stringify(patch.result),
+      now.toISOString(),
+      idempotencyKey,
+    );
+    this.appendEvent({
+      instanceId: current.instanceId,
+      type: "external-operation.checkpointed",
+      payload: { idempotencyKey, status, externalTaskId: patch.externalTaskId ?? current.externalTaskId },
+      now,
+    });
+    return this.getExternalOperation(idempotencyKey);
+  }
+
+  getExternalOperation(idempotencyKey) {
+    const row = this.db.prepare("SELECT * FROM external_operations WHERE idempotency_key = ?").get(idempotencyKey);
+    return row ? externalOperationRow(row) : null;
+  }
+
+  listExternalOperations(instanceId) {
+    return this.db.prepare("SELECT * FROM external_operations WHERE instance_id = ? ORDER BY created_at").all(instanceId).map(externalOperationRow);
+  }
+
   appendEvent({ instanceId = null, type, payload = {}, now = new Date(), eventId }) {
     const id = eventId ?? randomUUID();
     this.db
@@ -444,6 +529,23 @@ function instanceRow(row, approvals) {
     inputs: JSON.parse(row.inputs_json),
     agentBindings: JSON.parse(row.agent_bindings_json),
     approvals,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function externalOperationRow(row) {
+  return {
+    idempotencyKey: row.idempotency_key,
+    instanceId: row.instance_id,
+    contentItemId: row.content_item_id,
+    stageId: row.stage_id,
+    ownerCardId: row.owner_card_id,
+    requestHash: row.request_hash,
+    status: row.status,
+    externalTaskId: row.external_task_id,
+    checkpoint: row.checkpoint_json ? JSON.parse(row.checkpoint_json) : null,
+    result: row.result_json ? JSON.parse(row.result_json) : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

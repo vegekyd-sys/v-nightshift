@@ -81,6 +81,27 @@ async function run(input) {
       method: "PATCH",
     });
   }
+  if (resource === "operations" && ["reserve", "checkpoint"].includes(action) && subject) {
+    if (action === "reserve") {
+      const requestHash = option(input, "--request-hash");
+      if (!/^[a-f0-9]{64}$/i.test(requestHash ?? "")) throw new Error("--request-hash must be a SHA-256 hex digest");
+      return api(`/api/cards/${encodeURIComponent(subject)}/operations/reserve`, {
+        body: JSON.stringify({ requestHash: requestHash.toLowerCase() }),
+        method: "POST",
+      });
+    }
+    const status = option(input, "--status");
+    if (!status) throw new Error("--status is required");
+    return api(`/api/cards/${encodeURIComponent(subject)}/operations/checkpoint`, {
+      body: JSON.stringify({
+        status,
+        externalTaskId: option(input, "--external-task-id"),
+        checkpoint: jsonOption(input, "--checkpoint-json"),
+        result: jsonOption(input, "--result-json"),
+      }),
+      method: "POST",
+    });
+  }
   if (resource === "cards" && action === "list") {
     const status = option(input, "--status");
     return api(`/api/cards${status ? `?status=${encodeURIComponent(status)}` : ""}`);
@@ -105,7 +126,7 @@ async function run(input) {
       method: "POST",
     });
   }
-  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|monitor|preflight|create|start|pause | projects inputs <id> --file <json> | cards list|session|approve|changes|reject|retry");
+  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|monitor|preflight|create|start|pause | projects inputs <id> --file <json> | operations reserve|checkpoint <card-id> | cards list|session|approve|changes|reject|retry");
 }
 
 async function resolveWorkflow(project) {
@@ -141,6 +162,12 @@ async function api(path, options = {}) {
 
 async function readJson(path) {
   return JSON.parse(await readFile(resolve(path), "utf8"));
+}
+
+function jsonOption(input, name) {
+  const value = option(input, name);
+  if (value === null) return undefined;
+  return JSON.parse(value);
 }
 
 function option(input, name) {

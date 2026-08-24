@@ -19,6 +19,7 @@ import {
   requiredSkillsByRole,
   stageHandoffPath,
   validateDeclaredCompletion,
+  validateExecutionEvidence,
   validateProjectRequest,
   WorkboardGatewayAdapter,
 } from "../../../packages/nightshift-core/src/index.mjs";
@@ -419,6 +420,53 @@ async function handleApi(request, response, url) {
     );
     return;
   }
+  const operationMatch = url.pathname.match(/^\/api\/cards\/([^/]+)\/operations\/(reserve|checkpoint)$/);
+  if (request.method === "POST" && operationMatch) {
+    const cardId = decodeURIComponent(operationMatch[1]);
+    const card = cardCache.find((entry) => entry.id === cardId) ?? (await refreshCards()).find((entry) => entry.id === cardId);
+    if (!card) {
+      json(response, 404, { error: "Workboard card not found" });
+      return;
+    }
+    const automation = card.metadata?.automation ?? {};
+    if (!Array.isArray(automation.sideEffects) || automation.sideEffects.length === 0) {
+      json(response, 422, { error: "Card does not declare an external side effect" });
+      return;
+    }
+    const idempotencyKey = automation.nightshiftActionKey;
+    if (!idempotencyKey) {
+      json(response, 422, { error: "Card is missing its Night Shift idempotency key" });
+      return;
+    }
+    const body = await bodyJson(request);
+    if (operationMatch[2] === "reserve") {
+      if (!/^[a-f0-9]{64}$/i.test(body.requestHash ?? "")) {
+        json(response, 422, { error: "requestHash must be a SHA-256 hex digest" });
+        return;
+      }
+      json(response, 200, store.reserveExternalOperation({
+        idempotencyKey,
+        instanceId: automation.instanceId,
+        contentItemId: automation.contentItemId,
+        stageId: automation.stageId,
+        ownerCardId: cardId,
+        requestHash: body.requestHash.toLowerCase(),
+      }));
+      return;
+    }
+    const operation = store.getExternalOperation(idempotencyKey);
+    if (!operation || operation.ownerCardId !== cardId) {
+      json(response, 409, { error: "Reserve this external operation before checkpointing it" });
+      return;
+    }
+    json(response, 200, store.checkpointExternalOperation(idempotencyKey, {
+      status: body.status,
+      externalTaskId: body.externalTaskId,
+      checkpoint: body.checkpoint,
+      result: body.result,
+    }));
+    return;
+  }
   const decisionMatch = url.pathname.match(/^\/api\/cards\/([^/]+)\/(approve|request-changes|reject)$/);
   if (request.method === "POST" && url.pathname === "/api/cards/bulk/approve") {
     const body = await bodyJson(request);
@@ -649,8 +697,38 @@ async function loadDeliverables(instanceId, contentItemId = null) {
   return normalizeDeliverablesManifest(source, { instanceId, contentItemId });
 }
 
-async function validateCompletion({ contentItemId, instance, release, stageId }) {
+async function validateCompletion({ card, contentItemId, instance, release, stageId }) {
   const stage = release?.spec?.stages?.find((entry) => entry.id === stageId);
+  const evidence = {};
+  if (stage?.actor === "agent") {
+    const attempt = nativeCardAttempts(card).at(-1);
+    if (!attempt?.sessionKey) throw new Error("Agent completion requires an auditable Workboard Session");
+    const result = await workboard.getSession(attempt.sessionKey, { limit: 120 });
+    const rangeStart = Number(attempt.startedAt || 0) - 5000;
+    const rangeEnd = Number(attempt.endedAt || Number.POSITIVE_INFINITY) + 5000;
+    const messages = (result.messages ?? []).filter((message) =>
+      !message.timestamp || (Number(message.timestamp) >= rangeStart && Number(message.timestamp) <= rangeEnd));
+    evidence.execution = validateExecutionEvidence({
+      cardId: card.id,
+      messages,
+      requiredSkills: card.metadata?.automation?.skills ?? [],
+    });
+    evidence.sessionKey = attempt.sessionKey;
+    evidence.runId = attempt.runId;
+  }
+  if ((stage?.sideEffects ?? []).length > 0) {
+    const idempotencyKey = card.metadata?.automation?.nightshiftActionKey;
+    const operation = idempotencyKey ? store.getExternalOperation(idempotencyKey) : null;
+    if (!operation || operation.ownerCardId !== card.id || operation.status !== "succeeded") {
+      throw new Error("External side effect has no succeeded Night Shift operation checkpoint");
+    }
+    evidence.externalOperation = {
+      externalTaskId: operation.externalTaskId,
+      idempotencyKey: operation.idempotencyKey,
+      requestHash: operation.requestHash,
+      status: operation.status,
+    };
+  }
   let handoff = null;
   if (release?.spec?.handoff?.version === 1) {
     const manifest = await loadStageHandoff({ contentItemId, instance, release, stageId, required: true });
@@ -665,7 +743,7 @@ async function validateCompletion({ contentItemId, instance, release, stageId })
       stage,
     });
   }
-  if (!stage?.outputs?.includes("deliveryManifest")) return;
+  if (!stage?.outputs?.includes("deliveryManifest")) return evidence;
   if (!contentItemId) throw new Error("deliveryManifest completion requires a content item");
   const manifest = await loadDeliverables(instance.id, contentItemId);
   if (!manifest.video.sha256) throw new Error("deliveryManifest video.sha256 is required");
@@ -677,6 +755,38 @@ async function validateCompletion({ contentItemId, instance, release, stageId })
   const videoPath = await resolveDeclaredArtifact(manifest, manifest.video.path, contentItemId);
   const actualSha = await sha256File(videoPath);
   if (actualSha !== manifest.video.sha256) throw new Error("deliveryManifest video.sha256 does not match the file");
+  const contentItem = store.listContentItems(instance.id).find((entry) => entry.id === contentItemId);
+  if (contentItem?.route === "SCENE_EDIT") evidence.duplicateCheck = await validateDuplicateCheck(manifest, contentItemId);
+  evidence.deliveryManifest = { sha256: actualSha, videoPath: manifest.video.path };
+  return evidence;
+}
+
+async function validateDuplicateCheck(manifest, contentItemId) {
+  const declared = manifest.qc.duplicateCheck;
+  if (!declared?.reportPath) throw new Error("SCENE_EDIT completion requires qc.duplicateCheck.reportPath");
+  const reportPath = await resolveDeclaredArtifact(manifest, declared.reportPath, contentItemId);
+  const report = JSON.parse(await readFile(reportPath, "utf8"));
+  if (declared.status !== "passed" || report.status !== "passed") {
+    throw new Error("SCENE_EDIT temporal duplicate check did not pass");
+  }
+  for (const field of ["threshold", "maxDuplicateRatio", "duplicateRatio"]) {
+    if (!Number.isFinite(Number(declared[field])) || Number(declared[field]) !== Number(report[field])) {
+      throw new Error(`Duplicate check ${field} does not match its report`);
+    }
+  }
+  if (!declared.method || declared.method !== report.method) throw new Error("Duplicate check method does not match its report");
+  if (!Number.isInteger(declared.comparedPairs) || declared.comparedPairs < 1 || declared.comparedPairs !== report.comparedPairs) {
+    throw new Error("Duplicate check must report at least one real comparison");
+  }
+  if (declared.duplicateRatio > declared.maxDuplicateRatio) throw new Error("SCENE_EDIT duplicate ratio exceeds the allowed maximum");
+  return {
+    comparedPairs: declared.comparedPairs,
+    duplicateRatio: declared.duplicateRatio,
+    maxDuplicateRatio: declared.maxDuplicateRatio,
+    method: declared.method,
+    reportPath: declared.reportPath,
+    status: declared.status,
+  };
 }
 
 async function loadInstanceArtifact({ artifact, contentItemId = null, instance }) {

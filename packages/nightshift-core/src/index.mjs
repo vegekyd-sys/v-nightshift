@@ -35,3 +35,4 @@ export {
   stageHandoffPath,
 } from "./handoff.mjs";
 export { validateDeclaredCompletion } from "./completion.mjs";
+export { collectToolCalls, validateExecutionEvidence } from "./execution-evidence.mjs";

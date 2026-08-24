@@ -90,7 +90,13 @@ export class NightShiftRuntime {
       }
       if (status === "done" && this.completionValidator && !completionAlreadyValidated) {
         try {
-          await this.completionValidator({ card, contentItemId, instance, release, stageId });
+          const validation = await this.completionValidator({ card, contentItemId, instance, release, stageId });
+          this.store.appendEvent({
+            eventId: `completion-validation:${card.id}:${card.metadata?.automation?.attempt ?? 1}`,
+            instanceId,
+            type: "stage.completion.validated",
+            payload: { cardId: card.id, contentItemId, stageId, evidence: validation ?? null },
+          });
           await this.restoreDownstreamCards({
             cards: currentCards,
             contentItemId,

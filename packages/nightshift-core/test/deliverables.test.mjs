@@ -59,6 +59,26 @@ test("drops non-https links instead of exposing them", () => {
   assert.equal(manifest.proposal.externalUrl, null);
 });
 
+test("normalizes and declares temporal duplicate evidence", () => {
+  const manifest = normalizeDeliverablesManifest({
+    ...validManifest,
+    qc: {
+      ...validManifest.qc,
+      duplicateCheck: {
+        status: "passed",
+        method: "temporal-luma-window-v1",
+        threshold: 0.985,
+        maxDuplicateRatio: 0.25,
+        duplicateRatio: 0.08,
+        comparedPairs: 120,
+        reportPath: "produce/duplicate-check.json",
+      },
+    },
+  }, { instanceId: "NS-LAB-1" });
+  assert.equal(manifest.qc.duplicateCheck.status, "passed");
+  assert.ok(deliverableArtifactPaths(manifest).has("produce/duplicate-check.json"));
+});
+
 test("binds a delivery package to one content item", () => {
   const itemManifest = { ...validManifest, contentItemId: "video-ai-01" };
   const manifest = normalizeDeliverablesManifest(itemManifest, {
