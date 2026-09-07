@@ -3,7 +3,7 @@ apiVersion: nightshift.versa.ai/v1alpha1
 kind: Workflow
 metadata:
   id: nightshift-auditable-attempt-canary
-  version: 0.1.0
+  version: 0.1.1
   name: Night Shift 审计链路 Canary
 spec:
   ownerAgentRole: operator
@@ -20,15 +20,8 @@ spec:
 
 ### Goal
 
-This is an isolated engine canary with one input row. Use exec to read the
-project-inputs.json snapshot declared in the input. Inside the declared
-nightshift.instanceDir, write result.json containing {"verified":true,"row":
-the exact input row}. Then write handoffs/plan.json using the Stage handoff
-example below, with planResult pointing to result.json and projectInputs
-pointing to project-inputs.json. Read both files back before completing this
-card through the native Workboard completion tool. Load only nightshift-audit-canary; do not load other Skills,
-send messages, create other cards, or access any other project. No media
-generation or external publication is part of this canary.
+Run the single-row JSON canary described by nightshift-audit-canary. Write and
+read back result.json and the pinned plan handoff, then complete only this card.
 
 ```stage
 actor: agent
