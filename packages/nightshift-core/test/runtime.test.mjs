@@ -125,6 +125,7 @@ test("idempotently completes a blocked produce card when persisted artifacts val
   });
   workboard.cards.push({
     id: "card-produce-artifacts",
+    sessionKey: "agent:main:workboard:produce",
     status: "blocked",
     labels: ["instance:NS-RUNTIME-ARTIFACT-RECOVERY", "content-item:video-1", "stage:produce"],
     metadata: { automation: { attempt: 2, summary: "Worker callback failed after files were written" } },
@@ -687,3 +688,37 @@ class FakeWorkboard {
     return card;
   }
 }
+
+test("instance concurrency accounts for occupied native and human slots", async () => {
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard });
+  const release = runtime.publish(await readFile(workflowPath, "utf8"));
+  const id = "NS-OCCUPIED";
+  runtime.startInstance({ id, workflowSha256: release.workflowSha256, agentBindings: { "content-operator": "main" } });
+  for (let index = 0; index < release.manifest.spec.concurrency.perInstance; index++) {
+    workboard.cards.push({ id: `occupied-${index}`, status: "running", labels: [`instance:${id}`] });
+  }
+  await runtime.tick(id, { dispatch: true });
+  assert.deepEqual(workboard.dispatchCalls, []);
+  store.close();
+});
+
+test("artifact recovery applies to plan and retains exact missing-output diagnostics", async () => {
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  let complete = false;
+  const runtime = new NightShiftRuntime({ store, workboard, completionValidator: async () => {
+    if (!complete) throw new Error("Completion artifact not found: content-items.json");
+  } });
+  const release = runtime.publish(await readFile(workflowPath, "utf8"));
+  runtime.startInstance({ id: "NS-RECOVERY", workflowSha256: release.workflowSha256 });
+  workboard.cards.push({ id: "plan", status: "blocked", sessionKey: "native-session", runId: "native-run", labels: ["instance:NS-RECOVERY", "stage:plan"] });
+  await runtime.reconcile("NS-RECOVERY");
+  assert.match(store.listStageRuns("NS-RECOVERY")[0].summary, /content-items.json/);
+  assert.equal(workboard.cards[0].status, "blocked");
+  complete = true;
+  await runtime.reconcile("NS-RECOVERY");
+  assert.equal(workboard.cards[0].status, "done");
+  store.close();
+});

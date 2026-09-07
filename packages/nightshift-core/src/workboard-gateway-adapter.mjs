@@ -24,23 +24,30 @@ export class WorkboardGatewayAdapter {
     this.runner = runner;
   }
 
-  async listCards() {
-    const result = await this.call("workboard.cards.list", { boardId: this.board });
+  async listCards({ cardIds } = {}) {
+    const ids = Array.isArray(cardIds) ? uniqueCardIds(cardIds) : null;
+    if (ids?.length === 0) return [];
+    const result = await this.call("workboard.cards.list", { boardId: this.board, ...(ids ? { cardIds: ids } : {}) });
     return result.cards ?? [];
   }
 
-  async applyPlan(actions, { dryRun = false } = {}) {
+  async applyPlan(actions, { cards = null, dryRun = false } = {}) {
+    const knownCards = cards ? [...cards] : await this.listCards();
     const results = [];
-    for (const action of actions) results.push(await this.applyAction(action, { dryRun }));
+    for (const action of actions) {
+      const result = await this.applyAction(action, { dryRun, cards: knownCards });
+      results.push(result);
+      if (result.card && !knownCards.some((card) => card.id === result.card.id)) knownCards.push(result.card);
+    }
     return results;
   }
 
-  async applyAction(action, { dryRun = false } = {}) {
+  async applyAction(action, { dryRun = false, cards = null } = {}) {
     if (action.type === "schedule_timer") {
       return { action, status: "deferred", reason: "timer_store_required" };
     }
     const marker = gatewayIdempotencyLabel(action.idempotencyKey);
-    const existing = (await this.listCards()).find((card) =>
+    const existing = (cards ?? await this.listCards()).find((card) =>
       (card.labels ?? []).includes(marker),
     );
     if (existing) return { action, card: existing, status: "reused" };
@@ -83,10 +90,11 @@ export class WorkboardGatewayAdapter {
     if (scopedCardIds.length === 0) {
       throw new Error("Night Shift dispatch requires an explicit non-empty card scope");
     }
+    if (!Number.isSafeInteger(maxStarts) || maxStarts < 1) throw new Error("maxStarts must be a positive integer");
     return this.call("workboard.cards.dispatchWithOptions", {
       boardId: this.board,
       cardIds: scopedCardIds,
-      maxStarts,
+      maxStarts: Math.min(maxStarts, scopedCardIds.length),
     });
   }
 

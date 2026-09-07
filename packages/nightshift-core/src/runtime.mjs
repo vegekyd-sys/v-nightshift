@@ -83,7 +83,7 @@ export class NightShiftRuntime {
       const stage = release?.spec?.stages?.find((entry) => entry.id === stageId);
       if (!stage || !stageEnabled(stage, instance.inputs ?? {})) continue;
       let completionAlreadyValidated = false;
-      if (status === "blocked" && stageId === "produce") {
+      if (status === "blocked" && stage.actor === "agent" && card.sessionKey && !this.store.getHumanAttempt?.(card.id)) {
         const recovered = await this.recoverWrittenArtifacts({ card, cards: currentCards, contentItemId, instance, release, stageId });
         if (recovered) {
           status = recovered.status;
@@ -164,7 +164,7 @@ export class NightShiftRuntime {
     const latest = messages.at(-1);
     const startedAt = Number(card.execution?.startedAt ?? card.metadata?.attempts?.at(-1)?.startedAt ?? 0);
     const terminalAt = Number(latest?.timestamp ?? latest?.__openclaw?.recordTimestampMs ?? 0);
-    if (latest?.role !== "assistant" || latest.stopReason !== "stop" || terminalAt < startedAt) return null;
+    if (latest?.role !== "assistant" || !["stop", "error", "aborted"].includes(latest.stopReason) || terminalAt < startedAt) return null;
     const terminalText = messageText(latest);
     try {
       if (this.completionValidator) {
@@ -182,14 +182,14 @@ export class NightShiftRuntime {
       return { status: "blocked", summary: reason };
     }
     const summary = boundedSummary(terminalText || `${stageId} completed with validated outputs`);
-    const attempt = card.metadata?.automation?.attempt ?? 1;
+    const attempt = card.runId ?? card.execution?.runId ?? card.metadata?.automation?.attempt ?? 1;
     try {
       const completed = await this.workboard.completeCard(card.id, {
         summary,
         proof: {
           status: "passed",
           label: "Night Shift terminal reconciliation",
-          note: "Agent Session ended normally and the pinned Workflow output contract passed validation.",
+          note: "Agent Session is terminal and the pinned Workflow output contract passed validation.",
         },
       });
       Object.assign(card, completed);
@@ -215,10 +215,10 @@ export class NightShiftRuntime {
     if (!this.completionValidator || typeof this.workboard.completeCard !== "function") return null;
     try {
       await this.completionValidator({ card, contentItemId, instance, release, stageId });
-    } catch {
-      return null;
+    } catch (error) {
+      return { status: "blocked", summary: `Completion validation failed: ${error.message}` };
     }
-    const attempt = card.metadata?.automation?.attempt ?? 1;
+    const attempt = card.runId ?? card.execution?.runId ?? card.metadata?.automation?.attempt ?? 1;
     const summary = boundedSummary(card.metadata?.automation?.summary || `${stageId} recovered from validated persisted artifacts`);
     try {
       const completed = await this.workboard.completeCard(card.id, {
@@ -379,7 +379,8 @@ export class NightShiftRuntime {
       contentItems,
       contentItemRuns,
     });
-    const applied = await this.workboard.applyPlan(actions, { dryRun });
+    let dispatchResult = null;
+    const applied = await this.workboard.applyPlan(actions, { cards: currentCards, dryRun });
     if (!dryRun) {
       for (const result of applied) {
         const card = result.card;
@@ -428,28 +429,30 @@ export class NightShiftRuntime {
           payload: { cardId: card.id, stageId: result.action.stageId, contentItemId: result.action.contentItemId ?? null },
         });
       }
-      if (dispatch) {
-        const instanceLabel = `instance:${instanceId}`;
-        const dispatchCardIds = [...new Set([
-          ...currentCards,
-          ...applied
-            .filter((result) => result.action.type === "create_workboard_card")
-            .map((result) => result.card)
-            .filter(Boolean),
-        ]
-          .filter((card) =>
-            card.status === "ready" &&
-            (card.labels ?? []).includes(instanceLabel) &&
-            typeof card.id === "string" &&
-            card.id,
-          )
-          .map((card) => card.id))];
+      if (dispatch && (this.store.getInstanceControl?.(instanceId)?.automaticDispatch ?? true)) {
+        const instanceCards = new Map(currentCards
+          .filter((card) => (card.labels ?? []).includes(`instance:${instanceId}`))
+          .map((card) => [card.id, card]));
+        for (const result of applied) {
+          if (result.action.type === "create_workboard_card" && result.card) {
+            instanceCards.set(result.card.id, result.card);
+          }
+        }
+        const active = [...instanceCards.values()].filter((card) =>
+          card.status === "running" || card.execution?.status === "running" || Boolean(card.metadata?.claim));
+        const cardIds = [...instanceCards.values()].filter((card) =>
+          card.status === "ready" && !active.includes(card) && !(card.labels ?? []).includes("nightshift:approval"))
+          .map((card) => card.id);
         const maxStarts = Math.min(
-          savedRelease.manifest.spec.concurrency?.perInstance ?? 1,
-          dispatchCardIds.length,
+          Math.max(0, (savedRelease.manifest.spec.concurrency?.perInstance ?? 1) - active.length),
+          cardIds.length,
         );
         if (maxStarts > 0) {
-          await this.workboard.dispatch(maxStarts, { cardIds: dispatchCardIds });
+          const result = await this.workboard.dispatch(maxStarts, { cardIds });
+          dispatchResult = result;
+          if (result?.startFailures?.length) {
+            throw new Error(`Agent dispatch failed: ${result.startFailures.map((failure) => `${failure.cardId}: ${failure.error}`).join("; ")}`);
+          }
         }
       }
       if (actions.length === 0 && workflowComplete(savedRelease.manifest, instance, runs, contentItems, contentItemRuns)) {
@@ -457,7 +460,7 @@ export class NightShiftRuntime {
         this.store.appendEvent({ instanceId, type: "instance.completed", payload: { contentItemCount: contentItems.length } });
       }
     }
-    return { actions, applied, instance: this.store.getInstance(instanceId) };
+    return { actions, applied, dispatch: dispatchResult, instance: this.store.getInstance(instanceId) };
   }
 
   async approve({

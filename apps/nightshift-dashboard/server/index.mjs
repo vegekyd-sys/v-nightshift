@@ -1,3 +1,5 @@
+import { tickWithFaultProjection } from "../../../packages/nightshift-core/src/scheduler-state.mjs";
+import { HumanAttemptController, humanCompletionEvidence, publicHumanAttempt, evidenceHash } from "../../../packages/nightshift-core/src/human-attempt.mjs";
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
@@ -42,6 +44,7 @@ await mkdir(dataDir, { recursive: true });
 const store = new NightShiftStore(join(dataDir, "nightshift.sqlite"));
 const workboard = new WorkboardGatewayAdapter({ board });
 const runtime = new NightShiftRuntime({ board, completionValidator: validateCompletion, store, workboard });
+const humanAttempts = new HumanAttemptController({ store, workboard, validateCompletion });
 let cardCache = [];
 let cardsUpdatedAt = null;
 let cardRefreshPromise = null;
@@ -339,7 +342,9 @@ async function handleApi(request, response, url) {
       json(response, 422, { ...preflight, error: "Required Night Shift Skills are unavailable" });
       return;
     }
+    if (body.automaticDispatch !== undefined && typeof body.automaticDispatch !== "boolean") throw new Error("automaticDispatch must be a boolean");
     const created = await startInstance(body);
+    if (body.automaticDispatch === false) store.setInstanceControl(created.id, { automaticDispatch: false });
     let initialSchedule = null;
     let initialScheduleError = null;
     if (created.status === "active") {
@@ -348,7 +353,7 @@ async function handleApi(request, response, url) {
         initialSchedule = {
           actionCount: scheduled.actions.length,
           cardIds: scheduled.applied.map((entry) => entry.card?.id).filter(Boolean),
-          dispatched: body.dispatch !== false,
+          dispatched: body.dispatch !== false && store.getInstanceControl(created.id).automaticDispatch,
         };
         await refreshCards();
       } catch (error) {
@@ -516,6 +521,42 @@ async function handleApi(request, response, url) {
     json(response, 200, result);
     return;
   }
+  const controlMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/dispatch-control$/);
+  if (request.method === "POST" && controlMatch) {
+    const instanceId = decodeURIComponent(controlMatch[1]);
+    const body = await bodyJson(request);
+    const actor = operatorIdentity(request, body);
+    if (!store.getInstance(instanceId) || typeof body.automaticDispatch !== "boolean") throw new Error("Project and automaticDispatch boolean are required");
+    const result = await serializedOperation(async () => {
+      const control = store.setInstanceControl(instanceId, { automaticDispatch: body.automaticDispatch });
+      store.appendEvent({ instanceId, type: "dispatch.control.changed", payload: { actor, automaticDispatch: body.automaticDispatch } });
+      return control;
+    });
+    json(response, 200, result);
+    return;
+  }
+  const takeoverMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/cards\/([^/]+)\/human-(takeover|complete)$/);
+  if (request.method === "POST" && takeoverMatch) {
+    const body = await bodyJson(request);
+    const input = { instanceId: decodeURIComponent(takeoverMatch[1]), cardId: decodeURIComponent(takeoverMatch[2]), actor: operatorIdentity(request, body), reason: body.reason };
+    const result = await serializedOperation(() => takeoverMatch[3] === "takeover" ? humanAttempts.takeover(input) : humanAttempts.complete(input));
+    if (takeoverMatch[3] === "complete") await serializedTick(input.instanceId, { dispatch: false });
+    await refreshCards();
+    json(response, 200, result);
+    return;
+  }
+  const scheduleRetryMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/retry-dispatch$/);
+  if (request.method === "POST" && scheduleRetryMatch) {
+    const body = await bodyJson(request);
+    const instanceId = decodeURIComponent(scheduleRetryMatch[1]);
+    const actor = operatorIdentity(request, body);
+    if (!store.getInstanceControl(instanceId).automaticDispatch) throw new Error("Automatic dispatch is disabled for this project");
+    store.appendEvent({ instanceId, type: "dispatch.retry.requested", payload: { actor } });
+    const result = await serializedTick(instanceId, { dispatch: true });
+    await refreshCards();
+    json(response, 200, result);
+    return;
+  }
   const retryMatch = url.pathname.match(/^\/api\/cards\/([^/]+)\/retry$/);
   if (request.method === "POST" && retryMatch) {
     const body = await bodyJson(request);
@@ -525,6 +566,14 @@ async function handleApi(request, response, url) {
     return;
   }
   json(response, 404, { error: "Not found" });
+}
+
+function operatorIdentity(request, body) {
+  if (verifyPublicAuth(request.headers.authorization, publicAuth)) return publicAuth.username;
+  const remote = request.socket.remoteAddress;
+  if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(remote)) throw new Error("Authenticated operator is required");
+  if (typeof body.actor !== "string" || !body.actor.trim()) throw new Error("Local operator identity is required");
+  return `local:${body.actor.trim().slice(0, 120)}`;
 }
 
 function decisionInput({ body, card }) {
@@ -566,8 +615,12 @@ function runScheduler() {
           payload: { error: error.message },
         });
       }
-      const result = await serializedTick(instance.id, { dispatch: true });
-      if (result.applied.length > 0) changed = true;
+      try {
+        const result = await serializedTick(instance.id, { dispatch: true });
+        if (result.applied.length > 0) changed = true;
+      } catch (error) {
+        warnings.push(`${instance.id}: ${error.message}`);
+      }
     }
     if (changed) await refreshCards();
     lastSchedulerAt = new Date().toISOString();
@@ -655,15 +708,14 @@ async function syncContentItemsManifest(instance) {
   contentManifestHashes.set(instance.id, digest);
 }
 
-function serializedTick(instanceId, options) {
-  const run = tickQueue
-    .catch(() => undefined)
-    .then(async () => {
-      const cards = await workboard.listCards();
-      return runtime.tick(instanceId, { ...options, cards });
-    });
+function serializedOperation(operation) {
+  const run = tickQueue.catch(() => undefined).then(operation);
   tickQueue = run.catch(() => undefined);
   return run;
+}
+
+function serializedTick(instanceId, options) {
+  return serializedOperation(() => tickWithFaultProjection({ instanceId, options, runtime, store, workboard }));
 }
 
 async function refreshCards() {
@@ -697,12 +749,14 @@ async function loadDeliverables(instanceId, contentItemId = null) {
   return normalizeDeliverablesManifest(source, { instanceId, contentItemId });
 }
 
-async function validateCompletion({ card, contentItemId, instance, release, stageId }) {
+async function validateCompletion({ card, contentItemId, instance, release, stageId, submittedAttempt }) {
   const stage = release?.spec?.stages?.find((entry) => entry.id === stageId);
   const evidence = {};
-  if (stage?.actor === "agent") {
+  const human = humanCompletionEvidence({ store, card, instance, stageId, contentItemId, submittedAttempt });
+  if (human) evidence.humanAttempt = human;
+  if (stage?.actor === "agent" && !human) {
     const attempt = nativeCardAttempts(card).at(-1);
-    if (!attempt?.sessionKey) throw new Error("Agent completion requires an auditable Workboard Session");
+    if (!attempt?.sessionKey || !attempt.runId) throw new Error("Agent completion requires an auditable Workboard Session and runId");
     const result = await workboard.getSession(attempt.sessionKey, { limit: 120 });
     const rangeStart = Number(attempt.startedAt || 0) - 5000;
     const rangeEnd = Number(attempt.endedAt || Number.POSITIVE_INFINITY) + 5000;
@@ -735,15 +789,16 @@ async function validateCompletion({ card, contentItemId, instance, release, stag
     handoff = normalizeStageHandoff(manifest, { contentItemId, instanceId: instance.id, release, stageId });
   }
   if (release?.spec?.completion?.mode === "strict-v1") {
-    await validateDeclaredCompletion({
+    evidence.outputs = (await validateDeclaredCompletion({
       checkUrl: checkCompletionUrl,
       instanceCreatedAt: instance.createdAt,
       loadArtifact: (artifact) => loadInstanceArtifact({ artifact, contentItemId, instance }),
       manifest: handoff,
       stage,
-    });
+    })).output;
   }
-  if (!stage?.outputs?.includes("deliveryManifest")) return evidence;
+  if (handoff) evidence.handoff = handoff;
+  if (!stage?.outputs?.includes("deliveryManifest")) return checkedCompletionEvidence(card, evidence);
   if (!contentItemId) throw new Error("deliveryManifest completion requires a content item");
   const manifest = await loadDeliverables(instance.id, contentItemId);
   if (!manifest.video.sha256) throw new Error("deliveryManifest video.sha256 is required");
@@ -758,6 +813,14 @@ async function validateCompletion({ card, contentItemId, instance, release, stag
   const contentItem = store.listContentItems(instance.id).find((entry) => entry.id === contentItemId);
   if (contentItem?.route === "SCENE_EDIT") evidence.duplicateCheck = await validateDuplicateCheck(manifest, contentItemId);
   evidence.deliveryManifest = { sha256: actualSha, videoPath: manifest.video.path };
+  return checkedCompletionEvidence(card, evidence);
+}
+
+function checkedCompletionEvidence(card, evidence) {
+  const attempt = store.getHumanAttempt(card.id);
+  if (attempt?.evidenceSha256 && attempt.evidenceSha256 !== evidenceHash(evidence)) {
+    throw new Error("Validated human completion evidence changed");
+  }
   return evidence;
 }
 
@@ -994,7 +1057,7 @@ function nativeCardAttempts(card) {
       error: attempt.error ? cleanText(attempt.error, 12000) : null,
       index: index + 1,
       model: cleanText(attempt.model ?? "default", 120),
-      runId: cleanText(attempt.runId ?? attempt.id ?? card.runId ?? `attempt-${index + 1}`, 500),
+      runId: cleanText(attempt.runId ?? card.runId ?? "", 500),
       sessionKey: cleanText(attempt.sessionKey ?? card.sessionKey, 1000),
       startedAt: finiteTimestamp(attempt.startedAt),
       status: cleanText(attempt.status ?? card.status ?? "unknown", 80),
@@ -1106,11 +1169,11 @@ function withWorkflowLinks(release) {
 }
 
 function withInstanceLinks(instance) {
-  return { ...instance, links: projectLinks(instance.id) };
+  return { ...instance, control: store.getInstanceControl(instance.id), links: projectLinks(instance.id) };
 }
 
 function withCardLinks(card) {
-  return { ...card, links: cardLinks(card.id) };
+  return { ...card, humanAttempt: publicHumanAttempt(store.getHumanAttempt(card.id)), links: cardLinks(card.id) };
 }
 
 function cardInstanceId(card) {

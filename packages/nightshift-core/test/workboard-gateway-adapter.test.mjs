@@ -95,7 +95,7 @@ test("dispatches only an explicit card scope through the options RPC", async () 
   assert.deepEqual(JSON.parse(calls[0][calls[0].indexOf("--params") + 1]), {
     boardId: "nightshift-lab",
     cardIds: ["card-1"],
-    maxStarts: 4,
+    maxStarts: 1,
   });
   const callCount = calls.length;
   await assert.rejects(

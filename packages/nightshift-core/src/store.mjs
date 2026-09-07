@@ -104,6 +104,17 @@ export class NightShiftStore {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS instance_controls (
+        instance_id TEXT PRIMARY KEY REFERENCES instances(id),
+        automatic_dispatch INTEGER NOT NULL DEFAULT 1,
+        fault_json TEXT,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS human_attempts (
+        card_id TEXT PRIMARY KEY,
+        instance_id TEXT NOT NULL REFERENCES instances(id),
+        record_json TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS audit_events (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
         event_id TEXT NOT NULL UNIQUE,
@@ -123,6 +134,31 @@ export class NightShiftStore {
     if (!approvalColumns.some((column) => column.name === "binding_hash")) {
       this.db.exec("ALTER TABLE approvals ADD COLUMN binding_hash TEXT");
     }
+  }
+
+  getInstanceControl(instanceId) {
+    const row = this.db.prepare("SELECT * FROM instance_controls WHERE instance_id = ?").get(instanceId);
+    return { automaticDispatch: row ? Boolean(row.automatic_dispatch) : true, fault: row?.fault_json ? JSON.parse(row.fault_json) : null };
+  }
+
+  setInstanceControl(instanceId, patch) {
+    const control = { ...this.getInstanceControl(instanceId), ...patch };
+    this.db.prepare(`INSERT INTO instance_controls VALUES (?, ?, ?, ?)
+      ON CONFLICT(instance_id) DO UPDATE SET automatic_dispatch=excluded.automatic_dispatch,
+      fault_json=excluded.fault_json, updated_at=excluded.updated_at`).run(
+      instanceId, control.automaticDispatch ? 1 : 0, control.fault ? JSON.stringify(control.fault) : null, new Date().toISOString());
+    return control;
+  }
+
+  getHumanAttempt(cardId) {
+    const row = this.db.prepare("SELECT record_json FROM human_attempts WHERE card_id = ?").get(cardId);
+    return row ? JSON.parse(row.record_json) : null;
+  }
+
+  saveHumanAttempt(record) {
+    this.db.prepare(`INSERT INTO human_attempts VALUES (?, ?, ?)
+      ON CONFLICT(card_id) DO UPDATE SET record_json=excluded.record_json`).run(record.cardId, record.instanceId, JSON.stringify(record));
+    return record;
   }
 
   saveDraft(workflowId, sourceYaml, now = new Date()) {
