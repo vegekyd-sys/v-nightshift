@@ -122,3 +122,11 @@ test("exact starts stop after ambiguous failure and never launch beyond the star
   await adapter.dispatch(1, { cardIds: ["first", "third"] });
   assert.equal(calls.length, 1);
 });
+
+
+test("9.1 JSON errors on stdout become actionable summaries without exposing the Gateway token", async () => {
+  const { gatewayRpcFailureDetail } = await import("../src/workboard-gateway-adapter.mjs");
+  assert.equal(gatewayRpcFailureDetail({ stdout: JSON.stringify({ ok: false, error: { message: 'unknown agent id "main"' } }), stderr: "" }), 'unknown agent id "main"');
+  assert.equal(gatewayRpcFailureDetail({ stderr: "token secret-value rejected" }, "secret-value"), "token [redacted] rejected");
+  assert.equal(gatewayRpcFailureDetail({ stdout: JSON.stringify({ ok: true, secret: "must not expose" }) }), "");
+});

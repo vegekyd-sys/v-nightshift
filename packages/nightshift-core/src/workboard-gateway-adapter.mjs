@@ -199,9 +199,19 @@ async function defaultRunner(command, args, env) {
     });
     return stdout;
   } catch (error) {
-    const detail = String(error?.stderr ?? "").trim().slice(0, 2000);
+    const detail = gatewayRpcFailureDetail(error, env.OPENCLAW_GATEWAY_TOKEN);
     throw new Error(
       `OpenClaw Gateway RPC failed${error?.code ? ` (exit ${error.code})` : ""}${detail ? `: ${detail}` : ""}`,
     );
   }
+}
+
+export function gatewayRpcFailureDetail(error, token) {
+  let detail = String(error?.stderr ?? "").trim();
+  try {
+    const payload = JSON.parse(String(error?.stdout ?? ""));
+    if (payload.ok === false && typeof payload.error?.message === "string") detail = payload.error.message;
+  } catch { /* Older CLI versions report errors on stderr. */ }
+  if (typeof token === "string" && token) detail = detail.replaceAll(token, "[redacted]");
+  return detail.slice(0, 2000);
 }
