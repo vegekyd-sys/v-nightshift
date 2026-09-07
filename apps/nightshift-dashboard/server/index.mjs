@@ -1,3 +1,4 @@
+import { runSchedulerPass } from "../../../packages/nightshift-core/src/scheduler-pass.mjs";
 import { tickWithFaultProjection } from "../../../packages/nightshift-core/src/scheduler-state.mjs";
 import { createCompletionUrlChecker } from "./completion-url.mjs";
 import { HumanAttemptController, humanCompletionEvidence, publicHumanAttempt, evidenceHash } from "../../../packages/nightshift-core/src/human-attempt.mjs";
@@ -51,6 +52,8 @@ let cardCache = [];
 let cardsUpdatedAt = null;
 let cardRefreshPromise = null;
 let lastSchedulerAt = null;
+let schedulerStartedAt = null;
+let lastSchedulerDurationMs = null;
 let lastSchedulerError = null;
 let schedulerPromise = null;
 let tickQueue = Promise.resolve();
@@ -99,7 +102,10 @@ async function handleApi(request, response, url) {
       cardsUpdatedAt,
       lastSchedulerAt,
       lastSchedulerError,
-      ok: true,
+      schedulerStartedAt,
+      schedulerRunning: Boolean(schedulerPromise),
+      lastSchedulerDurationMs,
+      ok: !lastSchedulerError,
       service: "nightshift-workboard",
     });
     return;
@@ -598,31 +604,16 @@ async function ensureSeedInstance() {
 function runScheduler() {
   if (schedulerPromise) return schedulerPromise;
   schedulerPromise = (async () => {
-    await refreshCards();
-    let changed = false;
-    const warnings = [];
-    for (const instance of store.listInstances()) {
-      if (instance.status !== "active") continue;
-      try {
-        await syncContentItemsManifest(instance);
-      } catch (error) {
-        warnings.push(`${instance.id}: ${error.message}`);
-        store.appendEvent({
-          instanceId: instance.id,
-          type: "content-items.import.failed",
-          payload: { error: error.message },
-        });
-      }
-      try {
-        const result = await serializedTick(instance.id, { dispatch: true });
-        if (result.applied.length > 0) changed = true;
-      } catch (error) {
-        warnings.push(`${instance.id}: ${error.message}`);
-      }
-    }
-    if (changed) await refreshCards();
+    schedulerStartedAt = new Date().toISOString();
+    const started = Date.now();
+    // One serialized round shares one authoritative board snapshot. API mutations
+    // cannot interleave a takeover with a later tick using an older snapshot.
+    const result = await serializedOperation(() => runSchedulerPass({
+      store, runtime, workboard, refreshCards, syncContentItemsManifest,
+    }));
     lastSchedulerAt = new Date().toISOString();
-    lastSchedulerError = warnings.length > 0 ? warnings.join("; ") : null;
+    lastSchedulerDurationMs = Date.now() - started;
+    lastSchedulerError = result.warnings.length ? result.warnings.join("; ") : null;
   })().catch((error) => {
     lastSchedulerAt = new Date().toISOString();
     lastSchedulerError = error.message;
