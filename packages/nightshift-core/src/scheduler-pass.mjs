@@ -3,22 +3,31 @@ import { tickWithFaultProjection } from "./scheduler-state.mjs";
 export async function runSchedulerPass({ store, runtime, workboard, refreshCards, syncContentItemsManifest }) {
   const instances = store.listInstances().filter((instance) => instance.status === "active")
     .sort((a, b) => Number(store.getInstanceControl(b.id).automaticDispatch) - Number(store.getInstanceControl(a.id).automaticDispatch));
+  const wasRunning = (id) => [...store.listStageRuns(id), ...store.listContentItemRuns(id)]
+    .some((run) => run.status === "running");
   let cards;
   try {
     cards = await refreshCards();
   } catch (error) {
     // A failed shared read affects every project immediately, without repeating
     // the same expensive failing RPC once per historical project.
-    for (const instance of instances) {
+    for (const instance of instances.filter((entry) => store.getInstanceControl(entry.id).automaticDispatch || wasRunning(entry.id))) {
       store.setInstanceControl(instance.id, { fault: {
         operation: "snapshot", stageIds: [], message: error.message, at: new Date().toISOString(),
       } });
     }
     throw error;
   }
+  // Pausing automatic execution also stops background revalidation and planning
+  // of historical cards. Explicit manual operations still validate synchronously.
+  // Already running native attempts remain eligible so their completion can land.
+  const eligible = instances.filter((instance) =>
+    store.getInstanceControl(instance.id).automaticDispatch || cards.some((card) =>
+      (card.labels ?? []).includes(`instance:${instance.id}`) && card.sessionKey &&
+      (card.status === "running" || card.execution?.status === "running")));
   const warnings = [];
   let changed = false;
-  for (const instance of instances) {
+  for (const instance of eligible) {
     try {
       await syncContentItemsManifest(instance);
     } catch (error) {
@@ -33,5 +42,5 @@ export async function runSchedulerPass({ store, runtime, workboard, refreshCards
     }
   }
   if (changed) await refreshCards();
-  return { warnings, instances: instances.length };
+  return { warnings, instances: eligible.length, pausedInstances: instances.length - eligible.length };
 }
