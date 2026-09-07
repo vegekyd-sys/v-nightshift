@@ -91,11 +91,25 @@ export class WorkboardGatewayAdapter {
       throw new Error("Night Shift dispatch requires an explicit non-empty card scope");
     }
     if (!Number.isSafeInteger(maxStarts) || maxStarts < 1) throw new Error("maxStarts must be a positive integer");
-    return this.call("workboard.cards.dispatchWithOptions", {
-      boardId: this.board,
-      cardIds: scopedCardIds,
-      maxStarts: Math.min(maxStarts, scopedCardIds.length),
-    });
+    const started = [];
+    const startFailures = [];
+    // Native exact-card start is supported by 9.1 without relying on scoped
+    // dispatch extensions. Never downgrade to a board-wide dispatch request.
+    for (const id of scopedCardIds.slice(0, maxStarts)) {
+      try {
+        const result = await this.call("workboard.cards.start", { id });
+        if (result.card?.id !== id || !result.sessionKey || !result.runId) {
+          throw new Error("Native start did not return the requested card and auditable sessionKey/runId");
+        }
+        started.push(result);
+      } catch (error) {
+        startFailures.push({ cardId: id, error: error.message });
+        // A lost reply may already have started this card. Do not start a
+        // replacement or retry it until the next authoritative snapshot.
+        break;
+      }
+    }
+    return { started, startFailures };
   }
 
   async getSession(sessionKey, { limit = 300 } = {}) {

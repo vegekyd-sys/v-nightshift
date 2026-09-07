@@ -22,7 +22,7 @@ test("adapter parameters pass the deployed Gateway handler; legacy maxStarts is 
     respondError: (respond, error) => respond(false, null, { message: error.message }),
     dispatchAndStartWorkboardCards: async ({ options }) => {
       dispatched.push(options);
-      return { started: [], startFailures: [], promoted: [], reclaimed: [], blocked: [], orchestrated: [] };
+      return { started: [{ card: { id: options.cardId }, sessionKey: "native-session", runId: "native-run" }], startFailures: [], promoted: [], reclaimed: [], blocked: [], orchestrated: [] };
     },
   };
   const createHandler = vm.runInNewContext(
@@ -31,40 +31,40 @@ test("adapter parameters pass the deployed Gateway handler; legacy maxStarts is 
   const handler = createHandler({ api: { runtime: { subagent: {}, worktrees: {} } }, store: {}, redactCard: (card) => card });
   const call = (method, params) => new Promise((resolve, reject) => {
     handler({ params, respond: (ok, value, error) => ok ? resolve(value) : reject(new Error(error.message)) },
-      { supportsMaxStarts: method === "workboard.cards.dispatchWithOptions" });
+      { supportsMaxStarts: method === "workboard.cards.dispatchWithOptions", directCard: method === "workboard.cards.start" });
   });
   await assert.rejects(call("workboard.cards.dispatch", { boardId: "test", maxStarts: 1 }), /requires workboard.cards.dispatchWithOptions/);
   assert.equal(dispatched.length, 0);
   const adapter = new WorkboardGatewayAdapter({ board: "test" });
   adapter.call = call;
-  await adapter.dispatch(3, { cardIds: ["only-this-card"] });
-  assert.deepEqual(JSON.parse(JSON.stringify(dispatched)), [{ boardId: "test", cardIds: ["only-this-card"], maxStarts: 1 }]);
-  assert.match(source, /registerGatewayMethod\("workboard\.cards\.dispatchWithOptions"[\s\S]*?supportsMaxStarts: true/);
+  const result = await adapter.dispatch(3, { cardIds: ["only-this-card"] });
+  assert.deepEqual(result.startFailures, []);
+  assert.deepEqual(JSON.parse(JSON.stringify(dispatched)), [{ cardId: "only-this-card", maxStarts: 1 }]);
+  assert.match(source, /registerGatewayMethod\("workboard\.cards\.start"[\s\S]*?directCard: true/);
 });
 
-test("deployed Gateway maintenance dispatcher mutates only scoped cards, including empty scope", { skip: !bundle }, async () => {
+test("deployed Gateway exact-card start bypasses board maintenance and selects only the requested card", { skip: !bundle }, async () => {
   const source = await readFile(bundle, "utf8");
-  const method = section(source, "\tasync dispatch(input = Date.now())", "\tasync bulkUpdate(input)");
-  const dispatch = vm.runInNewContext(`({${method}}).dispatch`, {
-    normalizeTimestamp: (value, fallback) => value ?? fallback,
-    normalizeBoardId: (value) => value,
-    latestRunningAttempt: () => null,
-    isWorkboardClaimReclaimable: () => false,
-    retryBudgetExhausted: () => false,
-  });
+  const body = section(source, "async function runWorkboardDispatch(params)", "//#endregion");
   const cards = [{ id: "selected", status: "ready" }, { id: "unrelated", status: "ready" }];
   const touched = [];
+  const dispatch = vm.runInNewContext(body + "\nrunWorkboardDispatch", {
+    DEFAULT_DISPATCH_MAX_STARTS: 3,
+    resolveNonNegativeIntegerOption: (value, fallback) => value ?? fallback,
+    selectStartableCards: (all, limit, candidates, owner, now, mode) => {
+      assert.equal(mode, "exact");
+      assert.equal(limit, 1);
+      assert.deepEqual(candidates.map((card) => card.id).join(","), "selected");
+      assert.equal(all.length, 2);
+      return { cards: [] };
+    },
+  });
   const store = {
-    enqueueMutation: (operation) => operation(),
-    list: async ({ cardIds }) => cards.filter((card) => cardIds.includes(card.id)),
-    promoteDependencyReady: async (id) => { touched.push(id); return cards.find((card) => card.id === id); },
-    recordDispatch: async (card) => { touched.push(card.id); return card; },
-    shouldAutoOrchestrate: async () => false,
+    prepareStart: async (id) => { touched.push(id); return cards.find((card) => card.id === id); },
+    list: async () => cards,
+    dispatch: async () => { throw new Error("Board maintenance must never run"); },
   };
-  await dispatch.call(store, { boardId: "test", cardIds: ["selected"] });
-  assert.deepEqual(touched, ["selected", "selected"]);
-  touched.length = 0;
-  await dispatch.call(store, { boardId: "test", cardIds: [] });
-  assert.deepEqual(touched, []);
-  assert.match(source, /const candidates = directCard \? \[directCard\] : await params\.store\.list\(\{ boardId, cardIds \}\)/);
+  await dispatch({ store, options: { cardId: "selected", maxStarts: 1 } });
+  assert.deepEqual(touched, ["selected"]);
+  assert.equal(cards[1].status, "ready");
 });

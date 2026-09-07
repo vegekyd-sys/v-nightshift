@@ -73,7 +73,7 @@ test("creates and reuses native cards through Gateway RPC", async () => {
 
 });
 
-test("dispatches only an explicit card scope through the options RPC", async () => {
+test("dispatches only explicit card IDs through native exact-card start", async () => {
   const dir = await mkdtemp(join(tmpdir(), "nightshift-gateway-dispatch-"));
   const configPath = join(dir, "openclaw.json");
   await writeFile(configPath, JSON.stringify({ gateway: { auth: { token: "test-token" } } }));
@@ -84,18 +84,16 @@ test("dispatches only an explicit card scope through the options RPC", async () 
     gatewayUrl: "ws://127.0.0.1:23793",
     runner: async (_command, args) => {
       calls.push(args);
-      return JSON.stringify({ started: ["card-1"] });
+      return JSON.stringify({ card: { id: "card-1" }, sessionKey: "native-session", runId: "native-run" });
     },
   });
 
   const dispatch = await adapter.dispatch(4, { cardIds: ["card-1", "card-1", "  "] });
 
-  assert.deepEqual(dispatch.started, ["card-1"]);
-  assert.equal(calls[0][2], "workboard.cards.dispatchWithOptions");
+  assert.deepEqual(dispatch.started.map((entry) => entry.card.id), ["card-1"]);
+  assert.equal(calls[0][2], "workboard.cards.start");
   assert.deepEqual(JSON.parse(calls[0][calls[0].indexOf("--params") + 1]), {
-    boardId: "nightshift-lab",
-    cardIds: ["card-1"],
-    maxStarts: 1,
+    id: "card-1",
   });
   const callCount = calls.length;
   await assert.rejects(
@@ -103,4 +101,24 @@ test("dispatches only an explicit card scope through the options RPC", async () 
     /requires an explicit non-empty card scope/,
   );
   assert.equal(calls.length, callCount);
+});
+
+test("exact starts stop after ambiguous failure and never launch beyond the start budget", async () => {
+  const adapter = new WorkboardGatewayAdapter();
+  const calls = [];
+  adapter.call = async (method, params) => {
+    calls.push({ method, params });
+    if (params.id === "second") throw new Error("reply lost");
+    return { card: { id: params.id }, sessionKey: `session:${params.id}`, runId: `run:${params.id}` };
+  };
+  const result = await adapter.dispatch(3, { cardIds: ["first", "second", "third", "fourth"] });
+  assert.equal(result.started.length, 1);
+  assert.deepEqual(result.startFailures, [{ cardId: "second", error: "reply lost" }]);
+  assert.deepEqual(calls, [
+    { method: "workboard.cards.start", params: { id: "first" } },
+    { method: "workboard.cards.start", params: { id: "second" } },
+  ]);
+  calls.length = 0;
+  await adapter.dispatch(1, { cardIds: ["first", "third"] });
+  assert.equal(calls.length, 1);
 });
