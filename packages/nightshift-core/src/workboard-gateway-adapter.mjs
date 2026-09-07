@@ -156,7 +156,11 @@ async function defaultRunner(command, args, env) {
       encoding: "utf8",
       env,
       killSignal: "SIGKILL",
-      maxBuffer: 8 * 1024 * 1024,
+      // A Night Shift board can contain many evidence-rich cards. Gateway list
+      // responses are compact at the API boundary but still exceed Node's 8 MiB
+      // execFile default once the board is long-lived; do not make the scheduler
+      // fail solely while reading that authoritative snapshot.
+      maxBuffer: 64 * 1024 * 1024,
       timeout: 15000,
     });
     return stdout;
