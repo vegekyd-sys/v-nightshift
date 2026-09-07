@@ -792,7 +792,11 @@ async function validateCompletion({ card, contentItemId, instance, release, stag
     evidence.outputs = (await validateDeclaredCompletion({
       checkUrl: checkCompletionUrl,
       instanceCreatedAt: instance.createdAt,
-      loadArtifact: (artifact) => loadInstanceArtifact({ artifact, contentItemId, instance }),
+      loadArtifact: async (artifact) => {
+        const loaded = await loadInstanceArtifact({ artifact, contentItemId, instance, hash: Boolean(human) });
+        if (human) (evidence.artifacts ??= []).push({ artifact, sha256: loaded.sha256 });
+        return loaded;
+      },
       manifest: handoff,
       stage,
     })).output;
@@ -852,7 +856,7 @@ async function validateDuplicateCheck(manifest, contentItemId) {
   };
 }
 
-async function loadInstanceArtifact({ artifact, contentItemId = null, instance }) {
+async function loadInstanceArtifact({ artifact, contentItemId = null, instance, hash = false }) {
   const normalizedPath = normalizeArtifactPath(artifact);
   const configuredRoot = instance.inputs?.nightshift?.instanceDir ?? resolve(dataDir, "instances", instance.id);
   const instanceRoot = await realpath(configuredRoot);
@@ -869,10 +873,11 @@ async function loadInstanceArtifact({ artifact, contentItemId = null, instance }
   if (!candidate) throw new Error(`Completion artifact not found: ${normalizedPath}`);
   const info = await stat(candidate);
   if (!info.isFile()) throw new Error("Completion artifact is not a file");
+  const sha256 = hash ? await sha256File(candidate) : undefined;
   const extension = extname(candidate).toLowerCase();
-  if (extension === ".json") return { exists: true, json: JSON.parse(await readFile(candidate, "utf8")), mtimeMs: info.mtimeMs };
-  if ([".md", ".markdown", ".txt", ".yaml", ".yml"].includes(extension)) return { exists: true, mtimeMs: info.mtimeMs, text: await readFile(candidate, "utf8") };
-  return { exists: true, mtimeMs: info.mtimeMs };
+  if (extension === ".json") return { exists: true, json: JSON.parse(await readFile(candidate, "utf8")), mtimeMs: info.mtimeMs, sha256 };
+  if ([".md", ".markdown", ".txt", ".yaml", ".yml"].includes(extension)) return { exists: true, mtimeMs: info.mtimeMs, text: await readFile(candidate, "utf8"), sha256 };
+  return { exists: true, mtimeMs: info.mtimeMs, sha256 };
 }
 
 async function checkCompletionUrl(url) {

@@ -51,7 +51,7 @@ export class HumanAttemptController {
     const release = this.store.getRelease(instance.workflowSha256)?.manifest;
     const stage = release?.spec?.stages?.find((entry) => entry.id === stageId);
     if (stage?.actor !== "agent" || !stageEnabled(stage, instance.inputs ?? {})) throw new Error("Takeover requires an enabled Agent stage");
-    if (release.spec?.handoff?.version !== 1) throw new Error("Human takeover requires a declared stage handoff");
+    if (release.spec?.handoff?.version !== 1 || release.spec?.completion?.mode !== "strict-v1") throw new Error("Human takeover requires a declared handoff and strict output contract");
     if (requiredApproval(stage, instance, new Date(), contentItemId)) throw new Error("Required execution approval is missing");
     return { card, contentItemId, instance, release, stageId };
   }
