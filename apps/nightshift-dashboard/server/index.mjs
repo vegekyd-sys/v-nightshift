@@ -1,4 +1,5 @@
 import { tickWithFaultProjection } from "../../../packages/nightshift-core/src/scheduler-state.mjs";
+import { createCompletionUrlChecker } from "./completion-url.mjs";
 import { HumanAttemptController, humanCompletionEvidence, publicHumanAttempt, evidenceHash } from "../../../packages/nightshift-core/src/human-attempt.mjs";
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
@@ -45,6 +46,7 @@ const store = new NightShiftStore(join(dataDir, "nightshift.sqlite"));
 const workboard = new WorkboardGatewayAdapter({ board });
 const runtime = new NightShiftRuntime({ board, completionValidator: validateCompletion, store, workboard });
 const humanAttempts = new HumanAttemptController({ store, workboard, validateCompletion });
+const checkCompletionUrl = createCompletionUrlChecker();
 let cardCache = [];
 let cardsUpdatedAt = null;
 let cardRefreshPromise = null;
@@ -874,17 +876,6 @@ async function loadInstanceArtifact({ artifact, contentItemId = null, instance, 
   if (extension === ".json") return { exists: true, json: JSON.parse(await readFile(candidate, "utf8")), mtimeMs: info.mtimeMs, sha256 };
   if ([".md", ".markdown", ".txt", ".yaml", ".yml"].includes(extension)) return { exists: true, mtimeMs: info.mtimeMs, text: await readFile(candidate, "utf8"), sha256 };
   return { exists: true, mtimeMs: info.mtimeMs, sha256 };
-}
-
-async function checkCompletionUrl(url) {
-  try {
-    const response = await fetch(url, { method: "HEAD", redirect: "follow", signal: AbortSignal.timeout(8000) });
-    if (response.ok) return true;
-    if (![403, 405].includes(response.status)) return false;
-    const fallback = await fetch(url, { headers: { Range: "bytes=0-0" }, redirect: "follow", signal: AbortSignal.timeout(8000) });
-    await fallback.body?.cancel();
-    return fallback.ok;
-  } catch { return false; }
 }
 
 async function loadStageHandoff({ contentItemId = null, instance, release, required = false, stageId }) {
