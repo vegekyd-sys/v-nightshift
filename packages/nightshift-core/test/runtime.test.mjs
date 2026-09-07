@@ -80,6 +80,66 @@ test("recovers a terminal Agent Session after validated outputs and advances", a
   store.close();
 });
 
+test("retries a failed terminal completion callback without blocking valid output", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  workboard.completeFailures = 1;
+  const runtime = new NightShiftRuntime({ completionValidator: async () => ({ valid: true }), store, workboard });
+  const release = runtime.publish(source);
+  runtime.startInstance({ id: "NS-RUNTIME-CALLBACK-RETRY", workflowSha256: release.workflowSha256 });
+  workboard.cards.push({
+    id: "card-callback-retry",
+    status: "running",
+    sessionKey: "agent:main:subagent:callback-retry",
+    execution: { status: "running", startedAt: 100 },
+    labels: ["instance:NS-RUNTIME-CALLBACK-RETRY", "stage:plan"],
+  });
+  workboard.sessions.set("agent:main:subagent:callback-retry", {
+    messages: [{ role: "assistant", content: "Outputs persisted", stopReason: "stop", timestamp: 200 }],
+  });
+
+  await runtime.reconcile("NS-RUNTIME-CALLBACK-RETRY");
+  assert.equal(workboard.cards[0].status, "running");
+  assert.equal(workboard.blockCalls.length, 0);
+  assert.ok(store.listEvents("NS-RUNTIME-CALLBACK-RETRY").some((event) => event.type === "stage.terminal.recovery-deferred"));
+
+  await runtime.reconcile("NS-RUNTIME-CALLBACK-RETRY");
+  assert.equal(workboard.cards[0].status, "done");
+  assert.equal(workboard.completeCalls.length, 2);
+  assert.equal(store.listEvents("NS-RUNTIME-CALLBACK-RETRY").filter((event) => event.type === "stage.terminal.recovered").length, 1);
+  store.close();
+});
+
+test("idempotently completes a blocked produce card when persisted artifacts validate", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ completionValidator: async () => ({ deliveryManifest: { valid: true } }), store, workboard });
+  const release = runtime.publish(source);
+  runtime.startInstance({
+    id: "NS-RUNTIME-ARTIFACT-RECOVERY",
+    workflowSha256: release.workflowSha256,
+    inputs: { deliveryMode: "download" },
+    contentItems: [{ id: "video-1", title: "Recovered video", route: "AI_GENERATE" }],
+  });
+  workboard.cards.push({
+    id: "card-produce-artifacts",
+    status: "blocked",
+    labels: ["instance:NS-RUNTIME-ARTIFACT-RECOVERY", "content-item:video-1", "stage:produce"],
+    metadata: { automation: { attempt: 2, summary: "Worker callback failed after files were written" } },
+  });
+
+  await runtime.reconcile("NS-RUNTIME-ARTIFACT-RECOVERY");
+  await runtime.reconcile("NS-RUNTIME-ARTIFACT-RECOVERY");
+
+  assert.equal(workboard.cards[0].status, "done");
+  assert.equal(workboard.completeCalls.length, 1);
+  assert.equal(store.listContentItemRuns("NS-RUNTIME-ARTIFACT-RECOVERY")[0].status, "done");
+  assert.equal(store.listEvents("NS-RUNTIME-ARTIFACT-RECOVERY").filter((event) => event.type === "stage.artifacts.recovered").length, 1);
+  store.close();
+});
+
 test("does not recover an older terminal message from a previous run", async () => {
   const source = await readFile(workflowPath, "utf8");
   const store = new NightShiftStore();
@@ -480,6 +540,33 @@ test("moves a terminal project to done and subsequent scheduler ticks stay idle"
   store.close();
 });
 
+test("download workflow completes without review or publication runs after aggregate delivery", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard });
+  const release = runtime.publish(source);
+  runtime.startInstance({
+    id: "NS-RUNTIME-DOWNLOAD-DONE",
+    workflowSha256: release.workflowSha256,
+    agentBindings: { "content-operator": "main" },
+    inputs: { deliveryMode: "download" },
+    contentItems: [{ id: "video-1", title: "Download video", route: "AI_GENERATE" }],
+  });
+  store.upsertStageRun({ instanceId: "NS-RUNTIME-DOWNLOAD-DONE", stageId: "plan", status: "done" });
+  store.upsertStageRun({ instanceId: "NS-RUNTIME-DOWNLOAD-DONE", stageId: "deliver-download", status: "done" });
+  for (const stageId of ["route", "materials", "brief", "produce"]) {
+    store.upsertContentItemRun({ instanceId: "NS-RUNTIME-DOWNLOAD-DONE", contentItemId: "video-1", stageId, status: "done" });
+  }
+
+  const result = await runtime.tick("NS-RUNTIME-DOWNLOAD-DONE");
+
+  assert.equal(result.instance.status, "done");
+  assert.deepEqual(result.actions, []);
+  assert.ok(!store.listContentItemRuns("NS-RUNTIME-DOWNLOAD-DONE").some((run) => ["review", "publish-feedback"].includes(run.stageId)));
+  store.close();
+});
+
 function publicationTarget() {
   return {
     accountRecordId: "account-1",
@@ -497,6 +584,7 @@ class FakeWorkboard {
     this.cards = [];
     this.blockCalls = [];
     this.completeCalls = [];
+    this.completeFailures = 0;
     this.dispatchCalls = [];
     this.sessions = new Map();
   }
@@ -546,6 +634,10 @@ class FakeWorkboard {
 
   async completeCard(id, input) {
     this.completeCalls.push({ id, ...input });
+    if (this.completeFailures > 0) {
+      this.completeFailures -= 1;
+      throw new Error("completion callback unavailable");
+    }
     const card = this.cards.find((entry) => entry.id === id);
     card.status = "done";
     card.execution = { ...(card.execution ?? {}), status: "done" };

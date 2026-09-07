@@ -466,6 +466,9 @@ function ProjectInput({ name, contract, value, onChange }) {
     const scope = value ?? {};
     return <fieldset className="authorization-field"><legend>{labelText}</legend><label><input type="checkbox" checked={scope.paidProduction === true} onChange={(event) => onChange({ ...scope, paidProduction: event.target.checked })} /><span>允许进入付费生产审批</span></label><label><input type="checkbox" checked={scope.externalPublication === true} onChange={(event) => onChange({ ...scope, externalPublication: event.target.checked })} /><span>允许申请外部发布</span></label><label><input type="checkbox" checked={scope.vlabOnly !== false} onChange={(event) => onChange({ ...scope, vlabOnly: event.target.checked })} /><span>仅由 V 内部执行</span></label></fieldset>;
   }
+  if (Array.isArray(contract.enum) && contract.enum.length > 0) {
+    return <label className="project-field"><span>{labelText}{contract.required ? " *" : ""}</span><select value={value ?? contract.enum[0]} onChange={(event) => onChange(event.target.value)}>{contract.enum.map((option) => <option key={String(option)} value={option}>{option === "publish" ? "发布到账号" : option === "download" ? "下载包交付" : String(option)}</option>)}</select></label>;
+  }
   if (contract.type === "boolean") return <label className="project-field checkbox-field"><input type="checkbox" checked={value === true} onChange={(event) => onChange(event.target.checked)} /><span>{labelText}</span></label>;
   if (contract.type === "object" || contract.type === "array") return <label className="project-field wide"><span>{labelText}{contract.required ? " *" : ""}</span><textarea value={typeof value === "string" ? value : JSON.stringify(value ?? (contract.type === "array" ? [] : {}), null, 2)} onChange={(event) => onChange(parseJsonValue(event.target.value))} /></label>;
   return <label className="project-field"><span>{labelText}{contract.required ? " *" : ""}</span><input type={contract.type === "number" ? "number" : name.toLowerCase().includes("url") ? "url" : "text"} value={value ?? ""} onChange={(event) => onChange(contract.type === "number" ? Number(event.target.value) : event.target.value)} required={contract.required === true} placeholder={projectInputPlaceholder(name)} /></label>;
@@ -567,6 +570,7 @@ function defaultProjectInputs(release) {
   const result = {};
   for (const [name, contract] of Object.entries(release?.manifest?.spec?.inputs ?? {})) {
     if (name === "authorizationScope") result[name] = { paidProduction: false, externalPublication: false, vlabOnly: true };
+    else if (Array.isArray(contract.enum) && contract.enum.length > 0) result[name] = contract.enum[0];
     else if (contract.type === "object") result[name] = {};
     else if (contract.type === "array") result[name] = [];
     else if (contract.type === "boolean") result[name] = false;
@@ -585,7 +589,7 @@ function defaultAgentBindings(release) {
 }
 
 function projectInputLabel(name) {
-  return ({ customerId: "客户 ID", briefUrl: "策划案 URL", authorizationScope: "执行权限" })[name] ?? name;
+  return ({ customerId: "客户 ID", briefUrl: "策划案 URL", authorizationScope: "执行权限", deliveryMode: "交付模式" })[name] ?? name;
 }
 
 function projectInputPlaceholder(name) {

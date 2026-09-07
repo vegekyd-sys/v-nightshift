@@ -617,7 +617,7 @@ async function writeProjectInputsSnapshot(instance) {
 
 async function preflightProjectSkills(release, project) {
   const agents = [];
-  for (const [role, requiredSkills] of Object.entries(requiredSkillsByRole(release))) {
+  for (const [role, requiredSkills] of Object.entries(requiredSkillsByRole(release, project.inputs ?? {}))) {
     const agentId = project.agentBindings?.[role];
     const status = await workboard.getSkillsStatus(agentId);
     const available = new Set(

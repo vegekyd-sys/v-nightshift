@@ -8,20 +8,21 @@ const here = dirname(fileURLToPath(import.meta.url));
 const fixture = resolve(here, "../../../examples/workflows/xingqing-content-delivery.workflow.md");
 const genericFixture = resolve(here, "../../../examples/workflows/generic-agent-delivery.workflow.md");
 
-test("compiles the seven-stage workflow.md deterministically", async () => {
+test("compiles the branched workflow.md deterministically", async () => {
   const workflow = await loadWorkflow(fixture);
   const first = compileWorkflow(workflow);
   const second = compileWorkflow(workflow);
   assert.equal(first.metadata.workflowSha256, second.metadata.workflowSha256);
   assert.deepEqual(first.spec.stages.map((stage) => stage.id), [
-    "plan", "route", "materials", "brief", "produce", "review", "publish-feedback",
+    "plan", "route", "materials", "brief", "produce", "review", "publish-feedback", "deliver-download",
   ]);
   assert.equal(first.spec.stages[1].scope, "content-item");
   assert.deepEqual(first.spec.contentItems.routes, ["AI_GENERATE", "SCENE_EDIT"]);
   assert.equal(first.spec.concurrency.perInstance, 8);
   assert.equal(first.spec.concurrency.maxActiveInstances, 3);
   assert.equal(first.spec.completion.mode, "strict-v1");
-  assert.deepEqual(first.spec.stages.at(-1).outputContracts.publicUrl, { type: "https-url", allowedHosts: ["tiktok.com"] });
+  assert.deepEqual(first.spec.stages.find((stage) => stage.id === "publish-feedback").outputContracts.publicUrl, { type: "https-url", allowedHosts: ["tiktok.com"] });
+  assert.deepEqual(first.spec.inputs.deliveryMode.enum, ["publish", "download"]);
 });
 
 test("the same compiler accepts a non-Xingqing workflow without content items", async () => {
@@ -46,6 +47,12 @@ test("rejects duplicate IDs, cycles, and unapproved side effects", async () => {
   const unknownOutputContract = structuredClone(await loadWorkflow(fixture));
   unknownOutputContract.spec.stages.at(-1).outputContracts.unknown = { type: "json" };
   assert.ok(validateWorkflow(unknownOutputContract).some((entry) => entry.code === "stage.outputContracts.output.unknown"));
+
+  const invalidCondition = structuredClone(await loadWorkflow(fixture));
+  invalidCondition.spec.stages[0].when = { input: "missingInput", equals: "one", notEquals: "two" };
+  const conditionCodes = validateWorkflow(invalidCondition).map((entry) => entry.code);
+  assert.ok(conditionCodes.includes("stage.when.input.unknown"));
+  assert.ok(conditionCodes.includes("stage.when.operator.invalid"));
 });
 
 test("plans the project stage and redacts secrets", async () => {
@@ -241,6 +248,47 @@ test("human review and publication remain per-video and idempotent", async () =>
   assert.match(publish.card.notes, /control plane will load every declared output artifact/);
   assert.match(publish.card.notes, /Output contract publicUrl/);
   assert.match(publish.card.notes, /tiktok\.com/);
+});
+
+test("download delivery fans in after every produce run and bypasses review, publication approval, and GeeLark", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const instance = activeInstance(release);
+  instance.inputs.deliveryMode = "download";
+  instance.inputs.nightshift = { instanceDir: "/srv/nightshift/NS-DOWNLOAD" };
+  const contentItems = twoItems();
+  const firstItemOnly = doneThrough(contentItems[0].id, "produce");
+
+  const waiting = planNextActions({
+    release,
+    instance,
+    runs: [{ stageId: "plan", status: "done" }],
+    contentItems,
+    contentItemRuns: firstItemOnly,
+  });
+  assert.ok(waiting.every((action) => !["deliver-download", "review", "publish-feedback"].includes(action.stageId)));
+  assert.equal(waiting[0].stageId, "route");
+
+  const actions = planNextActions({
+    release,
+    instance,
+    runs: [{ stageId: "plan", status: "done" }],
+    contentItems,
+    contentItemRuns: [...firstItemOnly, ...doneThrough(contentItems[1].id, "produce")],
+  });
+
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0].type, "create_workboard_card");
+  assert.equal(actions[0].stageId, "deliver-download");
+  assert.equal(actions[0].contentItemId, undefined);
+  assert.deepEqual(actions[0].card.automation.skills, ["lark-base", "background-worker-contract"]);
+  assert.deepEqual(actions[0].card.automation.sideEffects, ["external-delivery"]);
+  assert.doesNotMatch(actions[0].card.automation.skills.join(" "), /geelark/i);
+  assert.match(actions[0].card.notes, /content-items\/video-ai-01\/handoffs\/produce\.json/);
+  assert.match(actions[0].card.notes, /content-items\/video-scene-01\/handoffs\/produce\.json/);
+  assert.match(actions[0].card.notes, /aggregate every validated ContentItem/);
+  assert.match(actions[0].card.notes, /no separate human approval gate/);
+  assert.ok(actions.every((action) => !["review", "publish-feedback"].includes(action.stageId)));
+  assert.ok(actions.every((action) => action.type !== "request_approval"));
 });
 
 test("approval without the exact effect and scope never unlocks a side effect", async () => {

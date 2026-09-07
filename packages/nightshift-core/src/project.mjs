@@ -1,3 +1,5 @@
+import { stageEnabled } from "./workflow.mjs";
+
 export function validateProjectRequest(release, project) {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,30}$/.test(project?.id ?? "")) {
     throw new Error("Project id must be 1-31 characters using letters, numbers, dots, underscores, or hyphens");
@@ -18,6 +20,9 @@ export function validateProjectRequest(release, project) {
     if (!inputMatchesType(value, contract.type)) {
       throw new Error(`Project input ${name} must be ${contract.type}`);
     }
+    if (Array.isArray(contract.enum) && !contract.enum.some((entry) => sameValue(entry, value))) {
+      throw new Error(`Project input ${name} must be one of: ${contract.enum.join(", ")}`);
+    }
     if (contract.type === "object" && Array.isArray(contract.requiredProperties)) {
       const missing = contract.requiredProperties.filter((property) => missingValue(value[property]));
       if (missing.length > 0) {
@@ -27,7 +32,7 @@ export function validateProjectRequest(release, project) {
   }
   const roles = new Set(
     (release.spec.stages ?? [])
-      .filter((stage) => stage.actor === "agent")
+      .filter((stage) => stage.actor === "agent" && stageEnabled(stage, inputs))
       .map((stage) => stage.agentRole ?? release.spec.ownerAgentRole),
   );
   for (const role of roles) {
@@ -42,11 +47,11 @@ function missingValue(value) {
   return value === undefined || value === null || value === "";
 }
 
-export function requiredSkillsByRole(release) {
+export function requiredSkillsByRole(release, inputs = {}) {
   const result = new Map();
   const defaultRole = release?.spec?.ownerAgentRole;
   for (const stage of release?.spec?.stages ?? []) {
-    if (stage.actor !== "agent") continue;
+    if (stage.actor !== "agent" || !stageEnabled(stage, inputs)) continue;
     const role = stage.agentRole ?? defaultRole;
     if (!role) continue;
     const required = result.get(role) ?? new Set();
@@ -59,6 +64,10 @@ export function requiredSkillsByRole(release) {
   return Object.fromEntries(
     [...result.entries()].map(([role, skills]) => [role, [...skills].sort()]),
   );
+}
+
+function sameValue(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function inputMatchesType(value, type) {

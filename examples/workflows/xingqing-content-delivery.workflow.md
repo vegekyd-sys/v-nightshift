@@ -3,7 +3,7 @@ apiVersion: nightshift.versa.ai/v1alpha1
 kind: Workflow
 metadata:
   id: xingqing-content-delivery
-  version: 0.4.11
+  version: 0.5.0
   name: 星擎内容交付
 spec:
   ownerAgentRole: content-operator
@@ -18,6 +18,7 @@ spec:
     customerId: {type: string, required: true}
     briefUrl: {type: string, required: true}
     authorizationScope: {type: object, required: true}
+    deliveryMode: {type: string, required: false, enum: [publish, download]}
     publicationTarget:
       type: object
       required: false
@@ -136,7 +137,7 @@ outputs: [finishedAsset, machineQc, deliveryManifest]
 completeWhen: [output.finishedAsset.newForThisRun, output.machineQc.terminal, output.deliveryManifest.accessible]
 timeout: 4h
 retry: {maxAttempts: 3, idempotencyKey: "${instance.id}:${contentItem.id}:produce"}
-next: [review]
+next: [review, deliver-download]
 ```
 
 ## STAGE review｜人工审核与交付
@@ -149,6 +150,7 @@ next: [review]
 actor: human
 scope: content-item
 needs: [produce]
+when: {input: deliveryMode, notEquals: download}
 approval: {actions: [approve, request-changes, reject], evidenceRequired: true}
 outputs: [approvedAssetVersion]
 timeout: 3d
@@ -166,6 +168,7 @@ actor: agent
 scope: content-item
 skills: [lark-base, social-search-apify-first, geelark-cloud-phone]
 needs: [review]
+when: {input: deliveryMode, notEquals: download}
 sideEffects: [external-publication]
 approval:
   before: external-publication
@@ -185,4 +188,28 @@ outputContracts:
 completeWhen: [output.publicUrl.hostAllowed, output.publicUrl.reachable, output.publicationEvidence.published, output.publicationEvidence.accountMatches, output.publicationEvidence.publishedAt, output.metricsSnapshot.traceableOrUnknown, output.retrospective.evidenceLinked]
 timeout: 7d
 retry: {maxAttempts: 4, idempotencyKey: "${instance.id}:${contentItem.id}:publish-feedback"}
+```
+
+## STAGE deliver-download｜下载包交付
+
+### Goal
+
+仅当 `deliveryMode=download` 时执行：等待全部 ContentItem 完成生产与机器 QC，聚合已验证成片和交付清单，生成确定性下载包，上传授权 OSS，并幂等回写 Base 交付记录。不得创建逐条人工审核、外部发布审批或 GeeLark 发布任务。
+
+```stage
+actor: agent
+scope: project
+skills: [lark-base, background-worker-contract]
+needs: [produce]
+when: {input: deliveryMode, equals: download}
+sideEffects: [external-delivery]
+resourceLock: "delivery:${instance.id}"
+outputs: [deliveryPackage, ossDelivery, baseDeliveryReceipt]
+outputContracts:
+  deliveryPackage: {type: file}
+  ossDelivery: {type: json, equals: {uploaded: true}}
+  baseDeliveryReceipt: {type: json, equals: {recorded: true}}
+completeWhen: [output.deliveryPackage.accessible, output.ossDelivery.uploaded, output.baseDeliveryReceipt.recorded]
+timeout: 1h
+retry: {maxAttempts: 3, idempotencyKey: "${instance.id}:deliver-download:${input.hash}"}
 ```

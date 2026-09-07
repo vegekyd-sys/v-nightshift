@@ -70,3 +70,28 @@ test("collects direct and route-specific Skills for Agent preflight", async () =
   assert.ok(skills.includes("geelark-cloud-phone"));
   assert.equal(new Set(skills).size, skills.length);
 });
+
+test("download projects exclude the inactive GeeLark publication Skill during preflight", async () => {
+  const release = compileWorkflow(parseWorkflow(await readFile(workflowPath, "utf8")));
+  const skills = requiredSkillsByRole(release, { deliveryMode: "download" })["content-operator"];
+  assert.ok(skills.includes("lark-base"));
+  assert.ok(skills.includes("background-worker-contract"));
+  assert.ok(!skills.includes("geelark-cloud-phone"));
+  assert.ok(!skills.includes("social-search-apify-first"));
+});
+
+test("rejects an unknown delivery mode", async () => {
+  const release = compileWorkflow(parseWorkflow(await readFile(workflowPath, "utf8")));
+  assert.throws(() => validateProjectRequest(release, {
+    id: "NS-BAD-MODE",
+    name: "Bad mode",
+    workflowSha256: release.metadata.workflowSha256,
+    inputs: {
+      customerId: "customer-1",
+      briefUrl: "https://example.com/brief",
+      authorizationScope: {},
+      deliveryMode: "email",
+    },
+    agentBindings: { "content-operator": "main" },
+  }), /deliveryMode must be one of: publish, download/);
+});

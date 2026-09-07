@@ -6,6 +6,7 @@ export {
   loadWorkflow,
   parseWorkflow,
   parseWorkflowMarkdown,
+  stageEnabled,
   validateWorkflow,
 } from "./workflow.mjs";
 export { buildAgentBrief, planNextActions, redactSensitiveInputs, requiredApproval, resolveApprovalBinding, WORKBOARD_NOTES_LIMIT } from "./orchestrator.mjs";

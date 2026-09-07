@@ -1,6 +1,7 @@
 import {
   compileWorkflow,
   parseWorkflow,
+  stageEnabled,
   validateWorkflow,
   WorkflowValidationError,
 } from "./workflow.mjs";
@@ -79,7 +80,17 @@ export class NightShiftRuntime {
       let summary = card.metadata?.automation?.summary ?? null;
       const stageId = stageLabel.slice("stage:".length);
       const contentItemId = contentItemLabel?.slice("content-item:".length) ?? null;
+      const stage = release?.spec?.stages?.find((entry) => entry.id === stageId);
+      if (!stage || !stageEnabled(stage, instance.inputs ?? {})) continue;
       let completionAlreadyValidated = false;
+      if (status === "blocked" && stageId === "produce") {
+        const recovered = await this.recoverWrittenArtifacts({ card, cards: currentCards, contentItemId, instance, release, stageId });
+        if (recovered) {
+          status = recovered.status;
+          summary = recovered.summary;
+          completionAlreadyValidated = true;
+        }
+      }
       if (status === "running") {
         const recovered = await this.recoverTerminalCard({ card, contentItemId, instance, release, stageId });
         if (recovered) {
@@ -159,22 +170,6 @@ export class NightShiftRuntime {
       if (this.completionValidator) {
         await this.completionValidator({ card, contentItemId, instance, release, stageId });
       }
-      const summary = boundedSummary(terminalText || `${stageId} completed with validated outputs`);
-      const completed = await this.workboard.completeCard(card.id, {
-        summary,
-        proof: {
-          status: "passed",
-          label: "Night Shift terminal reconciliation",
-          note: "Agent Session ended normally and the pinned Workflow output contract passed validation.",
-        },
-      });
-      Object.assign(card, completed);
-      this.store.appendEvent({
-        instanceId: instance.id,
-        type: "stage.terminal.recovered",
-        payload: { cardId: card.id, contentItemId, stageId, terminalAt },
-      });
-      return { status: "done", summary };
     } catch (error) {
       const reason = boundedReason(`Terminal Agent Session did not satisfy the Workflow output contract: ${error.message}`);
       const blocked = await this.workboard.blockCard(card.id, { reason });
@@ -185,6 +180,78 @@ export class NightShiftRuntime {
         payload: { cardId: card.id, contentItemId, error: error.message, stageId, terminalAt },
       });
       return { status: "blocked", summary: reason };
+    }
+    const summary = boundedSummary(terminalText || `${stageId} completed with validated outputs`);
+    const attempt = card.metadata?.automation?.attempt ?? 1;
+    try {
+      const completed = await this.workboard.completeCard(card.id, {
+        summary,
+        proof: {
+          status: "passed",
+          label: "Night Shift terminal reconciliation",
+          note: "Agent Session ended normally and the pinned Workflow output contract passed validation.",
+        },
+      });
+      Object.assign(card, completed);
+      this.store.appendEvent({
+        eventId: `terminal-recovery:${card.id}:${attempt}`,
+        instanceId: instance.id,
+        type: "stage.terminal.recovered",
+        payload: { cardId: card.id, contentItemId, stageId, terminalAt },
+      });
+      return { status: "done", summary };
+    } catch (error) {
+      this.store.appendEvent({
+        eventId: `terminal-recovery-deferred:${card.id}:${attempt}`,
+        instanceId: instance.id,
+        type: "stage.terminal.recovery-deferred",
+        payload: { cardId: card.id, contentItemId, error: error.message, stageId, terminalAt },
+      });
+      return null;
+    }
+  }
+
+  async recoverWrittenArtifacts({ card, cards, contentItemId, instance, release, stageId }) {
+    if (!this.completionValidator || typeof this.workboard.completeCard !== "function") return null;
+    try {
+      await this.completionValidator({ card, contentItemId, instance, release, stageId });
+    } catch {
+      return null;
+    }
+    const attempt = card.metadata?.automation?.attempt ?? 1;
+    const summary = boundedSummary(card.metadata?.automation?.summary || `${stageId} recovered from validated persisted artifacts`);
+    try {
+      const completed = await this.workboard.completeCard(card.id, {
+        summary,
+        proof: {
+          status: "passed",
+          label: "Night Shift artifact reconciliation",
+          note: "Persisted artifacts satisfy the pinned Workflow output contract after a worker state-update failure.",
+        },
+      });
+      Object.assign(card, completed);
+      this.store.appendEvent({
+        eventId: `artifact-recovery:${card.id}:${attempt}`,
+        instanceId: instance.id,
+        type: "stage.artifacts.recovered",
+        payload: { cardId: card.id, contentItemId, stageId },
+      });
+      await this.restoreDownstreamCards({
+        cards,
+        contentItemId,
+        recoveredStageId: stageId,
+        instanceId: instance.id,
+        release,
+      });
+      return { status: "done", summary };
+    } catch (error) {
+      this.store.appendEvent({
+        eventId: `artifact-recovery-deferred:${card.id}:${attempt}`,
+        instanceId: instance.id,
+        type: "stage.artifacts.recovery-deferred",
+        payload: { cardId: card.id, contentItemId, error: error.message, stageId },
+      });
+      return null;
     }
   }
 
@@ -197,6 +264,8 @@ export class NightShiftRuntime {
       if (labels.includes("nightshift:approval")) continue;
       const stageId = labels.find((label) => label.startsWith("stage:"))?.slice("stage:".length);
       if (!stageId || !downstream.has(stageId) || ["blocked", "cancelled"].includes(card.status)) continue;
+      const stage = release.spec.stages.find((entry) => entry.id === stageId);
+      if (!stageEnabled(stage, this.store.getInstance(instanceId)?.inputs ?? {})) continue;
       await this.workboard.moveCard(card.id, "blocked");
       const blockedSummary = `Blocked because upstream stage ${failedStageId} failed completion validation`;
       card.status = "blocked";
@@ -232,9 +301,10 @@ export class NightShiftRuntime {
       if (contentItemId && !labels.includes(`content-item:${contentItemId}`)) continue;
       const stageId = labels.find((label) => label.startsWith("stage:"))?.slice("stage:".length);
       if (!stageId || !immediate.has(stageId) || card.status !== "blocked") continue;
+      const stage = release.spec.stages.find((entry) => entry.id === stageId);
+      if (!stageEnabled(stage, this.store.getInstance(instanceId)?.inputs ?? {})) continue;
       const run = runs.find((entry) => entry.cardId === card.id && entry.stageId === stageId);
       if (!run?.summary?.includes(`upstream stage ${recoveredStageId} failed completion validation`)) continue;
-      const stage = release.spec.stages.find((entry) => entry.id === stageId);
       const status = stage?.actor === "human" ? "review" : "ready";
       await this.workboard.moveCard(card.id, status);
       const reopenedSummary = `Reopened after ${recoveredStageId} passed completion validation`;
@@ -270,7 +340,7 @@ export class NightShiftRuntime {
       : null;
     if (contentItemId && !contentItem) throw new Error(`Unknown content item ${contentItemId}`);
     await this.workboard.updateCard(cardId, {
-      notes: buildAgentBrief(release, instance, stage, contentItem),
+      notes: buildAgentBrief(release, instance, stage, contentItem, this.store.listContentItems(instanceId)),
       maxRetries: stage.retry?.maxAttempts ?? 1,
       maxRuntimeSeconds: stageTimeoutSeconds(stage.timeout),
     });
@@ -373,7 +443,7 @@ export class NightShiftRuntime {
         );
         if (maxStarts > 0) await this.workboard.dispatch(maxStarts);
       }
-      if (actions.length === 0 && workflowComplete(savedRelease.manifest, runs, contentItems, contentItemRuns)) {
+      if (actions.length === 0 && workflowComplete(savedRelease.manifest, instance, runs, contentItems, contentItemRuns)) {
         this.store.updateInstanceStatus(instanceId, "done");
         this.store.appendEvent({ instanceId, type: "instance.completed", payload: { contentItemCount: contentItems.length } });
       }
@@ -503,9 +573,10 @@ function boundedReason(value) {
   return normalized.length <= 950 ? normalized : `${normalized.slice(0, 947)}...`;
 }
 
-function workflowComplete(release, projectRuns, contentItems, contentItemRuns) {
-  const projectStages = release.spec.stages.filter((stage) => (stage.scope ?? "project") === "project");
-  const itemStages = release.spec.stages.filter((stage) => stage.scope === "content-item");
+function workflowComplete(release, instance, projectRuns, contentItems, contentItemRuns) {
+  const activeStages = release.spec.stages.filter((stage) => stageEnabled(stage, instance.inputs ?? {}));
+  const projectStages = activeStages.filter((stage) => (stage.scope ?? "project") === "project");
+  const itemStages = activeStages.filter((stage) => stage.scope === "content-item");
   const latestProject = latestBy(projectRuns, (run) => run.stageId);
   if (!projectStages.every((stage) => latestProject.get(stage.id)?.status === "done")) return false;
   if (itemStages.length === 0) return true;

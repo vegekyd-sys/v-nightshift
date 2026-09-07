@@ -254,6 +254,7 @@ export function validateWorkflow(document) {
     if (stage.resourceLock !== undefined && !nonEmptyString(stage.resourceLock)) {
       issues.push(issue("stage.resourceLock.invalid", `${path}.resourceLock`, "resourceLock must be a non-empty interpolation string"));
     }
+    validateStageCondition(stage.when, `${path}.when`, spec.inputs, issues);
 
     const sideEffects = stringArray(stage.sideEffects);
     const guarded = sideEffects.filter((value) => GUARDED_SIDE_EFFECTS.has(value));
@@ -428,6 +429,30 @@ function validateInputContracts(inputs, issues) {
         issues.push(issue("input.requiredProperties.invalid", `${path}.requiredProperties`, "requiredProperties requires an object input and a non-empty string array"));
       }
     }
+    if (contract.enum !== undefined) {
+      if (!Array.isArray(contract.enum) || contract.enum.length === 0 || contract.enum.some((entry) => !isScalar(entry))) {
+        issues.push(issue("input.enum.invalid", `${path}.enum`, "enum must be a non-empty array of scalar values"));
+      } else if (contract.type && contract.enum.some((entry) => !inputValueMatchesType(entry, contract.type))) {
+        issues.push(issue("input.enum.type.invalid", `${path}.enum`, "every enum value must match the input type"));
+      }
+    }
+  }
+}
+
+function validateStageCondition(condition, path, inputs, issues) {
+  if (condition === undefined) return;
+  if (!isObject(condition)) {
+    issues.push(issue("stage.when.invalid", path, "when must be an object"));
+    return;
+  }
+  if (!nonEmptyString(condition.input)) {
+    issues.push(issue("stage.when.input.required", `${path}.input`, "when.input is required"));
+  } else if (!isObject(inputs?.[condition.input])) {
+    issues.push(issue("stage.when.input.unknown", `${path}.input`, `Unknown workflow input ${condition.input}`));
+  }
+  const operators = ["equals", "notEquals"].filter((operator) => condition[operator] !== undefined);
+  if (operators.length !== 1 || !isScalar(condition[operators[0]])) {
+    issues.push(issue("stage.when.operator.invalid", path, "when requires exactly one scalar equals or notEquals value"));
   }
 }
 
@@ -585,6 +610,15 @@ export function stageSkills(stage, route = null) {
   return [...new Set([...skills, ...fallback, ...routed])];
 }
 
+export function stageEnabled(stage, inputs = {}) {
+  const condition = stage?.when;
+  if (!isObject(condition)) return true;
+  const actual = inputs?.[condition.input];
+  if (condition.equals !== undefined) return sameValue(actual, condition.equals);
+  if (condition.notEquals !== undefined) return !sameValue(actual, condition.notEquals);
+  return true;
+}
+
 function routeStrategySkills(stage) {
   if (!isObject(stage?.routeStrategies)) return [];
   return Object.values(stage.routeStrategies).flatMap((strategy) => stageSkills(strategy));
@@ -614,6 +648,21 @@ function validateContentItemContract(contract, issues) {
 
 function nonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function inputValueMatchesType(value, type) {
+  if (type === "array") return Array.isArray(value);
+  if (type === "object") return isObject(value);
+  if (type === "number") return typeof value === "number" && Number.isFinite(value);
+  return typeof value === type;
+}
+
+function isScalar(value) {
+  return value === null || ["boolean", "number", "string"].includes(typeof value);
+}
+
+function sameValue(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function isObject(value) {

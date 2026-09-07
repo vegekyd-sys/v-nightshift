@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { handoffManifestExample, stageHandoffContract, stageHandoffPath } from "./handoff.mjs";
-import { interpolate, stageSkills } from "./workflow.mjs";
+import { interpolate, stageEnabled, stageSkills } from "./workflow.mjs";
 
 const ACTIVE_STATUSES = new Set(["ready", "running"]);
 export const WORKBOARD_NOTES_LIMIT = 12000;
@@ -40,6 +40,7 @@ export function planNextActions({
   const actions = [];
   for (const stage of stages) {
     if (actions.length + activeCount >= limit) break;
+    if (!stageEnabled(stage, instance.inputs ?? {})) continue;
     if ((stage.scope ?? "project") === "content-item") {
       for (const contentItem of contentItems) {
         if (actions.length + activeCount >= limit) break;
@@ -62,7 +63,7 @@ export function planNextActions({
           continue;
         }
         if (stage.requiresRoute !== false && !contentItem.route) continue;
-        if (!dependenciesDoneForContentItem(stage, stageById, latestRuns, latestItemRuns, contentItem.id)) continue;
+        if (!dependenciesDoneForContentItem(stage, stageById, latestRuns, latestItemRuns, contentItem.id, instance)) continue;
 
         const missingApproval = requiredApproval(stage, instance, now, contentItem.id);
         if (missingApproval) {
@@ -86,7 +87,7 @@ export function planNextActions({
           contentItemId: contentItem.id,
           stageId: stage.id,
           idempotencyKey: actionKey(release, instance, stage, stage.actor === "human" ? "review" : "run", contentItem),
-          card: cardPayload(release, instance, stage, stage.actor === "human" ? "review" : "ready", contentItem, resourceKey),
+          card: cardPayload(release, instance, stage, stage.actor === "human" ? "review" : "ready", contentItem, resourceKey, contentItems),
         });
         if (resourceKey) reservedResources.add(resourceKey);
       }
@@ -108,7 +109,7 @@ export function planNextActions({
       }
       continue;
     }
-    if (!dependenciesDone(stage, latestRuns)) continue;
+    if (!dependenciesDoneForProject(stage, stageById, latestRuns, latestItemRuns, contentItems, instance)) continue;
 
     if (stage.waitUntil && !timerReady(stage.waitUntil, instance, now)) {
       actions.push({
@@ -138,7 +139,7 @@ export function planNextActions({
         instanceId: instance.id,
         stageId: stage.id,
         idempotencyKey: actionKey(release, instance, stage, "review"),
-        card: cardPayload(release, instance, stage, "review"),
+        card: cardPayload(release, instance, stage, "review", null, null, contentItems),
       });
       continue;
     }
@@ -151,7 +152,7 @@ export function planNextActions({
         instanceId: instance.id,
         stageId: stage.id,
         idempotencyKey: actionKey(release, instance, stage, "run"),
-        card: cardPayload(release, instance, stage, "ready", null, resourceKey),
+        card: cardPayload(release, instance, stage, "ready", null, resourceKey, contentItems),
       });
       if (resourceKey) reservedResources.add(resourceKey);
     }
@@ -160,7 +161,7 @@ export function planNextActions({
   return actions;
 }
 
-function cardPayload(release, instance, stage, status, contentItem = null, resourceKey = null) {
+function cardPayload(release, instance, stage, status, contentItem = null, resourceKey = null, contentItems = []) {
   const inputHash = instance.inputHash ?? hashJson(instance.inputs ?? {});
   const agentRole = stage.agentRole ?? release.spec.ownerAgentRole;
   const assignedAgent = stage.actor === "agent" ? instance.agentBindings?.[agentRole] : null;
@@ -173,7 +174,7 @@ function cardPayload(release, instance, stage, status, contentItem = null, resou
       : `${instance.name ?? instance.id}｜${stage.title}`,
     status,
     assignedAgent,
-    notes: buildAgentBrief(release, instance, stage, contentItem),
+    notes: buildAgentBrief(release, instance, stage, contentItem, contentItems),
     labels: [
       `workflow:${release.metadata.id}`,
       `release:${release.metadata.workflowSha256.slice(0, 12)}`,
@@ -233,7 +234,7 @@ export function stageTimeoutSeconds(value) {
   return Number(match[1]) * unitSeconds[match[2].toLowerCase()];
 }
 
-export function buildAgentBrief(release, instance, stage, contentItem = null) {
+export function buildAgentBrief(release, instance, stage, contentItem = null, contentItems = []) {
   const safeInputs = redactSensitiveInputs(instance.inputs ?? {});
   const projectInputsPath = instance.inputs?.nightshift?.projectInputsPath;
   const inlineInputs = projectInputsPath ? summarizeInputs(safeInputs) : safeInputs;
@@ -248,12 +249,23 @@ export function buildAgentBrief(release, instance, stage, contentItem = null) {
     release,
     stageId: stage.id,
   }) : null;
-  const upstreamHandoffPaths = handoffEnabled ? handoffContract.previous.map((upstream) => stageHandoffPath({
-    instanceDir,
-    contentItemId: contentItem?.id ?? null,
-    release,
-    stageId: upstream.id,
-  })) : [];
+  const upstreamHandoffPaths = handoffEnabled ? handoffContract.previous.flatMap((upstream) => {
+    const upstreamStage = release.spec.stages.find((entry) => entry.id === upstream.id);
+    if ((stage.scope ?? "project") === "project" && upstreamStage?.scope === "content-item") {
+      return contentItems.map((item) => stageHandoffPath({
+        instanceDir,
+        contentItemId: item.id,
+        release,
+        stageId: upstream.id,
+      }));
+    }
+    return [stageHandoffPath({
+      instanceDir,
+      contentItemId: upstreamStage?.scope === "content-item" ? contentItem?.id ?? null : null,
+      release,
+      stageId: upstream.id,
+    })];
+  }) : [];
   const exactApprovalRecorded = Boolean(stage.approval?.before) && !requiredApproval(stage, instance, new Date(), contentItem?.id ?? null);
   const approvalBinding = exactApprovalRecorded ? resolveApprovalBinding(stage, instance, contentItem?.id ?? null) : null;
   const lines = [
@@ -301,8 +313,12 @@ export function buildAgentBrief(release, instance, stage, contentItem = null) {
     ...(stage.id === "brief" && itemDir ? [
       `Brief output contract: read ${itemDir}/routeDecision.json and ${itemDir}/frozenInputManifest.json, then write ${itemDir}/finishedVideoBrief.md. It must explicitly record routeMatchesContentItem, inputsFrozen, and productionReady; include target duration, narrative structure, a shot table bound to exact frozen source_url/start_sec/end_sec values, TTS or no-TTS behavior, subtitle/audio rules, missing-footage handling, and final QC acceptance. Do not inspect Night Shift source code to infer this contract.`,
     ] : []),
+    ...(stage.id === "deliver-download" && instanceDir ? [
+      `Download delivery contract: aggregate every validated ContentItem deliverables.json and produce handoff into ${instanceDir}/deliver-download/delivery-package.zip; upload that exact package once under a stable instance-bound OSS object key; upsert one Base delivery row keyed by instance ${instance.id}; write ${instanceDir}/deliver-download/oss-delivery.json with uploaded=true and ${instanceDir}/deliver-download/base-delivery-receipt.json with recorded=true; and reference those concrete artifacts from the stage handoff.`,
+      "This branch must not create human review work, request external-publication approval, publish content, call GeeLark, or invoke geelark-cloud-phone.",
+    ] : []),
     `Completion checks: ${(stage.completeWhen ?? []).join("; ") || "human decision"}`,
-    `Safety: ${(stage.sideEffects ?? []).length ? `requires approved side effects: ${stage.sideEffects.join(", ")}` : "no declared external side effect"}`,
+    `Safety: ${(stage.sideEffects ?? []).length ? `declared external side effects: ${stage.sideEffects.join(", ")}; ${stage.approval?.before ? `requires ${stage.approval.before} approval` : "no separate human approval gate"}` : "no declared external side effect"}`,
     ...((stage.sideEffects ?? []).length ? [
       "External-operation gate: before the first paid/public/external call, compute a stable SHA-256 of the exact external request and run `node scripts/nightshiftctl.mjs operations reserve <Card id from Worker protocol> --request-hash <sha256>`. If the response is reused+succeeded, reuse its result and do not call the provider again. After provider submission run `operations checkpoint ... --status executing --external-task-id <id>`; after verified success run `operations checkpoint ... --status succeeded --result-json '<json>'`. The ledger is the only external side-effect checkpoint.",
     ] : []),
@@ -373,6 +389,7 @@ function summarizeInputs(inputs) {
     "customerId",
     "customerName",
     "briefUrl",
+    "deliveryMode",
     "sceneProjectId",
     "targetVideoCount",
     "authorizationScope",
@@ -476,15 +493,22 @@ function resolveExpression(expression, instance) {
   return interpolate(expression, { input: instance.inputs ?? {}, instance });
 }
 
-function dependenciesDone(stage, latestRuns) {
-  return (stage.needs ?? []).every(
-    (dependency) => latestRuns.get(dependency)?.status === "done",
-  );
-}
-
-function dependenciesDoneForContentItem(stage, stageById, projectRuns, itemRuns, contentItemId) {
+function dependenciesDoneForProject(stage, stageById, projectRuns, itemRuns, contentItems, instance) {
   return (stage.needs ?? []).every((dependency) => {
     const dependencyStage = stageById.get(dependency);
+    if (!stageEnabled(dependencyStage, instance.inputs ?? {})) return true;
+    if (dependencyStage?.scope === "content-item") {
+      return contentItems.length > 0 && contentItems.every((item) =>
+        itemRuns.get(contentItemRunKey(item.id, dependency))?.status === "done");
+    }
+    return projectRuns.get(dependency)?.status === "done";
+  });
+}
+
+function dependenciesDoneForContentItem(stage, stageById, projectRuns, itemRuns, contentItemId, instance) {
+  return (stage.needs ?? []).every((dependency) => {
+    const dependencyStage = stageById.get(dependency);
+    if (!stageEnabled(dependencyStage, instance.inputs ?? {})) return true;
     if ((dependencyStage?.scope ?? "project") === "content-item") {
       return itemRuns.get(contentItemRunKey(contentItemId, dependency))?.status === "done";
     }
