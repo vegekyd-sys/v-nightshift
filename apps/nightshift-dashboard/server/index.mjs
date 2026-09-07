@@ -6,7 +6,7 @@ import { createReadStream } from "node:fs";
 import { mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadPublicAuth, requiresPublicAuth, verifyPublicAuth } from "./public-auth.mjs";
+import { loadPublicAuth, requiresPublicAuth, verifyPublicAuth, resolveOperatorIdentity } from "./public-auth.mjs";
 import { resolveCardDecisionContext } from "./decision-context.mjs";
 import {
   deliverableArtifactPaths,
@@ -569,11 +569,7 @@ async function handleApi(request, response, url) {
 }
 
 function operatorIdentity(request, body) {
-  if (verifyPublicAuth(request.headers.authorization, publicAuth)) return publicAuth.username;
-  const remote = request.socket.remoteAddress;
-  if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(remote)) throw new Error("Authenticated operator is required");
-  if (typeof body.actor !== "string" || !body.actor.trim()) throw new Error("Local operator identity is required");
-  return `local:${body.actor.trim().slice(0, 120)}`;
+  return resolveOperatorIdentity({ authorization: request.headers.authorization, remoteAddress: request.socket.remoteAddress, actor: body.actor, auth: publicAuth });
 }
 
 function decisionInput({ body, card }) {

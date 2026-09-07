@@ -46,3 +46,13 @@ export function verifyPublicAuth(header, auth) {
   return actualHash.length === expectedHash.length && timingSafeEqual(actualHash, expectedHash);
 }
 
+
+export function resolveOperatorIdentity({ authorization, remoteAddress, actor, auth }) {
+  if (auth) {
+    if (verifyPublicAuth(authorization, auth)) return auth.username;
+    throw new Error("Authenticated operator is required");
+  }
+  if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(remoteAddress)) throw new Error("Authenticated operator is required");
+  if (typeof actor !== "string" || !actor.trim()) throw new Error("Local operator identity is required");
+  return `local:${actor.trim().slice(0, 120)}`;
+}

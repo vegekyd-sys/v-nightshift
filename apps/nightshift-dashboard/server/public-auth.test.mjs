@@ -14,3 +14,13 @@ test("public auth verifies the configured Basic credential", () => {
   assert.equal(verifyPublicAuth(`Basic ${Buffer.from("other:correct horse battery staple").toString("base64")}`, auth), false);
 });
 
+
+
+test("controlled execution uses authenticated identity even behind a loopback proxy", async () => {
+  const { resolveOperatorIdentity } = await import("./public-auth.mjs");
+  const auth = createPublicAuth("owner", "test-password", "test-salt");
+  assert.throws(() => resolveOperatorIdentity({ auth, remoteAddress: "127.0.0.1", actor: "forged" }), /Authenticated/);
+  assert.equal(resolveOperatorIdentity({ auth, remoteAddress: "127.0.0.1", actor: "forged", authorization: `Basic ${Buffer.from("owner:test-password").toString("base64")}` }), "owner");
+  assert.throws(() => resolveOperatorIdentity({ remoteAddress: "203.0.113.1", actor: "forged" }), /Authenticated/);
+  assert.equal(resolveOperatorIdentity({ remoteAddress: "127.0.0.1", actor: "tester" }), "local:tester");
+});
