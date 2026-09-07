@@ -105,7 +105,7 @@ async function handleApi(request, response, url) {
       schedulerStartedAt,
       schedulerRunning: Boolean(schedulerPromise),
       lastSchedulerDurationMs,
-      ok: !lastSchedulerError,
+      ok: Boolean(lastSchedulerAt) && !lastSchedulerError && Date.now() - Date.parse(lastSchedulerAt) < 90000,
       service: "nightshift-workboard",
     });
     return;
