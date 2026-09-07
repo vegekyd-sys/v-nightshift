@@ -2,7 +2,7 @@
 apiVersion: nightshift.versa.ai/v1alpha1
 kind: Workflow
 metadata:
-  id: nightshift-auditable-attempt-canary
+  id: ns-attempt-canary
   version: 0.1.1
   name: Night Shift 审计链路 Canary
 spec:
