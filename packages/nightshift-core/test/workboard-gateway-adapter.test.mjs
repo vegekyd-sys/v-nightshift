@@ -70,4 +70,37 @@ test("creates and reuses native cards through Gateway RPC", async () => {
   assert.equal(skills.skills[0].name, "night-shift-operator");
   const skillsCall = calls.find(({ args }) => args[2] === "skills.status");
   assert.deepEqual(JSON.parse(skillsCall.args[skillsCall.args.indexOf("--params") + 1]), { agentId: "main" });
+
+});
+
+test("dispatches only an explicit card scope through the options RPC", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "nightshift-gateway-dispatch-"));
+  const configPath = join(dir, "openclaw.json");
+  await writeFile(configPath, JSON.stringify({ gateway: { auth: { token: "test-token" } } }));
+  const calls = [];
+  const adapter = new WorkboardGatewayAdapter({
+    board: "nightshift-lab",
+    configPath,
+    gatewayUrl: "ws://127.0.0.1:23793",
+    runner: async (_command, args) => {
+      calls.push(args);
+      return JSON.stringify({ started: ["card-1"] });
+    },
+  });
+
+  const dispatch = await adapter.dispatch(4, { cardIds: ["card-1", "card-1", "  "] });
+
+  assert.deepEqual(dispatch.started, ["card-1"]);
+  assert.equal(calls[0][2], "workboard.cards.dispatchWithOptions");
+  assert.deepEqual(JSON.parse(calls[0][calls[0].indexOf("--params") + 1]), {
+    boardId: "nightshift-lab",
+    cardIds: ["card-1"],
+    maxStarts: 4,
+  });
+  const callCount = calls.length;
+  await assert.rejects(
+    () => adapter.dispatch(1),
+    /requires an explicit non-empty card scope/,
+  );
+  assert.equal(calls.length, callCount);
 });

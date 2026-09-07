@@ -429,19 +429,28 @@ export class NightShiftRuntime {
         });
       }
       if (dispatch) {
-        const existingReady = currentCards.filter(
-          (card) => card.status === "ready" && (card.labels ?? []).includes(`instance:${instanceId}`),
-        ).length;
-        const newlyReady = applied.filter(
-          (result) =>
-            result.card?.status === "ready" &&
-            result.action.type === "create_workboard_card",
-        ).length;
+        const instanceLabel = `instance:${instanceId}`;
+        const dispatchCardIds = [...new Set([
+          ...currentCards,
+          ...applied
+            .filter((result) => result.action.type === "create_workboard_card")
+            .map((result) => result.card)
+            .filter(Boolean),
+        ]
+          .filter((card) =>
+            card.status === "ready" &&
+            (card.labels ?? []).includes(instanceLabel) &&
+            typeof card.id === "string" &&
+            card.id,
+          )
+          .map((card) => card.id))];
         const maxStarts = Math.min(
           savedRelease.manifest.spec.concurrency?.perInstance ?? 1,
-          existingReady + newlyReady,
+          dispatchCardIds.length,
         );
-        if (maxStarts > 0) await this.workboard.dispatch(maxStarts);
+        if (maxStarts > 0) {
+          await this.workboard.dispatch(maxStarts, { cardIds: dispatchCardIds });
+        }
       }
       if (actions.length === 0 && workflowComplete(savedRelease.manifest, instance, runs, contentItems, contentItemRuns)) {
         this.store.updateInstanceStatus(instanceId, "done");

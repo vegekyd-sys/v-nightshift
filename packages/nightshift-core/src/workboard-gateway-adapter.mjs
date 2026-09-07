@@ -78,9 +78,14 @@ export class WorkboardGatewayAdapter {
     return result.card;
   }
 
-  async dispatch(maxStarts = 1) {
-    return this.call("workboard.cards.dispatch", {
+  async dispatch(maxStarts = 1, { cardIds } = {}) {
+    const scopedCardIds = uniqueCardIds(cardIds);
+    if (scopedCardIds.length === 0) {
+      throw new Error("Night Shift dispatch requires an explicit non-empty card scope");
+    }
+    return this.call("workboard.cards.dispatchWithOptions", {
       boardId: this.board,
+      cardIds: scopedCardIds,
       maxStarts,
     });
   }
@@ -129,6 +134,13 @@ export class WorkboardGatewayAdapter {
     });
     return typeof output === "string" ? JSON.parse(output) : output;
   }
+}
+
+function uniqueCardIds(cardIds) {
+  if (!Array.isArray(cardIds)) return [];
+  return [...new Set(cardIds
+    .filter((id) => typeof id === "string" && id.trim())
+    .map((id) => id.trim()))];
 }
 
 export function gatewayIdempotencyLabel(key) {

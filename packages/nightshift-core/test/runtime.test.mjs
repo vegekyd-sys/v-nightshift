@@ -442,9 +442,44 @@ test("re-dispatches a previously ready content-item card", async () => {
     labels: ["instance:NS-RUNTIME-READY", "content-item:video-1", "stage:route"],
     status: "ready",
   });
+  workboard.cards.push({
+    id: "card-unrelated",
+    labels: ["instance:NS-OTHER", "stage:plan"],
+    status: "ready",
+  });
   const result = await runtime.tick("NS-RUNTIME-READY", { dispatch: true });
   assert.deepEqual(result.actions, []);
-  assert.deepEqual(workboard.dispatchCalls, [1]);
+  assert.deepEqual(workboard.dispatchCalls, [{
+    maxStarts: 1,
+    options: { cardIds: ["card-ready"] },
+  }]);
+  store.close();
+});
+
+test("dispatches a newly created plan card without touching unrelated ready cards", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard });
+  const release = runtime.publish(source);
+  runtime.startInstance({
+    id: "NS-RUNTIME-SCOPED-DISPATCH",
+    workflowSha256: release.workflowSha256,
+    agentBindings: { "content-operator": "main" },
+  });
+  workboard.cards.push({
+    id: "card-unrelated",
+    labels: ["instance:NS-OTHER", "stage:plan"],
+    status: "ready",
+  });
+
+  const result = await runtime.tick("NS-RUNTIME-SCOPED-DISPATCH", { dispatch: true });
+
+  assert.equal(result.applied[0].card.id, "card-2");
+  assert.deepEqual(workboard.dispatchCalls, [{
+    maxStarts: 1,
+    options: { cardIds: ["card-2"] },
+  }]);
   store.close();
 });
 
@@ -623,8 +658,8 @@ class FakeWorkboard {
     return card;
   }
 
-  async dispatch(maxStarts) {
-    this.dispatchCalls.push(maxStarts);
+  async dispatch(maxStarts, options) {
+    this.dispatchCalls.push({ maxStarts, options });
     return { started: [] };
   }
 
