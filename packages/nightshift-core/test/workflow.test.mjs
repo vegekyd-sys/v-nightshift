@@ -157,7 +157,7 @@ test("selects route-specific material skills without creating a second workflow"
   assert.deepEqual(actions[1].card.automation.skills, ["shooting-checklist-v3", "scene-cli", "material-verification"]);
 });
 
-test("AI brief requires finished-video-brief and exact Skill audit evidence", async () => {
+test("AI brief requires finished-video-brief and declares the Skill evidence contract", async () => {
   const release = compileWorkflow(await loadWorkflow(fixture));
   const actions = planNextActions({
     release,

@@ -275,7 +275,7 @@ export function buildAgentBrief(release, instance, stage, contentItem = null, co
     ...(contentItem ? [`Content item: ${JSON.stringify(summarizeContentItem(contentItem))}`] : []),
     `Objective: ${strategy?.description ?? stage.description ?? "Complete the declared stage."}`,
     `Required skills (load in order): ${stageSkills(stage, contentItem?.route).join(", ") || "none"}`,
-    "Skill evidence gate: during this exact Workboard attempt, use the read tool to open every declared Skill's SKILL.md before using it. Do not open undeclared Skill files. Completion is rejected if the Session transcript lacks an exact declared Skill read or contains an undeclared Skill read.",
+    "Skill evidence gate: Workboard injects the declared Skill set into this attempt. Use the runtime's normal Skill-loading mechanism before acting and do not open undeclared Skill files. Explicit Skill read tool calls are retained as audit telemetry, but missing tool-call telemetry alone does not override verified outputs and completion checks.",
     "Atomic attempt scope: this attempt owns only the current Workboard card and stage. Do not claim, heartbeat, block, complete, repair, or advance another card/stage. Completion is rejected if the Session transcript mutates a different card.",
     `Input summary: ${JSON.stringify(inlineInputs)}`,
     ...(projectInputsPath
@@ -408,7 +408,7 @@ function summarizeContentItem(contentItem) {
   });
 }
 
-function actionKey(release, instance, stage, action, contentItem = null) {
+export function actionKey(release, instance, stage, action, contentItem = null) {
   const inputHash = instance.inputHash ?? hashJson(instance.inputs ?? {});
   const template = stage.retry?.idempotencyKey;
   const logicalKey = template

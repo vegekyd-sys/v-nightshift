@@ -219,7 +219,7 @@ export function Drawer({ card, delivery, deliveryState, deliveryError, handoff, 
         selected={selectedAttempt}
         state={sessionState}
       />}
-      <section><h3>Evidence & safety</h3><Detail label="Workflow SHA" value={automation.workflowSha256?.slice(0, 12) ?? "—"} mono /><Detail label="Input hash" value={automation.inputHash?.slice(0, 12) ?? "—"} mono /><Detail label="Idempotency" value={automation.nightshiftActionKey ? "protected" : "native card"} /></section>
+      <section><h3>Evidence & safety</h3><Detail label="Workflow SHA" value={automation.workflowSha256?.slice(0, 12) ?? "—"} mono /><Detail label="Input hash" value={automation.inputHash?.slice(0, 12) ?? "—"} mono /><Detail label="Idempotency" value={automation.idempotencyKey || automation.nightshiftActionKey ? "protected" : "native card"} /></section>
       {approval && <section className="publication-approval"><h3>执行确认</h3><p>{publicationApproval ? "本次确认包含外部发布授权；确认后任务才会进入发布步骤。" : "这个阶段需要明确授权后才能继续；确认后任务会进入执行队列。"}</p><Detail label="权限" value={publicationApproval ? "外部发布" : approval.effect} /><Detail label="范围" value={approval.scope ?? "stage"} />{Object.entries(approval.bindings ?? {}).map(([name, value]) => <Detail key={name} label={name === "publicationTarget" ? "发布目标" : name} value={presentApprovalBinding(value)} />)}{approvalIncomplete && <p className="decision-error">发布前还缺少：{approval.missingFields.join("、")}</p>}</section>}
       {card.notes && <section><h3>Operator notes</h3><pre>{card.notes}</pre></section>}
       {(card.status === "review" || approval) && <div className="review-zone">

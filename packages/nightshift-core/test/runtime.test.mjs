@@ -536,6 +536,7 @@ test("rejects a done card when its declared delivery fails validation", async ()
     stageId: "produce",
   });
   assert.equal(workboard.cards[0].status, "ready");
+  assert.match(workboard.updateCalls.at(-1).patch.idempotencyKey, /:run:/);
   assert.equal(workboard.cards[0].maxRuntimeSeconds, 14_400);
   assert.match(workboard.cards[0].notes, /\{"version":1/);
   deliveryValid = true;
@@ -622,6 +623,7 @@ class FakeWorkboard {
     this.completeCalls = [];
     this.completeFailures = 0;
     this.dispatchCalls = [];
+    this.updateCalls = [];
     this.sessions = new Map();
   }
 
@@ -654,6 +656,7 @@ class FakeWorkboard {
   }
 
   async updateCard(id, patch) {
+    this.updateCalls.push({ id, patch });
     const card = this.cards.find((entry) => entry.id === id);
     Object.assign(card, patch);
     return card;

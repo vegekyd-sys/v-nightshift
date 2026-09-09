@@ -9,7 +9,8 @@ export {
   stageEnabled,
   validateWorkflow,
 } from "./workflow.mjs";
-export { buildAgentBrief, planNextActions, redactSensitiveInputs, requiredApproval, resolveApprovalBinding, WORKBOARD_NOTES_LIMIT } from "./orchestrator.mjs";
+export { actionKey, buildAgentBrief, planNextActions, redactSensitiveInputs, requiredApproval, resolveApprovalBinding, WORKBOARD_NOTES_LIMIT } from "./orchestrator.mjs";
+export { resolveNightShiftCardContext } from "./card-context.mjs";
 export { WorkboardCliAdapter, idempotencyLabel } from "./workboard-adapter.mjs";
 export { NightShiftStore } from "./store.mjs";
 export {

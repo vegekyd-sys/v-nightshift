@@ -6,9 +6,6 @@ export function validateExecutionEvidence({ cardId, messages = [], requiredSkill
   const loaded = [...new Set(calls.map(skillRead).filter(Boolean))].sort();
   const missing = required.filter((skill) => !loaded.includes(skill));
   const undeclared = loaded.filter((skill) => !required.includes(skill));
-  if (missing.length > 0) {
-    throw new Error(`Required Skill was not loaded in this attempt: ${missing.join(", ")}`);
-  }
   if (undeclared.length > 0) {
     throw new Error(`Undeclared Skill was loaded in this attempt: ${undeclared.join(", ")}`);
   }
@@ -18,7 +15,17 @@ export function validateExecutionEvidence({ cardId, messages = [], requiredSkill
   if (foreignCards.length > 0) {
     throw new Error(`One-attempt-one-card violation: mutated ${[...new Set(foreignCards)].join(", ")}`);
   }
-  return { loadedSkills: loaded, toolCallCount: calls.length };
+  return {
+    declaredSkills: required,
+    loadedSkills: loaded,
+    missingSkillReadTelemetry: missing,
+    skillEvidence: required.length === 0
+      ? "not-required"
+      : missing.length === 0
+        ? "session-read"
+        : "workboard-declaration",
+    toolCallCount: calls.length,
+  };
 }
 
 export function collectToolCalls(messages) {

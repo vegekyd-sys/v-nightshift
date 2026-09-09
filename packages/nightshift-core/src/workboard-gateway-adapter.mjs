@@ -66,7 +66,7 @@ export class WorkboardGatewayAdapter {
         automation: {
           ...(card.automation ?? {}),
           boardId: this.board,
-          nightshiftActionKey: action.idempotencyKey,
+          idempotencyKey: action.idempotencyKey,
         },
       },
     };

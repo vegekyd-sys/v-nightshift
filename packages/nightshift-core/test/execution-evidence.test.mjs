@@ -16,12 +16,17 @@ test("accepts exact declared Skill reads for the current attempt", () => {
   assert.deepEqual(evidence.loadedSkills, ["finished-video-brief", "makaron"]);
 });
 
-test("rejects missing and undeclared Skill reads", () => {
-  assert.throws(() => validateExecutionEvidence({
+test("records missing Skill read telemetry without rejecting verified work", () => {
+  const evidence = validateExecutionEvidence({
     cardId: "card-1",
     messages: [readSkill("makaron")],
     requiredSkills: ["finished-video-brief", "makaron"],
-  }), /not loaded.*finished-video-brief/i);
+  });
+  assert.deepEqual(evidence.missingSkillReadTelemetry, ["finished-video-brief"]);
+  assert.equal(evidence.skillEvidence, "workboard-declaration");
+});
+
+test("rejects undeclared Skill reads", () => {
   assert.throws(() => validateExecutionEvidence({
     cardId: "card-1",
     messages: [readSkill("makaron"), readSkill("unrelated-ops")],
