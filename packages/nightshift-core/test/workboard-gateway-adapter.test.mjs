@@ -53,7 +53,8 @@ test("creates and reuses native cards through Gateway RPC", async () => {
   assert.equal(first.status, "created");
   assert.equal(second.status, "reused");
   assert.equal(first.card.metadata.automation.boardId, "nightshift-lab");
-  assert.equal(first.card.metadata.automation.idempotencyKey, "stable-key");
+  assert.match(first.card.metadata.automation.idempotencyKey, /^nightshift:[a-f0-9]{64}$/);
+  assert.ok(first.card.metadata.automation.idempotencyKey.length <= 160);
   assert.equal(first.card.metadata.automation.nightshiftActionKey, undefined);
   assert.equal(first.card.maxRetries, 2);
   assert.equal(first.card.maxRuntimeSeconds, 14_400);

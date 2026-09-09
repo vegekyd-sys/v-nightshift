@@ -12,6 +12,7 @@ import { loadPublicAuth, requiresPublicAuth, verifyPublicAuth, resolveOperatorId
 import { resolveCardDecisionContext } from "./decision-context.mjs";
 import {
   deliverableArtifactPaths,
+  findNightShiftExternalOperation,
   humanStageHandoff,
   NightShiftRuntime,
   NightShiftStore,
@@ -22,6 +23,7 @@ import {
   redactSensitiveInputs,
   requiredSkillsByRole,
   resolveNightShiftCardContext,
+  resolveNightShiftOperationKeys,
   stageHandoffPath,
   validateDeclaredCompletion,
   validateExecutionEvidence,
@@ -454,11 +456,20 @@ async function handleApi(request, response, url) {
       json(response, 422, { error: "Card does not declare an external side effect" });
       return;
     }
-    const idempotencyKey = context.idempotencyKey;
-    if (!idempotencyKey) {
-      json(response, 422, { error: "Card is missing its Night Shift idempotency key" });
+    const contentItem = context.contentItemId
+      ? store.listContentItems(instance.id).find((entry) => entry.id === context.contentItemId)
+      : null;
+    if (context.contentItemId && !contentItem) {
+      json(response, 422, { error: "Card references an unknown Night Shift content item" });
       return;
     }
+    const operationKeys = resolveNightShiftOperationKeys({ card, release, instance, contentItem });
+    const existingOperation = findNightShiftExternalOperation({
+      card,
+      candidateIdempotencyKeys: operationKeys.candidateIdempotencyKeys,
+      operations: store.listExternalOperations(instance.id),
+    });
+    const idempotencyKey = existingOperation?.idempotencyKey ?? operationKeys.preferredIdempotencyKey;
     const body = await bodyJson(request);
     if (operationMatch[2] === "reserve") {
       if (!/^[a-f0-9]{64}$/i.test(body.requestHash ?? "")) {
@@ -768,8 +779,15 @@ async function validateCompletion({ card, contentItemId, instance, release, stag
     evidence.runId = attempt.runId;
   }
   if ((stage?.sideEffects ?? []).length > 0) {
-    const idempotencyKey = resolveNightShiftCardContext({ card, release }).idempotencyKey;
-    const operation = idempotencyKey ? store.getExternalOperation(idempotencyKey) : null;
+    const contentItem = contentItemId
+      ? store.listContentItems(instance.id).find((entry) => entry.id === contentItemId)
+      : null;
+    const operationKeys = resolveNightShiftOperationKeys({ card, release, instance, contentItem });
+    const operation = findNightShiftExternalOperation({
+      card,
+      candidateIdempotencyKeys: operationKeys.candidateIdempotencyKeys,
+      operations: store.listExternalOperations(instance.id),
+    });
     if (!operation || operation.ownerCardId !== card.id || operation.status !== "succeeded") {
       throw new Error("External side effect has no succeeded Night Shift operation checkpoint");
     }

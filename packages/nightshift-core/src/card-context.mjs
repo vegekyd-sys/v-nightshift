@@ -1,3 +1,6 @@
+import { actionKey, nativeActionKey } from "./orchestrator.mjs";
+import { gatewayIdempotencyLabel } from "./workboard-gateway-adapter.mjs";
+
 const COORDINATE_LABELS = {
   contentItemId: "content-item:",
   instanceId: "instance:",
@@ -24,6 +27,42 @@ export function resolveNightShiftCardContext({ card, release = null }) {
     sideEffects,
     stage,
   };
+}
+
+export function resolveNightShiftOperationKeys({ card, release, instance, contentItem = null }) {
+  const context = resolveNightShiftCardContext({ card, release });
+  if (!instance || instance.id !== context.instanceId) {
+    throw new Error("Card is not linked to the supplied Night Shift project");
+  }
+  if (context.contentItemId && contentItem?.id !== context.contentItemId) {
+    throw new Error(`Card references an unknown content item: ${context.contentItemId}`);
+  }
+  const logicalIdempotencyKey = actionKey(release, instance, context.stage, "run", contentItem);
+  const boundedNativeIdempotencyKey = nativeActionKey(logicalIdempotencyKey);
+  return {
+    context,
+    logicalIdempotencyKey,
+    boundedNativeIdempotencyKey,
+    preferredIdempotencyKey: context.idempotencyKey && context.idempotencyKey !== logicalIdempotencyKey
+      ? context.idempotencyKey
+      : boundedNativeIdempotencyKey,
+    candidateIdempotencyKeys: [...new Set([
+      logicalIdempotencyKey,
+      context.idempotencyKey,
+      boundedNativeIdempotencyKey,
+    ].filter(Boolean))],
+  };
+}
+
+export function findNightShiftExternalOperation({ card, candidateIdempotencyKeys = [], operations = [] }) {
+  const actionLabel = (card.labels ?? []).find((label) =>
+    typeof label === "string" && label.startsWith("nightshift-action:"));
+  const labeledOperation = actionLabel
+    ? operations.find((operation) => gatewayIdempotencyLabel(operation.idempotencyKey) === actionLabel)
+    : null;
+  if (labeledOperation) return labeledOperation;
+  const candidates = new Set(candidateIdempotencyKeys);
+  return operations.find((operation) => candidates.has(operation.idempotencyKey)) ?? null;
 }
 
 function consistentCoordinate({ automation, card, field, prefix }) {

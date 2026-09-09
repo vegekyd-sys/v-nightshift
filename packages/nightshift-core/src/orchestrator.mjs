@@ -424,6 +424,10 @@ export function actionKey(release, instance, stage, action, contentItem = null) 
   return `${release.metadata.workflowSha256}:${action}:${logicalKey}`;
 }
 
+export function nativeActionKey(logicalKey) {
+  return `nightshift:${createHash("sha256").update(logicalKey).digest("hex")}`;
+}
+
 export function requiredApproval(stage, instance, now, contentItemId = null) {
   if (!stage.approval?.before) return null;
   const approvals = Array.isArray(instance.approvals) ? instance.approvals : [];

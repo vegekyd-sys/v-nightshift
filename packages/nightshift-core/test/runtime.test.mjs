@@ -536,7 +536,8 @@ test("rejects a done card when its declared delivery fails validation", async ()
     stageId: "produce",
   });
   assert.equal(workboard.cards[0].status, "ready");
-  assert.match(workboard.updateCalls.at(-1).patch.idempotencyKey, /:run:/);
+  assert.match(workboard.updateCalls.at(-1).patch.idempotencyKey, /^nightshift:[a-f0-9]{64}$/);
+  assert.ok(workboard.updateCalls.at(-1).patch.idempotencyKey.length <= 160);
   assert.equal(workboard.cards[0].maxRuntimeSeconds, 14_400);
   assert.match(workboard.cards[0].notes, /\{"version":1/);
   deliveryValid = true;

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
+import { nativeActionKey } from "./orchestrator.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -66,7 +67,7 @@ export class WorkboardGatewayAdapter {
         automation: {
           ...(card.automation ?? {}),
           boardId: this.board,
-          idempotencyKey: action.idempotencyKey,
+          idempotencyKey: nativeActionKey(action.idempotencyKey),
         },
       },
     };
