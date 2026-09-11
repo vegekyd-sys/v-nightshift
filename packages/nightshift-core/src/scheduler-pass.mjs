@@ -1,6 +1,13 @@
 import { tickWithFaultProjection } from "./scheduler-state.mjs";
 
-export async function runSchedulerPass({ store, runtime, workboard, refreshCards, syncContentItemsManifest }) {
+export async function runSchedulerPass({
+  dispatchMaxStarts = 1,
+  store,
+  runtime,
+  workboard,
+  refreshCards,
+  syncContentItemsManifest,
+}) {
   const instances = store.listInstances().filter((instance) => instance.status === "active")
     .sort((a, b) => Number(store.getInstanceControl(b.id).automaticDispatch) - Number(store.getInstanceControl(a.id).automaticDispatch));
   const wasRunning = (id) => [...store.listStageRuns(id), ...store.listContentItemRuns(id)]
@@ -27,6 +34,7 @@ export async function runSchedulerPass({ store, runtime, workboard, refreshCards
       (card.status === "running" || card.execution?.status === "running")));
   const warnings = [];
   let changed = false;
+  let remainingStarts = dispatchMaxStarts;
   for (const instance of eligible) {
     try {
       await syncContentItemsManifest(instance);
@@ -35,12 +43,35 @@ export async function runSchedulerPass({ store, runtime, workboard, refreshCards
       store.appendEvent({ instanceId: instance.id, type: "content-items.import.failed", payload: { error: error.message } });
     }
     try {
-      const result = await tickWithFaultProjection({ instanceId: instance.id, options: { dispatch: true, cards }, runtime, store, workboard });
+      const result = await tickWithFaultProjection({
+        instanceId: instance.id,
+        options: { dispatch: true, dispatchMaxStarts: remainingStarts, cards },
+        runtime,
+        store,
+        workboard,
+      });
+      const startedCards = (result.dispatch?.started ?? []).map((entry) => entry.card).filter(Boolean);
+      if (startedCards.length > 0) {
+        remainingStarts = Math.max(0, remainingStarts - startedCards.length);
+        cards = mergeCards(cards, startedCards);
+      }
       if (result.applied.length || result.dispatch) changed = true;
     } catch (error) {
       warnings.push(`${instance.id}: ${error.message}`);
     }
   }
   if (changed) await refreshCards();
-  return { warnings, instances: eligible.length, pausedInstances: instances.length - eligible.length };
+  return {
+    dispatchMaxStarts,
+    dispatched: dispatchMaxStarts - remainingStarts,
+    warnings,
+    instances: eligible.length,
+    pausedInstances: instances.length - eligible.length,
+  };
+}
+
+function mergeCards(cards, updates) {
+  const merged = new Map(cards.map((card) => [card.id, card]));
+  for (const card of updates) merged.set(card.id, card);
+  return [...merged.values()];
 }

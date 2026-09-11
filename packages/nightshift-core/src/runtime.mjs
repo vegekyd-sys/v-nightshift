@@ -8,11 +8,20 @@ import {
 import { actionKey, buildAgentBrief, nativeActionKey, planNextActions, requiredApproval, resolveApprovalBinding, stageTimeoutSeconds } from "./orchestrator.mjs";
 
 export class NightShiftRuntime {
-  constructor({ board = "nightshift", completionValidator = null, store, workboard }) {
+  constructor({
+    board = "nightshift",
+    completionValidator = null,
+    dispatchMaxStarts = 1,
+    maxWorkboardActive = 2,
+    store,
+    workboard,
+  }) {
     if (!store) throw new Error("NightShift store is required");
     if (!workboard) throw new Error("Workboard adapter is required");
     this.board = board;
     this.completionValidator = completionValidator;
+    this.dispatchMaxStarts = positiveDispatchLimit(dispatchMaxStarts, "dispatchMaxStarts");
+    this.maxWorkboardActive = positiveDispatchLimit(maxWorkboardActive, "maxWorkboardActive");
     this.store = store;
     this.workboard = workboard;
   }
@@ -363,7 +372,12 @@ export class NightShiftRuntime {
     return { cardId, contentItemId, stageId, status: "ready" };
   }
 
-  async tick(instanceId, { cards = null, dispatch = false, dryRun = false } = {}) {
+  async tick(instanceId, {
+    cards = null,
+    dispatch = false,
+    dispatchMaxStarts = this.dispatchMaxStarts,
+    dryRun = false,
+  } = {}) {
     const currentCards = cards ?? await this.workboard.listCards();
     await this.reconcile(instanceId, currentCards);
     const instance = this.store.getInstance(instanceId);
@@ -439,12 +453,15 @@ export class NightShiftRuntime {
             instanceCards.set(result.card.id, result.card);
           }
         }
-        const active = [...instanceCards.values()].filter((card) =>
-          card.status === "running" || card.execution?.status === "running" || Boolean(card.metadata?.claim));
+        const now = Date.now();
+        const active = [...instanceCards.values()].filter(cardConsumesDispatchSlot);
+        const activeAcrossBoard = currentCards.filter(cardConsumesDispatchSlot).length;
         const cardIds = [...instanceCards.values()].filter((card) =>
-          card.status === "ready" && !active.includes(card) && !(card.labels ?? []).includes("nightshift:approval"))
+          card.status === "ready" && !active.includes(card) && !cardHasActiveClaim(card, now) && !(card.labels ?? []).includes("nightshift:approval"))
           .map((card) => card.id);
         const maxStarts = Math.min(
+          normalizeDispatchBudget(dispatchMaxStarts),
+          Math.max(0, this.maxWorkboardActive - activeAcrossBoard),
           Math.max(0, (savedRelease.manifest.spec.concurrency?.perInstance ?? 1) - active.length),
           cardIds.length,
         );
@@ -564,6 +581,28 @@ export class NightShiftRuntime {
       : this.store.upsertStageRun({ ...run, status: "blocked" });
     return approval;
   }
+}
+
+export function cardConsumesDispatchSlot(card) {
+  return card?.status === "running" || card?.execution?.status === "running";
+}
+
+function cardHasActiveClaim(card, now) {
+  const expiresAt = Number(card?.metadata?.claim?.expiresAt ?? 0);
+  return Number.isFinite(expiresAt) && expiresAt > now;
+}
+
+function normalizeDispatchBudget(value) {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function positiveDispatchLimit(value, name) {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 36) {
+    throw new Error(`${name} must be an integer between 1 and 36`);
+  }
+  return parsed;
 }
 
 function messageText(message) {

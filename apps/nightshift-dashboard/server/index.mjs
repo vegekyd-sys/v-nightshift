@@ -44,11 +44,20 @@ const workflowPath = resolve(
 const board = process.env.NIGHTSHIFT_BOARD ?? "nightshift-lab";
 const publicHost = process.env.NIGHTSHIFT_PUBLIC_HOST ?? "";
 const publicBaseUrl = process.env.NIGHTSHIFT_PUBLIC_BASE_URL ?? "";
+const schedulerDispatchMaxStarts = positiveInteger(process.env.NIGHTSHIFT_DISPATCH_MAX_STARTS_PER_PASS, 1, 4);
+const schedulerMaxWorkboardActive = positiveInteger(process.env.NIGHTSHIFT_MAX_WORKBOARD_ACTIVE, 2, 8);
 const publicAuth = await loadPublicAuth(process.env.NIGHTSHIFT_BASIC_AUTH_FILE);
 await mkdir(dataDir, { recursive: true });
 const store = new NightShiftStore(join(dataDir, "nightshift.sqlite"));
 const workboard = new WorkboardGatewayAdapter({ board });
-const runtime = new NightShiftRuntime({ board, completionValidator: validateCompletion, store, workboard });
+const runtime = new NightShiftRuntime({
+  board,
+  completionValidator: validateCompletion,
+  dispatchMaxStarts: schedulerDispatchMaxStarts,
+  maxWorkboardActive: schedulerMaxWorkboardActive,
+  store,
+  workboard,
+});
 const humanAttempts = new HumanAttemptController({ store, workboard, validateCompletion });
 const checkCompletionUrl = createCompletionUrlChecker();
 let cardCache = [];
@@ -108,6 +117,8 @@ async function handleApi(request, response, url) {
       schedulerStartedAt,
       schedulerRunning: Boolean(schedulerPromise),
       lastSchedulerDurationMs,
+      schedulerDispatchMaxStarts,
+      schedulerMaxWorkboardActive,
       ok: Boolean(lastSchedulerAt) && !lastSchedulerError && Date.now() - Date.parse(lastSchedulerAt) < 90000,
       service: "nightshift-workboard",
     });
@@ -628,6 +639,7 @@ function runScheduler() {
     // One serialized round shares one authoritative board snapshot. API mutations
     // cannot interleave a takeover with a later tick using an older snapshot.
     const result = await serializedOperation(() => runSchedulerPass({
+      dispatchMaxStarts: schedulerDispatchMaxStarts,
       store, runtime, workboard, refreshCards, syncContentItemsManifest,
     }));
     lastSchedulerAt = new Date().toISOString();
@@ -724,6 +736,12 @@ function serializedOperation(operation) {
 
 function serializedTick(instanceId, options) {
   return serializedOperation(() => tickWithFaultProjection({ instanceId, options, runtime, store, workboard }));
+}
+
+function positiveInteger(value, fallback, maximum) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= maximum ? parsed : fallback;
 }
 
 async function refreshCards() {
