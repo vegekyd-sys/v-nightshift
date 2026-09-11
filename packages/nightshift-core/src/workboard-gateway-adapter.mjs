@@ -14,7 +14,10 @@ export class WorkboardGatewayAdapter {
     entry = process.env.NIGHTSHIFT_OPENCLAW_ENTRY,
     env = process.env,
     gatewayUrl = process.env.NIGHTSHIFT_GATEWAY_URL,
+    now = Date.now,
     runner = defaultRunner,
+    sleep = defaultSleep,
+    startIntervalMs = process.env.NIGHTSHIFT_DISPATCH_START_INTERVAL_MS ?? 15_000,
   } = {}) {
     this.board = board;
     this.command = command;
@@ -22,7 +25,12 @@ export class WorkboardGatewayAdapter {
     this.entry = entry;
     this.env = env;
     this.gatewayUrl = gatewayUrl;
+    this.now = now;
     this.runner = runner;
+    this.sleep = sleep;
+    this.startIntervalMs = dispatchInterval(startIntervalMs);
+    this.nextStartAt = 0;
+    this.startGate = Promise.resolve();
   }
 
   async listCards({ cardIds } = {}) {
@@ -98,6 +106,7 @@ export class WorkboardGatewayAdapter {
     // dispatch extensions. Never downgrade to a board-wide dispatch request.
     for (const id of scopedCardIds.slice(0, maxStarts)) {
       try {
+        await this.waitForStartSlot();
         const result = await this.call("workboard.cards.start", { id });
         if (result.card?.id !== id || !result.sessionKey || !result.runId) {
           throw new Error("Native start did not return the requested card and auditable sessionKey/runId");
@@ -111,6 +120,21 @@ export class WorkboardGatewayAdapter {
       }
     }
     return { started, startFailures };
+  }
+
+  async waitForStartSlot() {
+    const previous = this.startGate;
+    let release;
+    this.startGate = new Promise((resolve) => { release = resolve; });
+    await previous;
+    try {
+      const waitMs = Math.max(0, this.nextStartAt - this.now());
+      if (waitMs > 0) await this.sleep(waitMs);
+      const reservedAt = this.now();
+      this.nextStartAt = Math.max(this.nextStartAt, reservedAt) + this.startIntervalMs;
+    } finally {
+      release();
+    }
   }
 
   async getSession(sessionKey, { limit = 300 } = {}) {
@@ -166,6 +190,14 @@ function uniqueCardIds(cardIds) {
     .map((id) => id.trim()))];
 }
 
+function dispatchInterval(value) {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > 60_000) {
+    throw new Error("startIntervalMs must be an integer between 0 and 60000");
+  }
+  return parsed;
+}
+
 export function gatewayIdempotencyLabel(key) {
   const digest = createHash("sha256").update(key).digest("hex").slice(0, 20);
   return `nightshift-action:${digest}`;
@@ -205,6 +237,10 @@ async function defaultRunner(command, args, env) {
       `OpenClaw Gateway RPC failed${error?.code ? ` (exit ${error.code})` : ""}${detail ? `: ${detail}` : ""}`,
     );
   }
+}
+
+function defaultSleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function gatewayRpcFailureDetail(error, token) {

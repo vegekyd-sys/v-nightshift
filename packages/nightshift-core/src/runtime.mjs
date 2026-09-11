@@ -11,8 +11,8 @@ export class NightShiftRuntime {
   constructor({
     board = "nightshift",
     completionValidator = null,
-    dispatchMaxStarts = 1,
-    maxWorkboardActive = 2,
+    dispatchMaxStarts = 2,
+    maxWorkboardActive = 36,
     store,
     workboard,
   }) {
@@ -460,6 +460,7 @@ export class NightShiftRuntime {
           card.status === "ready" && !active.includes(card) && !cardHasActiveClaim(card, now) && !(card.labels ?? []).includes("nightshift:approval"))
           .map((card) => card.id);
         const maxStarts = Math.min(
+          this.dispatchMaxStarts,
           normalizeDispatchBudget(dispatchMaxStarts),
           Math.max(0, this.maxWorkboardActive - activeAcrossBoard),
           Math.max(0, (savedRelease.manifest.spec.concurrency?.perInstance ?? 1) - active.length),

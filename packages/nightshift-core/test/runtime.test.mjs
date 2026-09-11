@@ -457,11 +457,11 @@ test("re-dispatches a previously ready content-item card", async () => {
   store.close();
 });
 
-test("limits one tick to one new native Session even when several cards are ready", async () => {
+test("allows high steady concurrency while limiting one project burst to two new Sessions", async () => {
   const source = await readFile(workflowPath, "utf8");
   const store = new NightShiftStore();
   const workboard = new FakeWorkboard();
-  const runtime = new NightShiftRuntime({ dispatchMaxStarts: 1, maxWorkboardActive: 2, store, workboard });
+  const runtime = new NightShiftRuntime({ store, workboard });
   const release = runtime.publish(source);
   runtime.startInstance({
     id: "NS-RUNTIME-BURST-LIMIT",
@@ -470,19 +470,26 @@ test("limits one tick to one new native Session even when several cards are read
     contentItems: [
       { id: "video-1", title: "Video one", route: "SCENE_EDIT" },
       { id: "video-2", title: "Video two", route: "SCENE_EDIT" },
+      { id: "video-3", title: "Video three", route: "SCENE_EDIT" },
     ],
   });
   store.upsertStageRun({ instanceId: "NS-RUNTIME-BURST-LIMIT", stageId: "plan", status: "done" });
   workboard.cards.push(
+    ...Array.from({ length: 30 }, (_, index) => ({
+      id: `other-running-${index}`,
+      labels: [`instance:NS-OTHER-${index}`, "stage:produce"],
+      status: "running",
+    })),
     { id: "ready-1", labels: ["instance:NS-RUNTIME-BURST-LIMIT", "content-item:video-1", "stage:route"], status: "ready" },
     { id: "ready-2", labels: ["instance:NS-RUNTIME-BURST-LIMIT", "content-item:video-2", "stage:route"], status: "ready" },
+    { id: "ready-3", labels: ["instance:NS-RUNTIME-BURST-LIMIT", "content-item:video-3", "stage:route"], status: "ready" },
   );
 
   await runtime.tick("NS-RUNTIME-BURST-LIMIT", { dispatch: true });
 
   assert.deepEqual(workboard.dispatchCalls, [{
-    maxStarts: 1,
-    options: { cardIds: ["ready-1", "ready-2"] },
+    maxStarts: 2,
+    options: { cardIds: ["ready-1", "ready-2", "ready-3"] },
   }]);
   store.close();
 });
@@ -491,7 +498,7 @@ test("global active capacity blocks another project, preserves live claims, and 
   const source = await readFile(workflowPath, "utf8");
   const store = new NightShiftStore();
   const workboard = new FakeWorkboard();
-  const runtime = new NightShiftRuntime({ dispatchMaxStarts: 1, maxWorkboardActive: 2, store, workboard });
+  const runtime = new NightShiftRuntime({ maxWorkboardActive: 4, store, workboard });
   const release = runtime.publish(source);
   runtime.startInstance({
     id: "NS-RUNTIME-GLOBAL-CAP",
@@ -503,6 +510,8 @@ test("global active capacity blocks another project, preserves live claims, and 
   workboard.cards.push(
     { id: "other-running-1", labels: ["instance:NS-OTHER-1", "stage:produce"], status: "running" },
     { id: "other-running-2", labels: ["instance:NS-OTHER-2", "stage:produce"], execution: { status: "running" }, status: "blocked" },
+    { id: "other-running-3", labels: ["instance:NS-OTHER-3", "stage:produce"], status: "running" },
+    { id: "other-running-4", labels: ["instance:NS-OTHER-4", "stage:produce"], execution: { status: "running" }, status: "review" },
     {
       id: "expired-ready",
       labels: ["instance:NS-RUNTIME-GLOBAL-CAP", "content-item:video-1", "stage:route"],
@@ -514,9 +523,10 @@ test("global active capacity blocks another project, preserves live claims, and 
   await runtime.tick("NS-RUNTIME-GLOBAL-CAP", { dispatch: true });
   assert.deepEqual(workboard.dispatchCalls, []);
 
-  workboard.cards.pop();
-  workboard.cards.pop();
+  workboard.cards.length = 0;
   workboard.cards.push(
+    { id: "other-running-1", labels: ["instance:NS-OTHER-1", "stage:produce"], status: "running" },
+    { id: "other-running-2", labels: ["instance:NS-OTHER-2", "stage:produce"], execution: { status: "running" }, status: "blocked" },
     {
       id: "live-claim-ready",
       labels: ["instance:NS-RUNTIME-GLOBAL-CAP", "content-item:video-1", "stage:route"],

@@ -1,7 +1,7 @@
 import { tickWithFaultProjection } from "./scheduler-state.mjs";
 
 export async function runSchedulerPass({
-  dispatchMaxStarts = 1,
+  dispatchMaxStarts = 8,
   store,
   runtime,
   workboard,

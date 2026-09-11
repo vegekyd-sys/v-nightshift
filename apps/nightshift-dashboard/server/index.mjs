@@ -44,16 +44,18 @@ const workflowPath = resolve(
 const board = process.env.NIGHTSHIFT_BOARD ?? "nightshift-lab";
 const publicHost = process.env.NIGHTSHIFT_PUBLIC_HOST ?? "";
 const publicBaseUrl = process.env.NIGHTSHIFT_PUBLIC_BASE_URL ?? "";
-const schedulerDispatchMaxStarts = positiveInteger(process.env.NIGHTSHIFT_DISPATCH_MAX_STARTS_PER_PASS, 1, 4);
-const schedulerMaxWorkboardActive = positiveInteger(process.env.NIGHTSHIFT_MAX_WORKBOARD_ACTIVE, 2, 8);
+const schedulerDispatchMaxStarts = positiveInteger(process.env.NIGHTSHIFT_DISPATCH_MAX_STARTS_PER_PASS, 8, 36);
+const dispatchMaxStartsPerInstance = positiveInteger(process.env.NIGHTSHIFT_DISPATCH_MAX_STARTS_PER_INSTANCE, 2, 8);
+const dispatchStartIntervalMs = positiveInteger(process.env.NIGHTSHIFT_DISPATCH_START_INTERVAL_MS, 15_000, 60_000);
+const schedulerMaxWorkboardActive = positiveInteger(process.env.NIGHTSHIFT_MAX_WORKBOARD_ACTIVE, 36, 36);
 const publicAuth = await loadPublicAuth(process.env.NIGHTSHIFT_BASIC_AUTH_FILE);
 await mkdir(dataDir, { recursive: true });
 const store = new NightShiftStore(join(dataDir, "nightshift.sqlite"));
-const workboard = new WorkboardGatewayAdapter({ board });
+const workboard = new WorkboardGatewayAdapter({ board, startIntervalMs: dispatchStartIntervalMs });
 const runtime = new NightShiftRuntime({
   board,
   completionValidator: validateCompletion,
-  dispatchMaxStarts: schedulerDispatchMaxStarts,
+  dispatchMaxStarts: dispatchMaxStartsPerInstance,
   maxWorkboardActive: schedulerMaxWorkboardActive,
   store,
   workboard,
@@ -118,6 +120,8 @@ async function handleApi(request, response, url) {
       schedulerRunning: Boolean(schedulerPromise),
       lastSchedulerDurationMs,
       schedulerDispatchMaxStarts,
+      dispatchMaxStartsPerInstance,
+      dispatchStartIntervalMs,
       schedulerMaxWorkboardActive,
       ok: Boolean(lastSchedulerAt) && !lastSchedulerError && Date.now() - Date.parse(lastSchedulerAt) < 90000,
       service: "nightshift-workboard",

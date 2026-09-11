@@ -107,7 +107,7 @@ test("dispatches only explicit card IDs through native exact-card start", async 
 });
 
 test("exact starts stop after ambiguous failure and never launch beyond the start budget", async () => {
-  const adapter = new WorkboardGatewayAdapter();
+  const adapter = new WorkboardGatewayAdapter({ startIntervalMs: 0 });
   const calls = [];
   adapter.call = async (method, params) => {
     calls.push({ method, params });
@@ -124,6 +124,32 @@ test("exact starts stop after ambiguous failure and never launch beyond the star
   calls.length = 0;
   await adapter.dispatch(1, { cardIds: ["first", "third"] });
   assert.equal(calls.length, 1);
+});
+
+test("spaces exact Session starts globally without lowering the final concurrency budget", async () => {
+  let now = 1_000;
+  const waits = [];
+  const starts = [];
+  const adapter = new WorkboardGatewayAdapter({
+    now: () => now,
+    sleep: async (ms) => { waits.push(ms); now += ms; },
+    startIntervalMs: 15_000,
+  });
+  adapter.call = async (_method, params) => {
+    starts.push({ cardId: params.id, at: now });
+    return { card: { id: params.id }, sessionKey: `session:${params.id}`, runId: `run:${params.id}` };
+  };
+
+  const firstProject = await adapter.dispatch(2, { cardIds: ["first", "second"] });
+  const secondProject = await adapter.dispatch(1, { cardIds: ["third"] });
+
+  assert.equal(firstProject.started.length + secondProject.started.length, 3);
+  assert.deepEqual(starts, [
+    { cardId: "first", at: 1_000 },
+    { cardId: "second", at: 16_000 },
+    { cardId: "third", at: 31_000 },
+  ]);
+  assert.deepEqual(waits, [15_000, 15_000]);
 });
 
 

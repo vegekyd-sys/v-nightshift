@@ -71,7 +71,7 @@ test("pausing a project still reconciles an already running native attempt witho
   assert.equal(f.controls.get("P0").automaticDispatch, false);
 });
 
-test("one scheduler pass shares a single Session start budget across active projects", async () => {
+test("one scheduler pass shares a two-Session start budget across active projects", async () => {
   const f = fixture();
   f.controls.get("P0").automaticDispatch = true;
   f.runtime.tick = async (id, options) => {
@@ -81,9 +81,26 @@ test("one scheduler pass shares a single Session start budget across active proj
       : { applied: [], dispatch: null };
   };
 
-  const result = await runSchedulerPass({ ...f, dispatchMaxStarts: 1 });
+  const result = await runSchedulerPass({ ...f, dispatchMaxStarts: 2 });
 
-  assert.deepEqual(f.seen.map(({ dispatchMaxStarts }) => dispatchMaxStarts), [1, 0]);
-  assert.equal(result.dispatched, 1);
-  assert.equal(result.dispatchMaxStarts, 1);
+  assert.deepEqual(f.seen.map(({ dispatchMaxStarts }) => dispatchMaxStarts), [2, 1]);
+  assert.equal(result.dispatched, 2);
+  assert.equal(result.dispatchMaxStarts, 2);
+});
+
+test("the default ramp budget starts at most eight Sessions across many projects", async () => {
+  const f = fixture();
+  for (let index = 0; index < 9; index++) f.controls.get(`P${index}`).automaticDispatch = true;
+  f.runtime.tick = async (id, options) => {
+    f.seen.push({ id, dispatchMaxStarts: options.dispatchMaxStarts });
+    return options.dispatchMaxStarts > 0
+      ? { applied: [], dispatch: { started: [{ card: { id: `${id}-card`, labels: [`instance:${id}`], status: "running" } }] } }
+      : { applied: [], dispatch: null };
+  };
+
+  const result = await runSchedulerPass(f);
+
+  assert.equal(result.dispatchMaxStarts, 8);
+  assert.equal(result.dispatched, 8);
+  assert.equal(f.seen.filter(({ dispatchMaxStarts }) => dispatchMaxStarts > 0).length, 8);
 });
