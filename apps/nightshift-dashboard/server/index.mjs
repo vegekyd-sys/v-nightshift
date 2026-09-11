@@ -1,6 +1,7 @@
 import { runSchedulerPass } from "../../../packages/nightshift-core/src/scheduler-pass.mjs";
 import { tickWithFaultProjection } from "../../../packages/nightshift-core/src/scheduler-state.mjs";
 import { createCompletionUrlChecker } from "./completion-url.mjs";
+import { SchedulerCircuit } from "./scheduler-circuit.mjs";
 import { HumanAttemptController, humanCompletionEvidence, publicHumanAttempt, evidenceHash } from "../../../packages/nightshift-core/src/human-attempt.mjs";
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
@@ -49,6 +50,7 @@ const dispatchMaxStartsPerInstance = positiveInteger(process.env.NIGHTSHIFT_DISP
 const dispatchStartBurst = positiveInteger(process.env.NIGHTSHIFT_DISPATCH_START_BURST, 3, 8);
 const dispatchStartIntervalMs = positiveInteger(process.env.NIGHTSHIFT_DISPATCH_START_INTERVAL_MS, 15_000, 60_000);
 const schedulerMaxWorkboardActive = positiveInteger(process.env.NIGHTSHIFT_MAX_WORKBOARD_ACTIVE, 36, 36);
+const schedulerFailureCooldownMs = positiveInteger(process.env.NIGHTSHIFT_SCHEDULER_FAILURE_COOLDOWN_MS, 300_000, 3_600_000);
 const publicAuth = await loadPublicAuth(process.env.NIGHTSHIFT_BASIC_AUTH_FILE);
 await mkdir(dataDir, { recursive: true });
 const store = new NightShiftStore(join(dataDir, "nightshift.sqlite"));
@@ -75,6 +77,7 @@ let schedulerStartedAt = null;
 let lastSchedulerDurationMs = null;
 let lastSchedulerError = null;
 let schedulerPromise = null;
+const schedulerCircuit = new SchedulerCircuit({ cooldownMs: schedulerFailureCooldownMs });
 let tickQueue = Promise.resolve();
 let shuttingDown = false;
 const contentManifestHashes = new Map();
@@ -116,6 +119,7 @@ server.listen(port, host, () => {
 
 async function handleApi(request, response, url) {
   if (request.method === "GET" && url.pathname === "/api/health") {
+    const circuit = schedulerCircuit.snapshot();
     json(response, 200, {
       board,
       cardsUpdatedAt,
@@ -129,6 +133,11 @@ async function handleApi(request, response, url) {
       dispatchStartBurst,
       dispatchStartIntervalMs,
       schedulerMaxWorkboardActive,
+      schedulerFailureCooldownMs,
+      schedulerCircuitOpen: circuit.open,
+      schedulerCircuitOpenUntil: circuit.openUntil,
+      schedulerCircuitProbeRequired: circuit.probeRequired,
+      schedulerCircuitReason: circuit.reason,
       ok: Boolean(lastSchedulerAt) && !lastSchedulerError && Date.now() - Date.parse(lastSchedulerAt) < 90000,
       service: "nightshift-workboard",
     });
@@ -643,6 +652,8 @@ async function ensureSeedInstance() {
 
 function runScheduler() {
   if (schedulerPromise) return schedulerPromise;
+  const circuitDecision = schedulerCircuit.beforePass();
+  if (!circuitDecision.run) return Promise.resolve({ skipped: "scheduler-circuit-open", ...circuitDecision });
   schedulerPromise = (async () => {
     schedulerStartedAt = new Date().toISOString();
     const started = Date.now();
@@ -650,14 +661,17 @@ function runScheduler() {
     // cannot interleave a takeover with a later tick using an older snapshot.
     const result = await serializedOperation(() => runSchedulerPass({
       dispatchMaxStarts: schedulerDispatchMaxStarts,
+      dispatchEnabled: circuitDecision.dispatch,
       store, runtime, workboard, refreshCards, syncContentItemsManifest,
     }));
     lastSchedulerAt = new Date().toISOString();
     lastSchedulerDurationMs = Date.now() - started;
     lastSchedulerError = result.warnings.length ? result.warnings.join("; ") : null;
+    schedulerCircuit.recordPass(result.warnings, { probe: circuitDecision.probe });
   })().catch((error) => {
     lastSchedulerAt = new Date().toISOString();
     lastSchedulerError = error.message;
+    schedulerCircuit.recordFailure(error.message);
     console.error(`Night Shift scheduler failed: ${error.message}`);
   }).finally(() => {
     schedulerPromise = null;

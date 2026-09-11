@@ -2,6 +2,7 @@ import { tickWithFaultProjection } from "./scheduler-state.mjs";
 
 export async function runSchedulerPass({
   dispatchMaxStarts = 36,
+  dispatchEnabled = true,
   store,
   runtime,
   workboard,
@@ -45,13 +46,13 @@ export async function runSchedulerPass({
     try {
       const result = await tickWithFaultProjection({
         instanceId: instance.id,
-        options: { dispatch: true, dispatchMaxStarts: remainingStarts, cards },
+        options: { dispatch: dispatchEnabled, dispatchMaxStarts: dispatchEnabled ? remainingStarts : 0, cards },
         runtime,
         store,
         workboard,
       });
       const startedCards = (result.dispatch?.started ?? []).map((entry) => entry.card).filter(Boolean);
-      if (startedCards.length > 0) {
+      if (dispatchEnabled && startedCards.length > 0) {
         remainingStarts = Math.max(0, remainingStarts - startedCards.length);
         cards = mergeCards(cards, startedCards);
       }
@@ -63,7 +64,8 @@ export async function runSchedulerPass({
   if (changed) await refreshCards();
   return {
     dispatchMaxStarts,
-    dispatched: dispatchMaxStarts - remainingStarts,
+    dispatched: dispatchEnabled ? dispatchMaxStarts - remainingStarts : 0,
+    dispatchEnabled,
     warnings,
     instances: eligible.length,
     pausedInstances: instances.length - eligible.length,

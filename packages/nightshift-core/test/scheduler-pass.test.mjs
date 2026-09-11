@@ -104,3 +104,17 @@ test("the default scheduler budget preserves high steady concurrency across many
   assert.equal(result.dispatched, 10);
   assert.equal(f.seen.filter(({ dispatchMaxStarts }) => dispatchMaxStarts > 0).length, 10);
 });
+
+test("a recovery probe reconciles projects without dispatching new Sessions", async () => {
+  const f = fixture();
+  f.runtime.tick = async (id, options) => {
+    f.seen.push({ id, dispatch: options.dispatch, dispatchMaxStarts: options.dispatchMaxStarts });
+    return { applied: [], dispatch: null };
+  };
+
+  const result = await runSchedulerPass({ ...f, dispatchEnabled: false });
+
+  assert.deepEqual(f.seen, [{ id: "P47", dispatch: false, dispatchMaxStarts: 0 }]);
+  assert.equal(result.dispatchEnabled, false);
+  assert.equal(result.dispatched, 0);
+});
