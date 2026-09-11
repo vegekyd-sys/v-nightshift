@@ -35,3 +35,10 @@ test("a failed probe extends the circuit and ordinary warnings do not open it", 
   assert.equal(circuit.snapshot().open, true);
   assert.equal(circuit.beforePass().retryAfterMs, 60_000);
 });
+
+test("service startup can require a dispatch-free probe before the first live pass", () => {
+  const circuit = new SchedulerCircuit({ startWithProbe: true });
+  assert.deepEqual(circuit.beforePass(), { dispatch: false, probe: true, run: true });
+  circuit.recordPass([], { probe: true });
+  assert.deepEqual(circuit.beforePass(), { dispatch: true, run: true });
+});

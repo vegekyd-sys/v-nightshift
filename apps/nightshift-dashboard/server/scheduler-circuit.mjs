@@ -5,12 +5,12 @@ export function isGatewayPressureFailure(message) {
 }
 
 export class SchedulerCircuit {
-  constructor({ cooldownMs = DEFAULT_COOLDOWN_MS, now = () => Date.now() } = {}) {
+  constructor({ cooldownMs = DEFAULT_COOLDOWN_MS, now = () => Date.now(), startWithProbe = false } = {}) {
     this.cooldownMs = cooldownMs;
     this.now = now;
     this.openUntilMs = 0;
-    this.reason = null;
-    this.probeRequired = false;
+    this.reason = startWithProbe ? "startup recovery probe required" : null;
+    this.probeRequired = startWithProbe;
   }
 
   beforePass() {
