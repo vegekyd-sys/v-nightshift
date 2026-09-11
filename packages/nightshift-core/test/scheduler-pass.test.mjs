@@ -88,7 +88,7 @@ test("one scheduler pass shares a two-Session start budget across active project
   assert.equal(result.dispatchMaxStarts, 2);
 });
 
-test("the default ramp budget starts at most eight Sessions across many projects", async () => {
+test("the default scheduler budget preserves high steady concurrency across many projects", async () => {
   const f = fixture();
   for (let index = 0; index < 9; index++) f.controls.get(`P${index}`).automaticDispatch = true;
   f.runtime.tick = async (id, options) => {
@@ -100,7 +100,7 @@ test("the default ramp budget starts at most eight Sessions across many projects
 
   const result = await runSchedulerPass(f);
 
-  assert.equal(result.dispatchMaxStarts, 8);
-  assert.equal(result.dispatched, 8);
-  assert.equal(f.seen.filter(({ dispatchMaxStarts }) => dispatchMaxStarts > 0).length, 8);
+  assert.equal(result.dispatchMaxStarts, 36);
+  assert.equal(result.dispatched, 10);
+  assert.equal(f.seen.filter(({ dispatchMaxStarts }) => dispatchMaxStarts > 0).length, 10);
 });

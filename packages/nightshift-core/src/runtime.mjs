@@ -11,7 +11,7 @@ export class NightShiftRuntime {
   constructor({
     board = "nightshift",
     completionValidator = null,
-    dispatchMaxStarts = 2,
+    dispatchMaxStarts = 8,
     maxWorkboardActive = 36,
     store,
     workboard,

@@ -457,7 +457,7 @@ test("re-dispatches a previously ready content-item card", async () => {
   store.close();
 });
 
-test("allows high steady concurrency while limiting one project burst to two new Sessions", async () => {
+test("allows high steady concurrency without adding a lower per-project Session cap", async () => {
   const source = await readFile(workflowPath, "utf8");
   const store = new NightShiftStore();
   const workboard = new FakeWorkboard();
@@ -488,7 +488,7 @@ test("allows high steady concurrency while limiting one project burst to two new
   await runtime.tick("NS-RUNTIME-BURST-LIMIT", { dispatch: true });
 
   assert.deepEqual(workboard.dispatchCalls, [{
-    maxStarts: 2,
+    maxStarts: 3,
     options: { cardIds: ["ready-1", "ready-2", "ready-3"] },
   }]);
   store.close();

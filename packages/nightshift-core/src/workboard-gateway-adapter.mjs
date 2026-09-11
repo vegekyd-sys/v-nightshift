@@ -17,6 +17,7 @@ export class WorkboardGatewayAdapter {
     now = Date.now,
     runner = defaultRunner,
     sleep = defaultSleep,
+    startBurst = process.env.NIGHTSHIFT_DISPATCH_START_BURST ?? 3,
     startIntervalMs = process.env.NIGHTSHIFT_DISPATCH_START_INTERVAL_MS ?? 15_000,
   } = {}) {
     this.board = board;
@@ -28,8 +29,10 @@ export class WorkboardGatewayAdapter {
     this.now = now;
     this.runner = runner;
     this.sleep = sleep;
+    this.startBurst = dispatchBurst(startBurst);
     this.startIntervalMs = dispatchInterval(startIntervalMs);
-    this.nextStartAt = 0;
+    this.startWindowAt = null;
+    this.startsInWindow = 0;
     this.startGate = Promise.resolve();
   }
 
@@ -128,10 +131,19 @@ export class WorkboardGatewayAdapter {
     this.startGate = new Promise((resolve) => { release = resolve; });
     await previous;
     try {
-      const waitMs = Math.max(0, this.nextStartAt - this.now());
-      if (waitMs > 0) await this.sleep(waitMs);
-      const reservedAt = this.now();
-      this.nextStartAt = Math.max(this.nextStartAt, reservedAt) + this.startIntervalMs;
+      let current = this.now();
+      if (this.startWindowAt === null || current >= this.startWindowAt + this.startIntervalMs) {
+        this.startWindowAt = current;
+        this.startsInWindow = 0;
+      }
+      if (this.startsInWindow >= this.startBurst) {
+        const waitMs = Math.max(0, this.startWindowAt + this.startIntervalMs - current);
+        if (waitMs > 0) await this.sleep(waitMs);
+        current = this.now();
+        this.startWindowAt = current;
+        this.startsInWindow = 0;
+      }
+      this.startsInWindow += 1;
     } finally {
       release();
     }
@@ -194,6 +206,14 @@ function dispatchInterval(value) {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > 60_000) {
     throw new Error("startIntervalMs must be an integer between 0 and 60000");
+  }
+  return parsed;
+}
+
+function dispatchBurst(value) {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 36) {
+    throw new Error("startBurst must be an integer between 1 and 36");
   }
   return parsed;
 }
