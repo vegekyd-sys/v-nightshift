@@ -2,6 +2,7 @@
 
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { validateGovernanceManifest } from "../packages/nightshift-core/src/index.mjs";
 
 const baseUrl = process.env.NIGHTSHIFT_URL ?? "http://127.0.0.1:24879";
 const args = process.argv.slice(2);
@@ -26,7 +27,7 @@ async function run(input) {
       method: "POST",
     });
   }
-  if (resource === "projects" && action === "list") return api("/api/instances");
+  if (resource === "projects" && action === "list") return api(`/api/instances${input.includes("--include-archived") ? "?includeArchived=1" : ""}`);
   if (resource === "projects" && action === "get" && subject) return api(`/api/instances/${encodeURIComponent(subject)}`);
   if (resource === "projects" && action === "monitor" && subject) {
     const [project, cardsResult] = await Promise.all([
@@ -71,6 +72,42 @@ async function run(input) {
   }
   if (resource === "projects" && action === "pause" && subject) {
     return api(`/api/instances/${encodeURIComponent(subject)}/pause`, { body: "{}", method: "POST" });
+  }
+  if (resource === "projects" && ["archive", "restore"].includes(action) && subject) {
+    return api(`/api/instances/${encodeURIComponent(subject)}/${action}`, {
+      body: JSON.stringify({ actor: option(input, "--actor") ?? "Night Shift operator", reason: option(input, "--reason") ?? `${action} requested by operator` }),
+      method: "POST",
+    });
+  }
+  if (resource === "governance" && action === "audit") {
+    return api(`/api/governance/audit${input.includes("--refresh") ? "?refresh=1" : ""}`);
+  }
+  if (resource === "governance" && ["archive", "restore"].includes(action) && subject) {
+    const manifest = await readJson(subject);
+    const [instancesResult, cardsResult] = await Promise.all([
+      api("/api/instances?includeArchived=1"),
+      api("/api/cards?refresh=1&includeArchived=1"),
+    ]);
+    const plan = validateGovernanceManifest(manifest, { cards: cardsResult.cards, instances: instancesResult.instances });
+    if (!input.includes("--apply")) return { action, apply: false, plan };
+    const actor = option(input, "--actor") ?? "Night Shift governance";
+    const reason = option(input, "--reason") ?? manifest.reason ?? `Governance ${action}`;
+    const results = [];
+    for (const project of plan) {
+      if (action === "archive" && project.alreadyArchived) {
+        results.push({ id: project.id, status: "archived", reused: true });
+        continue;
+      }
+      if (action === "restore" && !project.alreadyArchived) {
+        results.push({ id: project.id, status: project.status, reused: true });
+        continue;
+      }
+      results.push(await api(`/api/instances/${encodeURIComponent(project.id)}/${action}`, {
+        body: JSON.stringify({ actor, reason }),
+        method: "POST",
+      }));
+    }
+    return { action, apply: true, plan, results };
   }
   if (resource === "projects" && action === "inputs" && subject) {
     const file = option(input, "--file");
@@ -126,7 +163,7 @@ async function run(input) {
       method: "POST",
     });
   }
-  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|monitor|preflight|create|start|pause | projects inputs <id> --file <json> | operations reserve|checkpoint <card-id> | cards list|session|approve|changes|reject|retry");
+  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|monitor|preflight|create|start|pause|archive|restore | projects inputs <id> --file <json> | governance audit [--refresh] | governance archive|restore <manifest.json> [--apply] | operations reserve|checkpoint <card-id> | cards list|session|approve|changes|reject|retry");
 }
 
 async function resolveWorkflow(project) {

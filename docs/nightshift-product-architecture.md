@@ -99,6 +99,8 @@ the browser can seek without loading the full file.
 - Shows the project input, outputs, approvals, total cost/usage, and external
   object links.
 - Provides pause, resume, retry-safe, cancel, and archive operations.
+- Treats project governance as advisory lifecycle metadata (`production`, `test`, `acceptance`, or `canary`). Missing metadata never blocks creation or execution. Expired non-production projects become audit candidates and are soft-archived only after running work reaches zero.
+- Soft archive hides the project and its native cards without rewriting card status, Session history, comments, approvals, or artifacts. Restore never dispatches work; a previously active project returns paused and requires an explicit start.
 - All operations append audit events; they do not rewrite history.
 
 ## Runtime architecture

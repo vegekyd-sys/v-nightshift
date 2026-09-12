@@ -262,17 +262,48 @@ export class NightShiftStore {
     return this.getInstance(id);
   }
 
-  archiveInstance(id, now = new Date()) {
+  archiveInstance(id, now = new Date(), details = {}) {
     const current = this.getInstance(id);
     if (!current) throw new Error(`Unknown instance ${id}`);
     const archived = this.updateInstanceStatus(id, "archived", now);
     this.appendEvent({
       instanceId: id,
       type: "instance.archived",
-      payload: { previousStatus: current.status },
+      payload: {
+        version: 1,
+        previousStatus: current.status,
+        actor: details.actor ?? null,
+        reason: details.reason ?? null,
+        cardCounts: details.cardCounts ?? null,
+      },
       now,
     });
     return archived;
+  }
+
+  restoreInstance(id, now = new Date(), details = {}) {
+    const current = this.getInstance(id);
+    if (!current) throw new Error(`Unknown instance ${id}`);
+    if (current.status !== "archived") throw new Error(`Instance ${id} is not archived`);
+    const archivedEvent = this.listEvents(id, 1000).find((event) => event.type === "instance.archived");
+    if (!archivedEvent) throw new Error(`Instance ${id} has no archive snapshot`);
+    const previousStatus = archivedEvent.payload?.previousStatus ?? "paused";
+    const restoredStatus = previousStatus === "active" ? "paused" : previousStatus;
+    const restored = this.updateInstanceStatus(id, restoredStatus, now);
+    this.appendEvent({
+      instanceId: id,
+      type: "instance.restored",
+      payload: {
+        version: 1,
+        archiveEventId: archivedEvent.eventId,
+        previousStatus,
+        restoredStatus,
+        actor: details.actor ?? null,
+        reason: details.reason ?? null,
+      },
+      now,
+    });
+    return restored;
   }
 
   updateInstanceInputs(id, patch, now = new Date()) {

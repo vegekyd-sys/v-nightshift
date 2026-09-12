@@ -13,11 +13,13 @@ import { loadPublicAuth, requiresPublicAuth, verifyPublicAuth, resolveOperatorId
 import { resolveCardDecisionContext } from "./decision-context.mjs";
 import {
   deliverableArtifactPaths,
+  auditNightShiftGovernance,
   findNightShiftExternalOperation,
   humanStageHandoff,
   NightShiftRuntime,
   NightShiftStore,
   normalizeArtifactPath,
+  normalizeProjectGovernance,
   normalizeDeliverablesManifest,
   normalizeStageHandoff,
   presentStageHandoff,
@@ -176,8 +178,9 @@ async function handleApi(request, response, url) {
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/instances") {
+    const includeArchived = url.searchParams.get("includeArchived") === "1";
     json(response, 200, {
-      instances: store.listInstances().filter((instance) => instance.status !== "archived").map((instance) => withInstanceLinks({
+      instances: store.listInstances().filter((instance) => includeArchived || instance.status !== "archived").map((instance) => withInstanceLinks({
         ...instance,
         contentItemCount: store.listContentItems(instance.id).length,
         contentItemRuns: store.listContentItemRuns(instance.id),
@@ -215,21 +218,66 @@ async function handleApi(request, response, url) {
       json(response, 409, { error: `项目仍有 ${running.length} 个 Agent 正在工作，请等待完成或先暂停项目` });
       return;
     }
-    for (const card of projectCards.filter((entry) => !["done", "cancelled"].includes(entry.status))) {
-      await workboard.moveCard(card.id, "cancelled");
-    }
-    const archived = store.archiveInstance(instanceId);
+    const archived = store.archiveInstance(instanceId, new Date(), {
+      actor: operatorIdentity(request, {}),
+      reason: "Archived from Live Board",
+      cardCounts: countCardsByStatus(projectCards),
+    });
     refreshCards().catch((error) => {
       lastSchedulerError = error.message;
     });
     json(response, 200, { id: archived.id, status: archived.status });
     return;
   }
+  const instanceArchiveMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/(archive|restore)$/);
+  if (request.method === "POST" && instanceArchiveMatch) {
+    const instanceId = decodeURIComponent(instanceArchiveMatch[1]);
+    const instance = store.getInstance(instanceId);
+    const action = instanceArchiveMatch[2];
+    if (!instance) {
+      json(response, 404, { error: "Project not found" });
+      return;
+    }
+    const body = await bodyJson(request);
+    const actor = operatorIdentity(request, body);
+    if (action === "archive") {
+      if (instance.status === "archived") {
+        json(response, 200, { ...withInstanceLinks(instance), reused: true });
+        return;
+      }
+      const cards = (await refreshCards()).filter((card) => cardInstanceId(card) === instanceId);
+      const running = cards.filter((card) => card.status === "running");
+      if (running.length > 0) {
+        json(response, 409, { error: `项目仍有 ${running.length} 个 Agent 正在工作，不能归档` });
+        return;
+      }
+      const archived = store.archiveInstance(instanceId, new Date(), {
+        actor,
+        reason: body.reason ?? "Governance archive",
+        cardCounts: countCardsByStatus(cards),
+      });
+      json(response, 200, { ...withInstanceLinks(archived), cardCounts: countCardsByStatus(cards), softArchive: true });
+      return;
+    }
+    if (instance.status !== "archived") {
+      json(response, 409, { error: "Project is not archived" });
+      return;
+    }
+    const restored = store.restoreInstance(instanceId, new Date(), { actor, reason: body.reason ?? "Governance restore" });
+    json(response, 200, { ...withInstanceLinks(restored), dispatch: false });
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/governance/audit") {
+    const cards = url.searchParams.get("refresh") === "1" ? await refreshCards() : cardCache;
+    json(response, 200, auditNightShiftGovernance({ cards, instances: store.listInstances() }));
+    return;
+  }
   if (request.method === "GET" && url.pathname === "/api/cards") {
     const cards = url.searchParams.get("refresh") === "1" ? await refreshCards() : cardCache;
     const status = url.searchParams.get("status");
+    const includeArchived = url.searchParams.get("includeArchived") === "1";
     const instances = store.listInstances().filter((instance) => instance.status !== "archived");
-    const filtered = visibleCards(cards, instances);
+    const filtered = includeArchived ? cards : visibleCards(cards, instances);
     json(response, 200, { cards: (status ? filtered.filter((card) => card.status === status) : filtered).map(withCardLinks) });
     return;
   }
@@ -687,7 +735,9 @@ async function startInstance(instance) {
     ...instance,
     inputs: {
       ...(instance.inputs ?? {}),
+      governance: normalizeProjectGovernance(instance),
       nightshift: {
+        ...(instance.inputs?.nightshift ?? {}),
         instanceDir,
         contentItemsManifestPath: join(instanceDir, "content-items.json"),
         projectInputsPath: join(instanceDir, "project-inputs.json"),
@@ -1220,7 +1270,11 @@ function withWorkflowLinks(release) {
 }
 
 function withInstanceLinks(instance) {
-  return { ...instance, control: store.getInstanceControl(instance.id), links: projectLinks(instance.id) };
+  return { ...instance, governance: normalizeProjectGovernance(instance), control: store.getInstanceControl(instance.id), links: projectLinks(instance.id) };
+}
+
+function countCardsByStatus(cards) {
+  return Object.fromEntries([...new Set(cards.map((card) => card.status))].sort().map((status) => [status, cards.filter((card) => card.status === status).length]));
 }
 
 function withCardLinks(card) {

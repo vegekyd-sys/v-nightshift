@@ -136,10 +136,30 @@ test("archiving a project keeps it recoverable and records an audit event", asyn
     status: "paused",
   });
 
-  const archived = store.archiveInstance("NS-ARCHIVE-1", new Date("2026-08-23T12:00:00Z"));
+  const archived = store.archiveInstance("NS-ARCHIVE-1", new Date("2026-08-23T12:00:00Z"), {
+    actor: "V",
+    reason: "expired test",
+    cardCounts: { ready: 3 },
+  });
 
   assert.equal(archived.status, "archived");
   assert.equal(store.listEvents("NS-ARCHIVE-1")[0].type, "instance.archived");
   assert.equal(store.listEvents("NS-ARCHIVE-1")[0].payload.previousStatus, "paused");
+  assert.equal(store.listEvents("NS-ARCHIVE-1")[0].payload.reason, "expired test");
+
+  const restored = store.restoreInstance("NS-ARCHIVE-1", new Date("2026-08-24T12:00:00Z"), { actor: "V" });
+  assert.equal(restored.status, "paused");
+  assert.equal(store.listEvents("NS-ARCHIVE-1")[0].type, "instance.restored");
+  store.close();
+});
+
+test("restoring an archived active project is fail-safe paused", async () => {
+  const source = await import("node:fs/promises").then(({ readFile }) => readFile(fixture, "utf8"));
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const store = new NightShiftStore();
+  store.saveRelease(release, source);
+  store.createInstance({ id: "NS-ARCHIVE-ACTIVE", name: "Active test", workflowSha256: release.metadata.workflowSha256, status: "active" });
+  store.archiveInstance("NS-ARCHIVE-ACTIVE");
+  assert.equal(store.restoreInstance("NS-ARCHIVE-ACTIVE").status, "paused");
   store.close();
 });
