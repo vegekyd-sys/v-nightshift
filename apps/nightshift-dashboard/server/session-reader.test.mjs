@@ -7,6 +7,7 @@ test("deduplicates concurrent and repeated running Session reads", async () => {
   let timestamp = 1_000;
   const readSession = createSessionReader({
     getSession: async () => ({ calls: ++calls }),
+    maxStartsPerWindow: 10,
     now: () => timestamp,
     runningTtlMs: 30_000,
   });
@@ -40,4 +41,23 @@ test("keeps terminal Session reads immutable in the bounded cache", async () => 
   assert.equal(first.calls, 1);
   assert.equal(cached.calls, 1);
   assert.equal(calls, 1);
+});
+
+test("globally rejects distinct Session cache misses above the server budget", async () => {
+  let calls = 0;
+  let timestamp = 1_000;
+  const readSession = createSessionReader({
+    getSession: async () => ({ calls: ++calls }),
+    now: () => timestamp,
+  });
+
+  await readSession({ cacheKey: "card-a:run", limit: 80, sessionKey: "session-a" });
+  await assert.rejects(
+    readSession({ cacheKey: "card-b:run", limit: 80, sessionKey: "session-b" }),
+    (error) => error.statusCode === 429,
+  );
+  timestamp += 30_001;
+  await readSession({ cacheKey: "card-b:run", limit: 80, sessionKey: "session-b" });
+
+  assert.equal(calls, 2);
 });

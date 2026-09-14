@@ -113,7 +113,10 @@ const server = createServer(async (request, response) => {
     }
     await serveStatic(response, url.pathname);
   } catch (error) {
-    json(response, 500, { error: error.message });
+    const statusCode = Number.isInteger(error.statusCode) && error.statusCode >= 400 && error.statusCode <= 599
+      ? error.statusCode
+      : 500;
+    json(response, statusCode, { error: error.message });
   }
 });
 
