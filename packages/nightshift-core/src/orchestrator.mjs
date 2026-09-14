@@ -87,7 +87,16 @@ export function planNextActions({
           contentItemId: contentItem.id,
           stageId: stage.id,
           idempotencyKey: actionKey(release, instance, stage, stage.actor === "human" ? "review" : "run", contentItem),
-          card: cardPayload(release, instance, stage, stage.actor === "human" ? "review" : "ready", contentItem, resourceKey, contentItems),
+          card: cardPayload(
+            release,
+            instance,
+            stage,
+            stage.actor === "human" ? "review" : "ready",
+            contentItem,
+            resourceKey,
+            contentItems,
+            dependencyCardIdsForContentItem(stage, stageById, latestRuns, latestItemRuns, contentItem.id),
+          ),
         });
         if (resourceKey) reservedResources.add(resourceKey);
       }
@@ -139,7 +148,16 @@ export function planNextActions({
         instanceId: instance.id,
         stageId: stage.id,
         idempotencyKey: actionKey(release, instance, stage, "review"),
-        card: cardPayload(release, instance, stage, "review", null, null, contentItems),
+        card: cardPayload(
+          release,
+          instance,
+          stage,
+          "review",
+          null,
+          null,
+          contentItems,
+          dependencyCardIdsForProject(stage, stageById, latestRuns, latestItemRuns, contentItems),
+        ),
       });
       continue;
     }
@@ -152,7 +170,16 @@ export function planNextActions({
         instanceId: instance.id,
         stageId: stage.id,
         idempotencyKey: actionKey(release, instance, stage, "run"),
-        card: cardPayload(release, instance, stage, "ready", null, resourceKey, contentItems),
+        card: cardPayload(
+          release,
+          instance,
+          stage,
+          "ready",
+          null,
+          resourceKey,
+          contentItems,
+          dependencyCardIdsForProject(stage, stageById, latestRuns, latestItemRuns, contentItems),
+        ),
       });
       if (resourceKey) reservedResources.add(resourceKey);
     }
@@ -161,7 +188,7 @@ export function planNextActions({
   return actions;
 }
 
-function cardPayload(release, instance, stage, status, contentItem = null, resourceKey = null, contentItems = []) {
+function cardPayload(release, instance, stage, status, contentItem = null, resourceKey = null, contentItems = [], parents = []) {
   const inputHash = instance.inputHash ?? hashJson(instance.inputs ?? {});
   const agentRole = stage.agentRole ?? release.spec.ownerAgentRole;
   const assignedAgent = stage.actor === "agent" ? instance.agentBindings?.[agentRole] : null;
@@ -182,6 +209,7 @@ function cardPayload(release, instance, stage, status, contentItem = null, resou
       `stage:${stage.id}`,
       ...(contentItem ? [`content-item:${contentItem.id}`, `route:${contentItem.route ?? "UNROUTED"}`] : []),
     ],
+    parents,
     automation: {
       workflowId: release.metadata.id,
       workflowVersion: release.metadata.version,
@@ -200,6 +228,35 @@ function cardPayload(release, instance, stage, status, contentItem = null, resou
       resourceKey,
     },
   };
+}
+
+function dependencyCardIdsForProject(stage, stageById, projectRuns, itemRuns, contentItems) {
+  const ids = [];
+  for (const dependency of stage.needs ?? []) {
+    const dependencyStage = stageById.get(dependency);
+    if (dependencyStage?.scope === "content-item") {
+      for (const item of contentItems) {
+        const run = itemRuns.get(contentItemRunKey(item.id, dependency));
+        if (run?.cardId) ids.push(run.cardId);
+      }
+      continue;
+    }
+    const run = projectRuns.get(dependency);
+    if (run?.cardId) ids.push(run.cardId);
+  }
+  return [...new Set(ids)];
+}
+
+function dependencyCardIdsForContentItem(stage, stageById, projectRuns, itemRuns, contentItemId) {
+  const ids = [];
+  for (const dependency of stage.needs ?? []) {
+    const dependencyStage = stageById.get(dependency);
+    const run = dependencyStage?.scope === "content-item"
+      ? itemRuns.get(contentItemRunKey(contentItemId, dependency))
+      : projectRuns.get(dependency);
+    if (run?.cardId) ids.push(run.cardId);
+  }
+  return [...new Set(ids)];
 }
 
 function activeResourceLocks({ instance, itemById, latestItemRuns, latestRuns, stageById }) {

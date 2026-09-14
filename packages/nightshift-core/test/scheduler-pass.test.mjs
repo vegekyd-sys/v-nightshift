@@ -118,3 +118,30 @@ test("a recovery probe reconciles projects without dispatching new Sessions", as
   assert.equal(result.dispatchEnabled, false);
   assert.equal(result.dispatched, 0);
 });
+
+test("dynamic Gateway capacity subtracts already running cards before dispatch", async () => {
+  const f = fixture();
+  f.cards[0].status = "running";
+  f.cards[1].execution = { status: "running" };
+  f.runtime.tick = async (id, options) => {
+    f.seen.push({ id, dispatchMaxStarts: options.dispatchMaxStarts });
+    return { applied: [], dispatch: null };
+  };
+
+  await runSchedulerPass({ ...f, dispatchMaxStarts: 10, maxWorkboardActive: 3 });
+
+  assert.deepEqual(f.seen, [{ id: "P47", dispatchMaxStarts: 1 }]);
+});
+
+test("returns the earliest non-blocking dispatch-window retry", async () => {
+  const f = fixture();
+  f.controls.get("P0").automaticDispatch = true;
+  f.runtime.tick = async (id) => ({
+    applied: [],
+    dispatch: { retryAfterMs: id === "P0" ? 8_000 : 12_000, started: [] },
+  });
+
+  const result = await runSchedulerPass(f);
+
+  assert.equal(result.retryAfterMs, 8_000);
+});

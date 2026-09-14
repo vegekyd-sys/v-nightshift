@@ -13,6 +13,7 @@ export { actionKey, buildAgentBrief, nativeActionKey, planNextActions, redactSen
 export { findNightShiftExternalOperation, resolveNightShiftCardContext, resolveNightShiftOperationKeys } from "./card-context.mjs";
 export { WorkboardCliAdapter, idempotencyLabel } from "./workboard-adapter.mjs";
 export { NightShiftStore } from "./store.mjs";
+export { createReplaySnapshot, replaySnapshotMetrics } from "./replay-snapshot.mjs";
 export {
   WorkboardGatewayAdapter,
   gatewayIdempotencyLabel,

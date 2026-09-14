@@ -80,6 +80,31 @@ test("recovers a terminal Agent Session after validated outputs and advances", a
   store.close();
 });
 
+test("event reconciliation trusts native running state without polling thirty Sessions", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard });
+  const release = runtime.publish(source);
+  runtime.startInstance({ id: "NS-RUNTIME-THIRTY", workflowSha256: release.workflowSha256 });
+  for (let index = 0; index < 30; index += 1) {
+    workboard.cards.push({
+      id: `running-${index}`,
+      status: "running",
+      sessionKey: `agent:main:subagent:running-${index}`,
+      execution: { status: "running", startedAt: 100 },
+      metadata: { attempts: [{ status: "running" }] },
+      labels: ["instance:NS-RUNTIME-THIRTY", "stage:plan"],
+    });
+  }
+
+  await runtime.reconcile("NS-RUNTIME-THIRTY", workboard.cards, { inspectSessions: false });
+
+  assert.equal(workboard.sessionCalls.length, 0);
+  assert.equal(store.listStageRuns("NS-RUNTIME-THIRTY").at(-1).status, "running");
+  store.close();
+});
+
 test("retries a failed terminal completion callback without blocking valid output", async () => {
   const source = await readFile(workflowPath, "utf8");
   const store = new NightShiftStore();

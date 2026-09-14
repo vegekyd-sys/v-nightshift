@@ -1,10 +1,7 @@
 import { createHash } from "node:crypto";
-import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { promisify } from "node:util";
 import { nativeActionKey } from "./orchestrator.mjs";
-
-const execFileAsync = promisify(execFile);
+import { PersistentGatewayRpcClient } from "./persistent-gateway-rpc-client.mjs";
 
 export class WorkboardGatewayAdapter {
   constructor({
@@ -15,8 +12,9 @@ export class WorkboardGatewayAdapter {
     env = process.env,
     gatewayUrl = process.env.NIGHTSHIFT_GATEWAY_URL,
     now = Date.now,
-    runner = defaultRunner,
-    sleep = defaultSleep,
+    rpcClientFactory = (options) => new PersistentGatewayRpcClient(options),
+    rpcTimeoutMs = process.env.NIGHTSHIFT_GATEWAY_RPC_TIMEOUT_MS ?? 30_000,
+    runner,
     startBurst = process.env.NIGHTSHIFT_DISPATCH_START_BURST ?? 3,
     startIntervalMs = process.env.NIGHTSHIFT_DISPATCH_START_INTERVAL_MS ?? 15_000,
   } = {}) {
@@ -27,13 +25,16 @@ export class WorkboardGatewayAdapter {
     this.env = env;
     this.gatewayUrl = gatewayUrl;
     this.now = now;
+    this.rpcClientFactory = rpcClientFactory;
+    this.rpcTimeoutMs = positiveTimeout(rpcTimeoutMs);
     this.runner = runner;
-    this.sleep = sleep;
     this.startBurst = dispatchBurst(startBurst);
     this.startIntervalMs = dispatchInterval(startIntervalMs);
     this.startWindowAt = null;
     this.startsInWindow = 0;
-    this.startGate = Promise.resolve();
+    this.changeListeners = new Set();
+    this.rpcClient = null;
+    this.rpcEventUnsubscribe = null;
   }
 
   async listCards({ cardIds } = {}) {
@@ -66,6 +67,7 @@ export class WorkboardGatewayAdapter {
 
     const card = action.card ?? approvalCard(action);
     const payload = {
+      boardId: this.board,
       title: card.title,
       status: card.status ?? "ready",
       priority: card.priority ?? "normal",
@@ -74,6 +76,9 @@ export class WorkboardGatewayAdapter {
       maxRetries: card.automation?.maxAttempts ?? undefined,
       maxRuntimeSeconds: card.automation?.maxRuntimeSeconds ?? undefined,
       notes: card.notes ?? null,
+      parents: card.parents ?? undefined,
+      scheduledAt: card.scheduledAt ?? undefined,
+      skills: card.automation?.skills ?? undefined,
       metadata: {
         automation: {
           ...(card.automation ?? {}),
@@ -108,50 +113,46 @@ export class WorkboardGatewayAdapter {
       throw new Error("Night Shift dispatch requires an explicit non-empty card scope");
     }
     if (!Number.isSafeInteger(maxStarts) || maxStarts < 1) throw new Error("maxStarts must be a positive integer");
-    const started = [];
-    const startFailures = [];
-    // Native exact-card start is supported by 9.1 without relying on scoped
-    // dispatch extensions. Never downgrade to a board-wide dispatch request.
-    for (const id of scopedCardIds.slice(0, maxStarts)) {
-      try {
-        await this.waitForStartSlot();
-        const result = await this.call("workboard.cards.start", { id });
-        if (result.card?.id !== id || !result.sessionKey || !result.runId) {
-          throw new Error("Native start did not return the requested card and auditable sessionKey/runId");
-        }
-        started.push(result);
-      } catch (error) {
-        startFailures.push({ cardId: id, error: error.message });
-        // A lost reply may already have started this card. Do not start a
-        // replacement or retry it until the next authoritative snapshot.
-        break;
+    const budget = this.reserveStartBudget(Math.min(maxStarts, scopedCardIds.length));
+    if (budget.starts === 0) {
+      return { deferred: true, retryAfterMs: budget.retryAfterMs, started: [], startFailures: [] };
+    }
+    // One scoped native dispatch lets Workboard own dependency, claim, Attempt,
+    // Session and same-owner concurrency decisions. It also avoids one Gateway
+    // round trip and one serialized sleep per card.
+    const result = await this.call("workboard.cards.dispatchWithOptions", {
+      boardId: this.board,
+      cardIds: scopedCardIds,
+      maxStarts: budget.starts,
+    });
+    const allowed = new Set(scopedCardIds);
+    for (const entry of result.started ?? []) {
+      if (!allowed.has(entry.cardId) || !entry.sessionKey || !entry.runId) {
+        throw new Error("Native scoped dispatch returned a card outside the requested scope or missing Session evidence");
       }
     }
-    return { started, startFailures };
+    return {
+      ...result,
+      deferred: false,
+      retryAfterMs: null,
+      started: result.started ?? [],
+      startFailures: result.startFailures ?? [],
+    };
   }
 
-  async waitForStartSlot() {
-    const previous = this.startGate;
-    let release;
-    this.startGate = new Promise((resolve) => { release = resolve; });
-    await previous;
-    try {
-      let current = this.now();
-      if (this.startWindowAt === null || current >= this.startWindowAt + this.startIntervalMs) {
-        this.startWindowAt = current;
-        this.startsInWindow = 0;
-      }
-      if (this.startsInWindow >= this.startBurst) {
-        const waitMs = Math.max(0, this.startWindowAt + this.startIntervalMs - current);
-        if (waitMs > 0) await this.sleep(waitMs);
-        current = this.now();
-        this.startWindowAt = current;
-        this.startsInWindow = 0;
-      }
-      this.startsInWindow += 1;
-    } finally {
-      release();
+  reserveStartBudget(requested) {
+    const current = this.now();
+    if (this.startWindowAt === null || current >= this.startWindowAt + this.startIntervalMs) {
+      this.startWindowAt = current;
+      this.startsInWindow = 0;
     }
+    const available = Math.max(0, this.startBurst - this.startsInWindow);
+    const starts = Math.min(requested, available);
+    this.startsInWindow += starts;
+    return {
+      starts,
+      retryAfterMs: starts > 0 ? null : Math.max(0, this.startWindowAt + this.startIntervalMs - current),
+    };
   }
 
   async getSession(sessionKey, { limit = 300 } = {}) {
@@ -174,9 +175,30 @@ export class WorkboardGatewayAdapter {
     return this.call("skills.status", { agentId });
   }
 
+  async probeGatewayLatency() {
+    const started = this.now();
+    await this.call("sessions.list", { limit: 1 });
+    return Math.max(0, this.now() - started);
+  }
+
+  onChange(listener) {
+    this.changeListeners.add(listener);
+    return () => this.changeListeners.delete(listener);
+  }
+
+  async connect() {
+    if (this.runner) return;
+    const client = await this.ensureRpcClient();
+    await client.ensureConnected();
+  }
+
   async call(method, params) {
     if (!this.gatewayUrl) throw new Error("NIGHTSHIFT_GATEWAY_URL is required");
     if (!this.configPath) throw new Error("OPENCLAW_CONFIG_PATH is required");
+    if (!this.runner) {
+      const client = await this.ensureRpcClient();
+      return client.request(method, params);
+    }
     const config = JSON.parse(await readFile(this.configPath, "utf8"));
     const token = config.gateway?.auth?.token;
     if (!token) throw new Error("Gateway auth token is missing from the configured file");
@@ -189,7 +211,7 @@ export class WorkboardGatewayAdapter {
       JSON.stringify(params),
       "--json",
       "--timeout",
-      "10000",
+      String(this.rpcTimeoutMs),
     ];
     const output = await this.runner(this.command, args, {
       ...this.env,
@@ -198,6 +220,63 @@ export class WorkboardGatewayAdapter {
     });
     return typeof output === "string" ? JSON.parse(output) : output;
   }
+
+  async ensureRpcClient(token = null) {
+    if (this.rpcClient) return this.rpcClient;
+    let resolvedToken = token;
+    if (!resolvedToken) {
+      if (!this.configPath) throw new Error("OPENCLAW_CONFIG_PATH is required");
+      const config = JSON.parse(await readFile(this.configPath, "utf8"));
+      resolvedToken = config.gateway?.auth?.token;
+    }
+    if (!resolvedToken) throw new Error("Gateway auth token is missing from the configured file");
+    const gateway = new URL(this.gatewayUrl);
+    if (!gatewayEndpointIsPrivate(gateway)) {
+      throw new Error("Night Shift Workboard Gateway must use loopback, Tailscale, or secure WebSocket transport");
+    }
+    const client = this.rpcClientFactory({
+      entry: this.entry,
+      env: this.env,
+      gatewayUrl: this.gatewayUrl,
+      requestTimeoutMs: this.rpcTimeoutMs,
+      token: resolvedToken,
+    });
+    this.rpcEventUnsubscribe = client.onEvent((event) => {
+      if (event?.event !== "plugin.workboard.changed") return;
+      for (const listener of this.changeListeners) {
+        try {
+          listener(event.payload ?? {});
+        } catch {
+          // A scheduling observer must not break the shared connection.
+        }
+      }
+    });
+    this.rpcClient = client;
+    return client;
+  }
+
+  get connected() {
+    return this.runner ? true : this.rpcClient?.connected === true;
+  }
+
+  async close() {
+    this.rpcEventUnsubscribe?.();
+    this.rpcEventUnsubscribe = null;
+    await this.rpcClient?.close?.();
+    this.rpcClient = null;
+  }
+}
+
+function gatewayEndpointIsPrivate(gateway) {
+  if (gateway.protocol === "wss:") return true;
+  if (["127.0.0.1", "localhost", "[::1]"].includes(gateway.hostname)) return true;
+  const octets = gateway.hostname.split(".").map(Number);
+  return gateway.protocol === "ws:"
+    && octets.length === 4
+    && octets.every((value) => Number.isInteger(value) && value >= 0 && value <= 255)
+    && octets[0] === 100
+    && octets[1] >= 64
+    && octets[1] <= 127;
 }
 
 function uniqueCardIds(cardIds) {
@@ -223,6 +302,14 @@ function dispatchBurst(value) {
   return parsed;
 }
 
+function positiveTimeout(value) {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1_000 || parsed > 120_000) {
+    throw new Error("rpcTimeoutMs must be an integer between 1000 and 120000");
+  }
+  return parsed;
+}
+
 export function gatewayIdempotencyLabel(key) {
   const digest = createHash("sha256").update(key).digest("hex").slice(0, 20);
   return `nightshift-action:${digest}`;
@@ -240,32 +327,6 @@ function approvalCard(action) {
     ],
     automation: { approval: action.approval, contentItemId: action.contentItemId ?? null, instanceId: action.instanceId, stageId: action.stageId },
   };
-}
-
-async function defaultRunner(command, args, env) {
-  try {
-    const { stdout } = await execFileAsync(command, args, {
-      encoding: "utf8",
-      env,
-      killSignal: "SIGKILL",
-      // A Night Shift board can contain many evidence-rich cards. Gateway list
-      // responses are compact at the API boundary but still exceed Node's 8 MiB
-      // execFile default once the board is long-lived; do not make the scheduler
-      // fail solely while reading that authoritative snapshot.
-      maxBuffer: 64 * 1024 * 1024,
-      timeout: 15000,
-    });
-    return stdout;
-  } catch (error) {
-    const detail = gatewayRpcFailureDetail(error, env.OPENCLAW_GATEWAY_TOKEN);
-    throw new Error(
-      `OpenClaw Gateway RPC failed${error?.code ? ` (exit ${error.code})` : ""}${detail ? `: ${detail}` : ""}`,
-    );
-  }
-}
-
-function defaultSleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function gatewayRpcFailureDetail(error, token) {
