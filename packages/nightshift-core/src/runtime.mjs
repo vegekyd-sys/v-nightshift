@@ -271,7 +271,7 @@ export class NightShiftRuntime {
   }
 
   safeToAutomaticallyRetry({ card, contentItemId, instance, release, stageId }) {
-    if (this.store.getHumanAttempt?.(card.id)) return false;
+    if (this.hasHumanTakeover({ cardId: card.id, contentItemId, instanceId: instance.id, stageId })) return false;
     const stage = release.spec.stages.find((entry) => entry.id === stageId);
     if (!Array.isArray(stage?.sideEffects) || stage.sideEffects.length === 0) return true;
     return this.store.listExternalOperations(instance.id).some((operation) =>
@@ -282,7 +282,20 @@ export class NightShiftRuntime {
       Boolean(operation.externalTaskId));
   }
 
+  hasHumanTakeover({ cardId, contentItemId, instanceId, stageId }) {
+    if (this.store.getHumanAttempt?.(cardId)) return true;
+    return this.store.listApprovals(instanceId).some((approval) =>
+      approval.cardId === cardId &&
+      approval.stageId === stageId &&
+      (approval.contentItemId ?? null) === (contentItemId ?? null) &&
+      ["changes_requested", "rejected"].includes(approval.status));
+  }
+
   async maybeAutoRetryFailure({ card, contentItemId, failure, instance, stageId }) {
+    if (this.hasHumanTakeover({ cardId: card.id, contentItemId, instanceId: instance.id, stageId })) {
+      const cancelledFailure = { ...failure, automaticRetry: false, nextRetryAt: null };
+      return { status: "blocked", summary: infrastructureFailureSummary(cancelledFailure), failure: cancelledFailure };
+    }
     const summary = infrastructureFailureSummary(failure);
     if (!failure.automaticRetry || !failure.nextRetryAt || Date.parse(failure.nextRetryAt) > Date.now()) {
       return { status: "blocked", summary, failure };

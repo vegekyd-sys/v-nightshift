@@ -373,6 +373,92 @@ test("does not automatically retry after a recorded human takeover", async () =>
   store.close();
 });
 
+test("does not automatically retry after project approval requested changes", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard });
+  const release = runtime.publish(source);
+  runtime.startInstance({ id: "NS-CHANGES-REQUESTED", workflowSha256: release.workflowSha256 });
+  store.recordApproval({
+    actor: "Night Shift operator",
+    cardId: "card-changes-requested",
+    evidence: "Human operator took over the interrupted attempt",
+    instanceId: "NS-CHANGES-REQUESTED",
+    stageId: "plan",
+    status: "changes_requested",
+  });
+  workboard.cards.push({
+    id: "card-changes-requested",
+    status: "review",
+    sessionKey: "agent:main:subagent:changes-requested",
+    runId: "run-changes-requested",
+    execution: { status: "blocked", startedAt: 100 },
+    labels: ["instance:NS-CHANGES-REQUESTED", "stage:plan"],
+  });
+  workboard.sessions.set("agent:main:subagent:changes-requested", {
+    messages: [{ role: "assistant", errorMessage: "database is locked", stopReason: "error", timestamp: 200 }],
+  });
+
+  await runtime.reconcile("NS-CHANGES-REQUESTED");
+
+  const run = store.listStageRuns("NS-CHANGES-REQUESTED")[0];
+  assert.equal(run.status, "blocked");
+  assert.equal(run.failure.retryable, true);
+  assert.equal(run.failure.automaticRetry, false);
+  assert.equal(run.failure.nextRetryAt, null);
+  assert.equal(workboard.releaseCalls.length, 0);
+  store.close();
+});
+
+test("cancels a scheduled automatic retry when a human requests changes before it is due", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard });
+  const release = runtime.publish(source);
+  runtime.startInstance({ id: "NS-TAKEOVER-BEFORE-RETRY", workflowSha256: release.workflowSha256 });
+  workboard.cards.push({
+    id: "card-takeover-before-retry",
+    status: "blocked",
+    labels: ["instance:NS-TAKEOVER-BEFORE-RETRY", "stage:plan"],
+  });
+  store.upsertStageRun({
+    instanceId: "NS-TAKEOVER-BEFORE-RETRY",
+    stageId: "plan",
+    attempt: 1,
+    cardId: "card-takeover-before-retry",
+    status: "blocked",
+    summary: "Gateway database lock",
+    failure: {
+      kind: "database_lock",
+      source: "gateway",
+      rawError: "database is locked",
+      retryable: true,
+      automaticRetry: true,
+      attempt: 1,
+      nextRetryAt: "1970-01-01T00:00:00.000Z",
+    },
+  });
+  store.recordApproval({
+    actor: "Night Shift operator",
+    cardId: "card-takeover-before-retry",
+    evidence: "Human operator took over after the failure",
+    instanceId: "NS-TAKEOVER-BEFORE-RETRY",
+    stageId: "plan",
+    status: "changes_requested",
+  });
+
+  await runtime.reconcile("NS-TAKEOVER-BEFORE-RETRY");
+
+  const run = store.listStageRuns("NS-TAKEOVER-BEFORE-RETRY")[0];
+  assert.equal(run.status, "blocked");
+  assert.equal(run.failure.automaticRetry, false);
+  assert.equal(run.failure.nextRetryAt, null);
+  assert.equal(workboard.releaseCalls.length, 0);
+  store.close();
+});
+
 test("approval card completion does not skip the guarded agent stage", async () => {
   const source = await readFile(workflowPath, "utf8");
   const store = new NightShiftStore();
