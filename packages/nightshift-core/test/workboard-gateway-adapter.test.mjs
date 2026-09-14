@@ -76,7 +76,76 @@ test("creates and reuses native cards through Gateway RPC", async () => {
 
 });
 
-test("dispatches only explicit card IDs through native exact-card start", async () => {
+test("uses one persistent Gateway transport and forwards native Workboard changes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "nightshift-persistent-gateway-"));
+  const configPath = join(dir, "openclaw.json");
+  await writeFile(configPath, JSON.stringify({ gateway: { auth: { token: "test-token" } } }));
+  const requests = [];
+  let eventListener;
+  let created = 0;
+  const rpcClient = {
+    connected: true,
+    async close() {},
+    async ensureConnected() {},
+    onEvent(listener) { eventListener = listener; return () => {}; },
+    async request(method, params) {
+      requests.push({ method, params });
+      return { cards: [] };
+    },
+  };
+  const adapter = new WorkboardGatewayAdapter({
+    board: "nightshift-lab",
+    configPath,
+    entry: "/opt/openclaw/dist/index.js",
+    gatewayUrl: "ws://127.0.0.1:23793",
+    rpcClientFactory: () => { created += 1; return rpcClient; },
+  });
+  const changes = [];
+  adapter.onChange((change) => changes.push(change));
+
+  await adapter.connect();
+  await adapter.listCards();
+  await adapter.listCards();
+  eventListener({ event: "plugin.workboard.changed", payload: { revision: 7 } });
+
+  assert.equal(created, 1);
+  assert.equal(requests.length, 2);
+  assert.deepEqual(changes, [{ revision: 7 }]);
+  assert.equal(adapter.connected, true);
+  await adapter.close();
+});
+
+test("creates cards with native board, parent dependency and suggested Skills", async () => {
+  const calls = [];
+  const adapter = new WorkboardGatewayAdapter();
+  adapter.call = async (method, params) => {
+    calls.push({ method, params });
+    if (method === "workboard.cards.list") return { cards: [] };
+    return { card: { id: "child", ...params } };
+  };
+
+  await adapter.applyAction({
+    type: "create_workboard_card",
+    instanceId: "NS-1",
+    stageId: "produce",
+    idempotencyKey: "child-action",
+    card: {
+      title: "Produce",
+      status: "ready",
+      assignedAgent: "makaron",
+      labels: ["instance:NS-1"],
+      parents: ["parent-card"],
+      automation: { skills: ["makaron", "ecommerce-video"] },
+    },
+  });
+
+  const create = calls.find((entry) => entry.method === "workboard.cards.create");
+  assert.equal(create.params.boardId, "nightshift");
+  assert.deepEqual(create.params.parents, ["parent-card"]);
+  assert.deepEqual(create.params.skills, ["makaron", "ecommerce-video"]);
+});
+
+test("dispatches only explicit card IDs through one scoped native Workboard dispatch", async () => {
   const dir = await mkdtemp(join(tmpdir(), "nightshift-gateway-dispatch-"));
   const configPath = join(dir, "openclaw.json");
   await writeFile(configPath, JSON.stringify({ gateway: { auth: { token: "test-token" } } }));
@@ -87,16 +156,18 @@ test("dispatches only explicit card IDs through native exact-card start", async 
     gatewayUrl: "ws://127.0.0.1:23793",
     runner: async (_command, args) => {
       calls.push(args);
-      return JSON.stringify({ card: { id: "card-1" }, sessionKey: "native-session", runId: "native-run" });
+      return JSON.stringify({ started: [{ cardId: "card-1", sessionKey: "native-session", runId: "native-run" }], startFailures: [] });
     },
   });
 
   const dispatch = await adapter.dispatch(4, { cardIds: ["card-1", "card-1", "  "] });
 
-  assert.deepEqual(dispatch.started.map((entry) => entry.card.id), ["card-1"]);
-  assert.equal(calls[0][2], "workboard.cards.start");
+  assert.deepEqual(dispatch.started.map((entry) => entry.cardId), ["card-1"]);
+  assert.equal(calls[0][2], "workboard.cards.dispatchWithOptions");
   assert.deepEqual(JSON.parse(calls[0][calls[0].indexOf("--params") + 1]), {
-    id: "card-1",
+    boardId: "nightshift-lab",
+    cardIds: ["card-1"],
+    maxStarts: 1,
   });
   const callCount = calls.length;
   await assert.rejects(
@@ -123,53 +194,58 @@ test("reopens retry cards by releasing the stale claim in one native mutation", 
   }]);
 });
 
-test("exact starts stop after ambiguous failure and never launch beyond the start budget", async () => {
+test("one scoped dispatch failure is not retried ambiguously", async () => {
   const adapter = new WorkboardGatewayAdapter({ startIntervalMs: 0 });
   const calls = [];
   adapter.call = async (method, params) => {
     calls.push({ method, params });
-    if (params.id === "second") throw new Error("reply lost");
-    return { card: { id: params.id }, sessionKey: `session:${params.id}`, runId: `run:${params.id}` };
+    throw new Error("reply lost");
   };
-  const result = await adapter.dispatch(3, { cardIds: ["first", "second", "third", "fourth"] });
-  assert.equal(result.started.length, 1);
-  assert.deepEqual(result.startFailures, [{ cardId: "second", error: "reply lost" }]);
-  assert.deepEqual(calls, [
-    { method: "workboard.cards.start", params: { id: "first" } },
-    { method: "workboard.cards.start", params: { id: "second" } },
-  ]);
-  calls.length = 0;
-  await adapter.dispatch(1, { cardIds: ["first", "third"] });
+  await assert.rejects(() => adapter.dispatch(3, { cardIds: ["first", "second", "third", "fourth"] }), /reply lost/);
   assert.equal(calls.length, 1);
 });
 
-test("starts only three Sessions per fifteen-second window across project dispatch calls", async () => {
+test("defers without sleeping after three starts in a fifteen-second window", async () => {
   let now = 1_000;
-  const waits = [];
   const starts = [];
   const adapter = new WorkboardGatewayAdapter({
     now: () => now,
-    sleep: async (ms) => { waits.push(ms); now += ms; },
     startBurst: 3,
     startIntervalMs: 15_000,
   });
   adapter.call = async (_method, params) => {
-    starts.push({ cardId: params.id, at: now });
-    return { card: { id: params.id }, sessionKey: `session:${params.id}`, runId: `run:${params.id}` };
+    const selected = params.cardIds.slice(0, params.maxStarts);
+    starts.push({ cardIds: selected, at: now });
+    return { started: selected.map((id) => ({ cardId: id, sessionKey: `session:${id}`, runId: `run:${id}` })), startFailures: [] };
   };
 
   const firstProject = await adapter.dispatch(2, { cardIds: ["first", "second"] });
   const secondProject = await adapter.dispatch(3, { cardIds: ["third", "fourth", "fifth"] });
+  const deferred = await adapter.dispatch(1, { cardIds: ["sixth"] });
 
-  assert.equal(firstProject.started.length + secondProject.started.length, 5);
+  assert.equal(firstProject.started.length + secondProject.started.length, 3);
   assert.deepEqual(starts, [
-    { cardId: "first", at: 1_000 },
-    { cardId: "second", at: 1_000 },
-    { cardId: "third", at: 1_000 },
-    { cardId: "fourth", at: 16_000 },
-    { cardId: "fifth", at: 16_000 },
+    { cardIds: ["first", "second"], at: 1_000 },
+    { cardIds: ["third"], at: 1_000 },
   ]);
-  assert.deepEqual(waits, [15_000]);
+  assert.equal(deferred.deferred, true);
+  assert.equal(deferred.retryAfterMs, 15_000);
+  now += 15_000;
+  const resumed = await adapter.dispatch(2, { cardIds: ["fourth", "fifth"] });
+  assert.equal(resumed.started.length, 2);
+});
+
+test("measures a lightweight ordinary Session RPC on the persistent connection", async () => {
+  let now = 1_000;
+  const adapter = new WorkboardGatewayAdapter({ now: () => now });
+  const calls = [];
+  adapter.call = async (method, params) => {
+    calls.push({ method, params });
+    now += 75;
+    return { sessions: [] };
+  };
+  assert.equal(await adapter.probeGatewayLatency(), 75);
+  assert.deepEqual(calls, [{ method: "sessions.list", params: { limit: 1 } }]);
 });
 
 

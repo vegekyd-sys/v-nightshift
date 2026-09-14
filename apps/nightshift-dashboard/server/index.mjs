@@ -2,6 +2,8 @@ import { runSchedulerPass } from "../../../packages/nightshift-core/src/schedule
 import { tickWithFaultProjection } from "../../../packages/nightshift-core/src/scheduler-state.mjs";
 import { createCompletionUrlChecker } from "./completion-url.mjs";
 import { SchedulerCircuit } from "./scheduler-circuit.mjs";
+import { DispatchPressureGuard } from "./dispatch-pressure-guard.mjs";
+import { WorkboardChangeScheduler } from "./workboard-change-scheduler.mjs";
 import { createSessionReader } from "./session-reader.mjs";
 import { HumanAttemptController, humanCompletionEvidence, publicHumanAttempt, evidenceHash } from "../../../packages/nightshift-core/src/human-attempt.mjs";
 import { createServer } from "node:http";
@@ -54,6 +56,13 @@ const dispatchStartBurst = positiveInteger(process.env.NIGHTSHIFT_DISPATCH_START
 const dispatchStartIntervalMs = positiveInteger(process.env.NIGHTSHIFT_DISPATCH_START_INTERVAL_MS, 15_000, 60_000);
 const schedulerMaxWorkboardActive = positiveInteger(process.env.NIGHTSHIFT_MAX_WORKBOARD_ACTIVE, 36, 36);
 const schedulerFailureCooldownMs = positiveInteger(process.env.NIGHTSHIFT_SCHEDULER_FAILURE_COOLDOWN_MS, 300_000, 3_600_000);
+const schedulerEventDebounceMs = positiveInteger(process.env.NIGHTSHIFT_SCHEDULER_EVENT_DEBOUNCE_MS, 100, 10_000);
+const schedulerEventMinIntervalMs = positiveInteger(process.env.NIGHTSHIFT_SCHEDULER_EVENT_MIN_INTERVAL_MS, 5_000, 30_000);
+const schedulerRepairIntervalMs = positiveInteger(process.env.NIGHTSHIFT_SCHEDULER_REPAIR_INTERVAL_MS, 300_000, 3_600_000);
+const gatewayCapacityProbeIntervalMs = positiveInteger(process.env.NIGHTSHIFT_GATEWAY_CAPACITY_PROBE_INTERVAL_MS, 30_000, 300_000);
+const gatewayGreenLatencyMs = positiveInteger(process.env.NIGHTSHIFT_GATEWAY_GREEN_LATENCY_MS, 250, 10_000);
+const gatewayRedLatencyMs = positiveInteger(process.env.NIGHTSHIFT_GATEWAY_RED_LATENCY_MS, 1_000, 30_000);
+const dispatchInitialMaxActive = positiveInteger(process.env.NIGHTSHIFT_DISPATCH_INITIAL_MAX_ACTIVE, 3, schedulerMaxWorkboardActive);
 const publicAuth = await loadPublicAuth(process.env.NIGHTSHIFT_BASIC_AUTH_FILE);
 await mkdir(dataDir, { recursive: true });
 const store = new NightShiftStore(join(dataDir, "nightshift.sqlite"));
@@ -76,24 +85,42 @@ const checkCompletionUrl = createCompletionUrlChecker();
 let cardCache = [];
 let cardsUpdatedAt = null;
 let cardRefreshPromise = null;
+let cardRefreshScope = null;
 let lastSchedulerAt = null;
 let schedulerStartedAt = null;
 let lastSchedulerDurationMs = null;
 let lastSchedulerError = null;
+let lastSchedulerTrigger = null;
 let schedulerPromise = null;
 const schedulerCircuit = new SchedulerCircuit({ cooldownMs: schedulerFailureCooldownMs, startWithProbe: true });
+const dispatchPressureGuard = new DispatchPressureGuard({
+  greenLatencyMs: gatewayGreenLatencyMs,
+  initialMaxActive: dispatchInitialMaxActive,
+  maxActive: schedulerMaxWorkboardActive,
+  redLatencyMs: gatewayRedLatencyMs,
+});
 let tickQueue = Promise.resolve();
 let shuttingDown = false;
+let capacityProbePromise = null;
+let capacityProbeTimer = null;
 const contentManifestHashes = new Map();
 
 await ensureWorkflow();
 await ensureSeedInstance();
-const schedulerTimer = setInterval(() => {
-  runScheduler();
-}, 30000);
-schedulerTimer.unref();
-const initialSchedulerTimer = setTimeout(() => runScheduler(), 1000);
-initialSchedulerTimer.unref();
+const changeScheduler = new WorkboardChangeScheduler({
+  debounceMs: schedulerEventDebounceMs,
+  minRunIntervalMs: schedulerEventMinIntervalMs,
+  onError: (error) => console.error(`Night Shift event scheduler failed: ${error.message}`),
+  repairIntervalMs: schedulerRepairIntervalMs,
+  run: runScheduler,
+  workboard,
+});
+changeScheduler.start();
+workboard.connect().catch((error) => {
+  console.error(`Night Shift persistent Gateway connection failed: ${error.message}`);
+});
+capacityProbeTimer = setInterval(() => probeDispatchCapacity(), gatewayCapacityProbeIntervalMs);
+capacityProbeTimer.unref?.();
 
 const server = createServer(async (request, response) => {
   try {
@@ -127,6 +154,7 @@ server.listen(port, host, () => {
 async function handleApi(request, response, url) {
   if (request.method === "GET" && url.pathname === "/api/health") {
     const circuit = schedulerCircuit.snapshot();
+    const schedulerStalled = Boolean(schedulerPromise && schedulerStartedAt && Date.now() - Date.parse(schedulerStartedAt) >= 90_000);
     json(response, 200, {
       board,
       cardsUpdatedAt,
@@ -141,11 +169,20 @@ async function handleApi(request, response, url) {
       dispatchStartIntervalMs,
       schedulerMaxWorkboardActive,
       schedulerFailureCooldownMs,
+      schedulerEventDebounceMs,
+      schedulerEventMinIntervalMs,
+      schedulerMode: "workboard-events",
+      schedulerRepairIntervalMs,
+      dispatchPressure: dispatchPressureGuard.snapshot(activeCardCount(cardCache)),
+      gatewayCapacityProbeIntervalMs,
+      lastSchedulerTrigger,
+      gatewayConnected: workboard.connected,
+      schedulerStalled,
       schedulerCircuitOpen: circuit.open,
       schedulerCircuitOpenUntil: circuit.openUntil,
       schedulerCircuitProbeRequired: circuit.probeRequired,
       schedulerCircuitReason: circuit.reason,
-      ok: Boolean(lastSchedulerAt) && !lastSchedulerError && Date.now() - Date.parse(lastSchedulerAt) < 90000,
+      ok: Boolean(lastSchedulerAt) && workboard.connected && !lastSchedulerError && !schedulerStalled,
       service: "nightshift-workboard",
     });
     return;
@@ -708,24 +745,30 @@ async function ensureSeedInstance() {
   await startInstance({ ...seed, workflowSha256: release.workflowSha256 });
 }
 
-function runScheduler() {
+function runScheduler({ trigger = "manual" } = {}) {
   if (schedulerPromise) return schedulerPromise;
   const circuitDecision = schedulerCircuit.beforePass();
   if (!circuitDecision.run) return Promise.resolve({ skipped: "scheduler-circuit-open", ...circuitDecision });
   schedulerPromise = (async () => {
     schedulerStartedAt = new Date().toISOString();
+    lastSchedulerTrigger = trigger;
     const started = Date.now();
+    const pressure = dispatchPressureGuard.snapshot(activeCardCount(cardCache));
+    const dispatchMaxStarts = Math.min(schedulerDispatchMaxStarts, pressure.availableStarts);
     // One serialized round shares one authoritative board snapshot. API mutations
     // cannot interleave a takeover with a later tick using an older snapshot.
     const result = await serializedOperation(() => runSchedulerPass({
-      dispatchMaxStarts: schedulerDispatchMaxStarts,
-      dispatchEnabled: circuitDecision.dispatch,
+      dispatchMaxStarts,
+      dispatchEnabled: circuitDecision.dispatch && pressure.dispatchAllowed && dispatchMaxStarts > 0,
+      inspectSessions: trigger === "repair",
+      maxWorkboardActive: pressure.targetMaxActive,
       store, runtime, workboard, refreshCards, syncContentItemsManifest,
     }));
     lastSchedulerAt = new Date().toISOString();
     lastSchedulerDurationMs = Date.now() - started;
     lastSchedulerError = result.warnings.length ? result.warnings.join("; ") : null;
     schedulerCircuit.recordPass(result.warnings, { probe: circuitDecision.probe });
+    if (result.retryAfterMs > 0) changeScheduler.enqueueAfter("dispatch.window", result.retryAfterMs);
   })().catch((error) => {
     lastSchedulerAt = new Date().toISOString();
     lastSchedulerError = error.message;
@@ -735,6 +778,26 @@ function runScheduler() {
     schedulerPromise = null;
   });
   return schedulerPromise;
+}
+
+function probeDispatchCapacity() {
+  if (capacityProbePromise || schedulerPromise || shuttingDown) return capacityProbePromise;
+  capacityProbePromise = (async () => {
+    const running = activeCardCount(cardCache);
+    let pressure;
+    try {
+      const latencyMs = await workboard.probeGatewayLatency();
+      pressure = dispatchPressureGuard.recordProbe({ latencyMs, running });
+    } catch (error) {
+      pressure = dispatchPressureGuard.recordProbe({ error: error.message, running });
+    }
+    if (pressure.dispatchAllowed && pressure.availableStarts > 0 && cardCache.some((card) => card.status === "ready")) {
+      changeScheduler.enqueue("gateway.capacity");
+    }
+  })().finally(() => {
+    capacityProbePromise = null;
+  });
+  return capacityProbePromise;
 }
 
 async function startInstance(instance) {
@@ -828,14 +891,43 @@ function positiveInteger(value, fallback, maximum) {
   return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= maximum ? parsed : fallback;
 }
 
-async function refreshCards() {
-  if (cardRefreshPromise) return cardRefreshPromise;
-  cardRefreshPromise = workboard.listCards().then((cards) => {
-    cardCache = cards;
+function activeCardCount(cards) {
+  const now = Date.now();
+  return cards.filter((card) => card.status === "running"
+    || card.execution?.status === "running"
+    || claimExpiryMs(card.metadata?.claim?.expiresAt) > now).length;
+}
+
+function claimExpiryMs(value) {
+  if (typeof value === "number") return value;
+  const parsed = Date.parse(value ?? "");
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+async function refreshCards({ cardIds = null } = {}) {
+  const scoped = Array.isArray(cardIds);
+  const normalizedCardIds = scoped ? [...new Set(cardIds)].sort() : null;
+  const scope = normalizedCardIds ? normalizedCardIds.join("\n") : "*";
+  if (cardRefreshPromise) {
+    if (cardRefreshScope === scope) return cardRefreshPromise;
+    await cardRefreshPromise;
+    return refreshCards({ cardIds });
+  }
+  cardRefreshScope = scope;
+  cardRefreshPromise = workboard.listCards(scoped ? { cardIds: normalizedCardIds } : {}).then((cards) => {
+    if (scoped) {
+      const merged = new Map(cardCache.map((card) => [card.id, card]));
+      for (const id of normalizedCardIds) merged.delete(id);
+      for (const card of cards) merged.set(card.id, card);
+      cardCache = [...merged.values()];
+    } else {
+      cardCache = cards;
+    }
     cardsUpdatedAt = new Date().toISOString();
     return cards;
   }).finally(() => {
     cardRefreshPromise = null;
+    cardRefreshScope = null;
   });
   return cardRefreshPromise;
 }
@@ -1390,16 +1482,19 @@ function contentType(path) {
 function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
-  clearInterval(schedulerTimer);
-  clearTimeout(initialSchedulerTimer);
+  changeScheduler.stop();
+  if (capacityProbeTimer) clearInterval(capacityProbeTimer);
+  capacityProbeTimer = null;
   let finished = false;
   let forceTimer;
   const finish = () => {
     if (finished) return;
     finished = true;
     clearTimeout(forceTimer);
-    store.close();
-    process.exit(0);
+    Promise.resolve(workboard.close()).catch(() => undefined).finally(() => {
+      store.close();
+      process.exit(0);
+    });
   };
   forceTimer = setTimeout(() => {
     server.closeAllConnections?.();

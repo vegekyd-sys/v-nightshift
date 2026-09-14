@@ -79,7 +79,7 @@ export class NightShiftRuntime {
     return this.store.updateInstanceInputs(instanceId, patch);
   }
 
-  async reconcile(instanceId, cards = null) {
+  async reconcile(instanceId, cards = null, { inspectSessions = true } = {}) {
     const currentCards = cards ?? await this.workboard.listCards();
     const instance = this.store.getInstance(instanceId);
     if (!instance) throw new Error(`Unknown instance ${instanceId}`);
@@ -110,7 +110,9 @@ export class NightShiftRuntime {
         summary = recovered.summary;
         failure = recovered.failure;
       }
-      if (!failure && ["running", "review", "blocked"].includes(status) && stage.actor === "agent" && card.sessionKey) {
+      const hasNativeTerminalEvidence = nativeAttemptIsTerminal(card);
+      if (!failure && ["running", "review", "blocked"].includes(status) && stage.actor === "agent" && card.sessionKey &&
+        (inspectSessions || hasNativeTerminalEvidence)) {
         const recovered = await this.recoverTerminalCard({ card, contentItemId, instance, release, stageId });
         if (recovered?.deferred) {
           terminalReconciliationDeferred = true;
@@ -567,9 +569,10 @@ export class NightShiftRuntime {
     dispatch = false,
     dispatchMaxStarts = this.dispatchMaxStarts,
     dryRun = false,
+    inspectSessions = true,
   } = {}) {
     const currentCards = cards ?? await this.workboard.listCards();
-    await this.reconcile(instanceId, currentCards);
+    await this.reconcile(instanceId, currentCards, { inspectSessions });
     const instance = this.store.getInstance(instanceId);
     if (!instance) throw new Error(`Unknown instance ${instanceId}`);
     const savedRelease = this.store.getRelease(instance.workflowSha256);
@@ -833,6 +836,11 @@ function timestampMs(value) {
   if (Number.isFinite(numeric)) return numeric;
   const parsed = Date.parse(String(value ?? ""));
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function nativeAttemptIsTerminal(card) {
+  const status = String(card.metadata?.attempts?.at(-1)?.status ?? card.execution?.status ?? "").toLowerCase();
+  return ["aborted", "blocked", "cancelled", "done", "error", "failed", "review", "stopped", "succeeded"].includes(status);
 }
 
 function terminalAttempt(card) {
