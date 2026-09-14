@@ -14,6 +14,8 @@ export class NightShiftRuntime {
     completionValidator = null,
     dispatchMaxStarts = 8,
     maxWorkboardActive = 36,
+    terminalInspectionMaxStarts = 3,
+    terminalInspectionWindowMs = 30_000,
     store,
     workboard,
   }) {
@@ -23,6 +25,9 @@ export class NightShiftRuntime {
     this.completionValidator = completionValidator;
     this.dispatchMaxStarts = positiveDispatchLimit(dispatchMaxStarts, "dispatchMaxStarts");
     this.maxWorkboardActive = positiveDispatchLimit(maxWorkboardActive, "maxWorkboardActive");
+    this.terminalInspectionMaxStarts = positiveDispatchLimit(terminalInspectionMaxStarts, "terminalInspectionMaxStarts");
+    this.terminalInspectionWindowMs = positiveInteger(terminalInspectionWindowMs, "terminalInspectionWindowMs");
+    this.terminalInspectionStarts = [];
     this.store = store;
     this.workboard = workboard;
   }
@@ -96,6 +101,8 @@ export class NightShiftRuntime {
       const storedRun = storedRuns.filter((entry) => entry.cardId === card.id && entry.stageId === stageId).at(-1);
       let failure = storedRun?.failure ?? null;
       let completionAlreadyValidated = false;
+      let terminalReconciliationDeferred = false;
+      let terminalSession = null;
       if (status === "blocked" && failure) {
         const recovered = await this.maybeAutoRetryFailure({ card, contentItemId, failure, instance, stageId });
         status = recovered.status;
@@ -104,15 +111,18 @@ export class NightShiftRuntime {
       }
       if (!failure && ["running", "review", "blocked"].includes(status) && stage.actor === "agent" && card.sessionKey) {
         const recovered = await this.recoverTerminalCard({ card, contentItemId, instance, release, stageId });
-        if (recovered) {
+        if (recovered?.deferred) {
+          terminalReconciliationDeferred = true;
+          terminalSession = recovered.terminalSession ?? null;
+        } else if (recovered) {
           status = recovered.status;
           summary = recovered.summary;
           failure = recovered.failure ?? null;
           completionAlreadyValidated = recovered.status === "done";
         }
       }
-      if (status === "blocked" && (!failure || recoverableContractFailure(failure)) && stage.actor === "agent" && card.sessionKey && !this.store.getHumanAttempt?.(card.id)) {
-        const recovered = await this.recoverWrittenArtifacts({ card, cards: currentCards, contentItemId, failure, instance, release, stageId });
+      if ((!terminalReconciliationDeferred || terminalSession) && status === "blocked" && (!failure || recoverableContractFailure(failure)) && stage.actor === "agent" && card.sessionKey && !this.store.getHumanAttempt?.(card.id)) {
+        const recovered = await this.recoverWrittenArtifacts({ card, cards: currentCards, contentItemId, failure, instance, release, stageId, terminalSession });
         if (recovered) {
           status = recovered.status;
           summary = recovered.summary;
@@ -205,7 +215,8 @@ export class NightShiftRuntime {
     const inspectionEventId = card.status === "running"
       ? null
       : terminalInspectionEventId(card, attempt);
-    if (inspectionEventId && this.store.getEvent?.(inspectionEventId)) return null;
+    if (inspectionEventId && this.store.getEvent?.(inspectionEventId)) return { deferred: true };
+    if (inspectionEventId && !this.consumeTerminalInspectionBudget()) return { deferred: true };
     let session;
     try {
       session = await this.workboard.getSession(card.sessionKey, { limit: 12 });
@@ -218,7 +229,7 @@ export class NightShiftRuntime {
           payload: { cardId: card.id, contentItemId, error: error.message, stageId },
         });
       }
-      return null;
+      return inspectionEventId ? { deferred: true } : null;
     }
     const messages = Array.isArray(session?.messages) ? session.messages : [];
     const latest = messages.at(-1);
@@ -234,7 +245,7 @@ export class NightShiftRuntime {
           payload: { cardId: card.id, contentItemId, stageId, terminal: false },
         });
       }
-      return null;
+      return inspectionEventId ? { deferred: true, terminalSession: session } : null;
     }
     const terminalFailure = classifyTerminalFailure({ message: latest, session });
     if (terminalFailure) {
@@ -312,6 +323,14 @@ export class NightShiftRuntime {
     }
   }
 
+  consumeTerminalInspectionBudget(now = Date.now()) {
+    const cutoff = now - this.terminalInspectionWindowMs;
+    this.terminalInspectionStarts = this.terminalInspectionStarts.filter((startedAt) => startedAt > cutoff);
+    if (this.terminalInspectionStarts.length >= this.terminalInspectionMaxStarts) return false;
+    this.terminalInspectionStarts.push(now);
+    return true;
+  }
+
   safeToAutomaticallyRetry({ card, contentItemId, instance, release, stageId }) {
     if (this.hasHumanTakeover({ cardId: card.id, contentItemId, instanceId: instance.id, stageId })) return false;
     const stage = release.spec.stages.find((entry) => entry.id === stageId);
@@ -371,7 +390,7 @@ export class NightShiftRuntime {
     }
   }
 
-  async recoverWrittenArtifacts({ card, cards, contentItemId, failure, instance, release, stageId }) {
+  async recoverWrittenArtifacts({ card, cards, contentItemId, failure, instance, release, stageId, terminalSession = null }) {
     if (!this.completionValidator || typeof this.workboard.completeCard !== "function") return null;
     try {
       await this.completionValidator({
@@ -379,8 +398,9 @@ export class NightShiftRuntime {
         contentItemId,
         instance,
         release,
-        reuseExecutionEvidence: recoverableContractFailure(failure),
+        reuseExecutionEvidence: Boolean(terminalSession) || recoverableContractFailure(failure),
         stageId,
+        terminalSession,
       });
     } catch (error) {
       return { status: "blocked", summary: `Completion validation failed: ${error.message}`, failure: contractFailure(error) };
@@ -765,6 +785,14 @@ function positiveDispatchLimit(value, name) {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 36) {
     throw new Error(`${name} must be an integer between 1 and 36`);
+  }
+  return parsed;
+}
+
+function positiveInteger(value, name) {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error(`${name} must be a positive integer`);
   }
   return parsed;
 }

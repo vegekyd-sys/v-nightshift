@@ -166,7 +166,7 @@ test("does not recover an older terminal message from a previous run", async () 
   store.close();
 });
 
-test("throttles repeated Session inspection for a non-running card without a terminal message", async () => {
+test("throttles repeated Session inspection and artifact recovery for a blocked card without a terminal message", async () => {
   const source = await readFile(workflowPath, "utf8");
   const store = new NightShiftStore();
   const workboard = new FakeWorkboard();
@@ -175,7 +175,7 @@ test("throttles repeated Session inspection for a non-running card without a ter
   runtime.startInstance({ id: "NS-REVIEW-NONTERMINAL", workflowSha256: release.workflowSha256 });
   workboard.cards.push({
     id: "card-review-nonterminal",
-    status: "review",
+    status: "blocked",
     sessionKey: "agent:main:subagent:review-nonterminal",
     runId: "run-review-nonterminal",
     execution: { status: "running", startedAt: 100 },
@@ -188,9 +188,37 @@ test("throttles repeated Session inspection for a non-running card without a ter
   await runtime.reconcile("NS-REVIEW-NONTERMINAL");
   await runtime.reconcile("NS-REVIEW-NONTERMINAL");
 
-  assert.equal(workboard.cards[0].status, "review");
+  assert.equal(workboard.cards[0].status, "blocked");
   assert.equal(workboard.sessionCalls.length, 1);
   assert.equal(store.listEvents("NS-REVIEW-NONTERMINAL").filter((event) => event.type === "stage.session.inspected").length, 1);
+  store.close();
+});
+
+test("globally limits legacy terminal Session inspection without slowing running cards", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard, terminalInspectionMaxStarts: 3 });
+  const release = runtime.publish(source);
+  runtime.startInstance({ id: "NS-INSPECTION-BUDGET", workflowSha256: release.workflowSha256 });
+  for (let index = 0; index < 5; index += 1) {
+    const status = index === 4 ? "running" : "review";
+    const sessionKey = `agent:main:subagent:inspection-budget-${index}`;
+    workboard.cards.push({
+      id: `card-inspection-budget-${index}`,
+      status,
+      sessionKey,
+      runId: `run-inspection-budget-${index}`,
+      execution: { status: "running", startedAt: 100 },
+      labels: ["instance:NS-INSPECTION-BUDGET", "stage:plan"],
+    });
+    workboard.sessions.set(sessionKey, { messages: [{ role: "assistant", content: "Still working", timestamp: 200 }] });
+  }
+
+  await runtime.reconcile("NS-INSPECTION-BUDGET");
+
+  assert.equal(workboard.sessionCalls.length, 4);
+  assert.ok(workboard.sessionCalls.includes("agent:main:subagent:inspection-budget-4"));
   store.close();
 });
 
