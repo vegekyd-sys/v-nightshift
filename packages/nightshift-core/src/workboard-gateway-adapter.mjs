@@ -97,6 +97,11 @@ export class WorkboardGatewayAdapter {
     return result.card;
   }
 
+  async releaseCard(id, status) {
+    const result = await this.call("workboard.cards.release", { id, status });
+    return result.card;
+  }
+
   async dispatch(maxStarts = 1, { cardIds } = {}) {
     const scopedCardIds = uniqueCardIds(cardIds);
     if (scopedCardIds.length === 0) {

@@ -594,6 +594,7 @@ test("rejects a done card when its declared delivery fails validation", async ()
     id: "card-produce-done",
     labels: ["instance:NS-RUNTIME-INVALID-DELIVERY", "content-item:video-1", "stage:produce"],
     status: "done",
+    metadata: { claim: { ownerId: "main", token: "stale-token", expiresAt: Date.now() + 60_000 } },
   });
   workboard.cards.push({
     id: "card-review-stale",
@@ -624,10 +625,13 @@ test("rejects a done card when its declared delivery fails validation", async ()
     stageId: "produce",
   });
   assert.equal(workboard.cards[0].status, "ready");
+  assert.equal(workboard.cards[0].metadata.claim, undefined);
+  assert.deepEqual(workboard.releaseCalls.at(-1), { id: "card-produce-done", status: "ready" });
   assert.match(workboard.updateCalls.at(-1).patch.idempotencyKey, /^nightshift:[a-f0-9]{64}$/);
   assert.ok(workboard.updateCalls.at(-1).patch.idempotencyKey.length <= 160);
   assert.equal(workboard.cards[0].maxRuntimeSeconds, 14_400);
   assert.match(workboard.cards[0].notes, /\{"version":1/);
+  assert.match(workboard.cards[0].notes, /reused\+executing/);
   deliveryValid = true;
   workboard.cards[0].status = "done";
   await runtime.reconcile("NS-RUNTIME-INVALID-DELIVERY");
@@ -709,6 +713,7 @@ class FakeWorkboard {
   constructor() {
     this.cards = [];
     this.blockCalls = [];
+    this.releaseCalls = [];
     this.completeCalls = [];
     this.completeFailures = 0;
     this.dispatchCalls = [];
@@ -748,6 +753,14 @@ class FakeWorkboard {
     this.updateCalls.push({ id, patch });
     const card = this.cards.find((entry) => entry.id === id);
     Object.assign(card, patch);
+    return card;
+  }
+
+  async releaseCard(id, status) {
+    this.releaseCalls.push({ id, status });
+    const card = this.cards.find((entry) => entry.id === id);
+    card.status = status;
+    card.metadata = { ...(card.metadata ?? {}), claim: undefined };
     return card;
   }
 

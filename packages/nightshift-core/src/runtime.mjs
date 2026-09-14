@@ -354,7 +354,11 @@ export class NightShiftRuntime {
       maxRetries: stage.retry?.maxAttempts ?? 1,
       maxRuntimeSeconds: stageTimeoutSeconds(stage.timeout),
     });
-    await this.workboard.moveCard(cardId, "ready");
+    // Retry must clear the prior Attempt's claim atomically with reopening the
+    // card. A blocked card can retain a long-lived claim after an interrupted
+    // Worker; moving it to ready without releasing that claim makes it look
+    // queued while native dispatch correctly refuses to start it.
+    await this.workboard.releaseCard(cardId, "ready");
     const runs = contentItemId ? this.store.listContentItemRuns(instanceId) : this.store.listStageRuns(instanceId);
     const run = runs.find((entry) => entry.cardId === cardId && entry.stageId === stageId);
     const updated = {

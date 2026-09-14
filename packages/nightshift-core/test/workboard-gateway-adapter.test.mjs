@@ -106,6 +106,23 @@ test("dispatches only explicit card IDs through native exact-card start", async 
   assert.equal(calls.length, callCount);
 });
 
+test("reopens retry cards by releasing the stale claim in one native mutation", async () => {
+  const calls = [];
+  const adapter = new WorkboardGatewayAdapter();
+  adapter.call = async (method, params) => {
+    calls.push({ method, params });
+    return { card: { id: params.id, status: params.status, metadata: {} } };
+  };
+
+  const card = await adapter.releaseCard("card-1", "ready");
+
+  assert.equal(card.status, "ready");
+  assert.deepEqual(calls, [{
+    method: "workboard.cards.release",
+    params: { id: "card-1", status: "ready" },
+  }]);
+});
+
 test("exact starts stop after ambiguous failure and never launch beyond the start budget", async () => {
   const adapter = new WorkboardGatewayAdapter({ startIntervalMs: 0 });
   const calls = [];
