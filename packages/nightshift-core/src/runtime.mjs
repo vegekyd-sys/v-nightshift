@@ -202,10 +202,22 @@ export class NightShiftRuntime {
         failure: knownContractFailure.payload.failure,
       };
     }
+    const inspectionEventId = card.status === "running"
+      ? null
+      : terminalInspectionEventId(card, attempt);
+    if (inspectionEventId && this.store.getEvent?.(inspectionEventId)) return null;
     let session;
     try {
       session = await this.workboard.getSession(card.sessionKey, { limit: 12 });
-    } catch {
+    } catch (error) {
+      if (inspectionEventId) {
+        this.store.appendEvent({
+          eventId: inspectionEventId,
+          instanceId: instance.id,
+          type: "stage.session.inspection-deferred",
+          payload: { cardId: card.id, contentItemId, error: error.message, stageId },
+        });
+      }
       return null;
     }
     const messages = Array.isArray(session?.messages) ? session.messages : [];
@@ -213,7 +225,17 @@ export class NightShiftRuntime {
     const startedAt = timestampMs(card.execution?.startedAt ?? card.metadata?.attempts?.at(-1)?.startedAt ?? 0);
     const terminalAt = timestampMs(latest?.timestamp ?? latest?.__openclaw?.recordTimestampMs ?? 0);
     const stopReason = String(latest?.stopReason ?? "").toLowerCase();
-    if (latest?.role !== "assistant" || !["stop", "error", "aborted"].includes(stopReason) || terminalAt < startedAt) return null;
+    if (latest?.role !== "assistant" || !["stop", "error", "aborted"].includes(stopReason) || terminalAt < startedAt) {
+      if (inspectionEventId) {
+        this.store.appendEvent({
+          eventId: inspectionEventId,
+          instanceId: instance.id,
+          type: "stage.session.inspected",
+          payload: { cardId: card.id, contentItemId, stageId, terminal: false },
+        });
+      }
+      return null;
+    }
     const terminalFailure = classifyTerminalFailure({ message: latest, session });
     if (terminalFailure) {
       const eventId = `attempt-failure:${card.id}:${attempt}`;
@@ -780,6 +802,11 @@ function timestampMs(value) {
 
 function terminalAttempt(card) {
   return card.runId ?? card.execution?.runId ?? card.metadata?.automation?.attempt ?? 1;
+}
+
+function terminalInspectionEventId(card, attempt, now = Date.now()) {
+  const fiveMinuteBucket = Math.floor(now / 300_000);
+  return `session-inspection:${card.id}:${attempt}:${fiveMinuteBucket}`;
 }
 
 function messageText(message) {

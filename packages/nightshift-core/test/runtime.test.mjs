@@ -166,6 +166,34 @@ test("does not recover an older terminal message from a previous run", async () 
   store.close();
 });
 
+test("throttles repeated Session inspection for a non-running card without a terminal message", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard });
+  const release = runtime.publish(source);
+  runtime.startInstance({ id: "NS-REVIEW-NONTERMINAL", workflowSha256: release.workflowSha256 });
+  workboard.cards.push({
+    id: "card-review-nonterminal",
+    status: "review",
+    sessionKey: "agent:main:subagent:review-nonterminal",
+    runId: "run-review-nonterminal",
+    execution: { status: "running", startedAt: 100 },
+    labels: ["instance:NS-REVIEW-NONTERMINAL", "stage:plan"],
+  });
+  workboard.sessions.set("agent:main:subagent:review-nonterminal", {
+    messages: [{ role: "assistant", content: "Still working", timestamp: 200 }],
+  });
+
+  await runtime.reconcile("NS-REVIEW-NONTERMINAL");
+  await runtime.reconcile("NS-REVIEW-NONTERMINAL");
+
+  assert.equal(workboard.cards[0].status, "review");
+  assert.equal(workboard.sessionCalls.length, 1);
+  assert.equal(store.listEvents("NS-REVIEW-NONTERMINAL").filter((event) => event.type === "stage.session.inspected").length, 1);
+  store.close();
+});
+
 test("blocks a terminal Agent Session when its output contract fails", async () => {
   const source = await readFile(workflowPath, "utf8");
   const store = new NightShiftStore();
