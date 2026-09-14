@@ -111,6 +111,43 @@ test("retries a failed terminal completion callback without blocking valid outpu
   store.close();
 });
 
+test("reuses persisted completion validation and bounds legacy done-card validation", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  let validations = 0;
+  const runtime = new NightShiftRuntime({
+    completionValidator: async () => { validations += 1; },
+    store,
+    terminalInspectionMaxStarts: 3,
+    workboard,
+  });
+  const release = runtime.publish(source);
+  runtime.startInstance({ id: "NS-DONE-VALIDATION-BUDGET", workflowSha256: release.workflowSha256 });
+  for (let index = 0; index < 5; index += 1) {
+    workboard.cards.push({
+      id: `done-card-${index}`,
+      status: "done",
+      sessionKey: `agent:main:subagent:done-${index}`,
+      labels: ["instance:NS-DONE-VALIDATION-BUDGET", "stage:plan"],
+      metadata: { automation: { attempt: 1 } },
+    });
+  }
+  store.appendEvent({
+    eventId: "completion-validation:done-card-0:1",
+    instanceId: "NS-DONE-VALIDATION-BUDGET",
+    type: "stage.completion.validated",
+    payload: { cardId: "done-card-0", stageId: "plan" },
+  });
+
+  await runtime.reconcile("NS-DONE-VALIDATION-BUDGET");
+  await runtime.reconcile("NS-DONE-VALIDATION-BUDGET");
+
+  assert.equal(validations, 3);
+  assert.equal(store.listEvents("NS-DONE-VALIDATION-BUDGET").filter((event) => event.type === "stage.completion.validated").length, 4);
+  store.close();
+});
+
 test("idempotently completes a blocked produce card when persisted artifacts validate", async () => {
   const source = await readFile(workflowPath, "utf8");
   const store = new NightShiftStore();

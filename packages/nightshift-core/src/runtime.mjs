@@ -101,6 +101,7 @@ export class NightShiftRuntime {
       const storedRun = storedRuns.filter((entry) => entry.cardId === card.id && entry.stageId === stageId).at(-1);
       let failure = storedRun?.failure ?? null;
       let completionAlreadyValidated = false;
+      let completionValidationDeferred = false;
       let terminalReconciliationDeferred = false;
       let terminalSession = null;
       if (status === "blocked" && failure) {
@@ -130,11 +131,17 @@ export class NightShiftRuntime {
           completionAlreadyValidated = true;
         }
       }
-      if (status === "done" && this.completionValidator && !completionAlreadyValidated) {
+      const completionValidationEventId = `completion-validation:${card.id}:${card.metadata?.automation?.attempt ?? 1}`;
+      if (status === "done" && this.store.getEvent?.(completionValidationEventId)) {
+        completionAlreadyValidated = true;
+      } else if (status === "done" && stage.actor === "agent" && card.sessionKey && !this.consumeTerminalInspectionBudget()) {
+        completionValidationDeferred = true;
+      }
+      if (status === "done" && this.completionValidator && !completionAlreadyValidated && !completionValidationDeferred) {
         try {
           const validation = await this.completionValidator({ card, contentItemId, instance, release, stageId });
           this.store.appendEvent({
-            eventId: `completion-validation:${card.id}:${card.metadata?.automation?.attempt ?? 1}`,
+            eventId: completionValidationEventId,
             instanceId,
             type: "stage.completion.validated",
             payload: { cardId: card.id, contentItemId, stageId, evidence: validation ?? null },
