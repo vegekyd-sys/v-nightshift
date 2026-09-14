@@ -2,10 +2,51 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { compileWorkflow, loadWorkflow, NightShiftStore } from "../src/index.mjs";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = resolve(here, "../../../examples/workflows/xingqing-content-delivery.workflow.md");
+
+test("migrates existing run tables to preserve structured failure details", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "nightshift-store-migration-"));
+  const databasePath = join(directory, "nightshift.sqlite");
+  const legacy = new DatabaseSync(databasePath);
+  legacy.exec(`
+    CREATE TABLE stage_runs (
+      instance_id TEXT NOT NULL,
+      stage_id TEXT NOT NULL,
+      attempt INTEGER NOT NULL DEFAULT 1,
+      card_id TEXT,
+      status TEXT NOT NULL,
+      summary TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (instance_id, stage_id, attempt)
+    );
+    CREATE TABLE content_item_runs (
+      instance_id TEXT NOT NULL,
+      content_item_id TEXT NOT NULL,
+      stage_id TEXT NOT NULL,
+      attempt INTEGER NOT NULL DEFAULT 1,
+      card_id TEXT,
+      status TEXT NOT NULL,
+      summary TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (instance_id, content_item_id, stage_id, attempt)
+    );
+  `);
+  legacy.close();
+
+  const store = new NightShiftStore(databasePath);
+  const stageColumns = store.db.prepare("PRAGMA table_info(stage_runs)").all().map((column) => column.name);
+  const itemColumns = store.db.prepare("PRAGMA table_info(content_item_runs)").all().map((column) => column.name);
+  assert.ok(stageColumns.includes("failure_json"));
+  assert.ok(itemColumns.includes("failure_json"));
+  store.close();
+  await rm(directory, { recursive: true, force: true });
+});
 
 test("persists immutable releases, instances, stage runs, approvals, and audit events", async () => {
   const source = await import("node:fs/promises").then(({ readFile }) => readFile(fixture, "utf8"));

@@ -673,7 +673,7 @@ function indexStageTasks(stages, projects, cards) {
         projectId: project.id,
         projectName: project.name,
         requiresApproval: missingApprovalFor(project, stageById.get(run.stageId), run.contentItemId),
-        status: card?.status ?? run.status,
+        status: displayedTaskStatus(run, card),
       });
     }
   }
@@ -769,7 +769,7 @@ function summarizeStatuses(tasks) {
   return tasks.reduce((summary, task) => ({ ...summary, [task.status]: (summary[task.status] ?? 0) + 1 }), {});
 }
 
-function statusOrder(status) { return ({ running: 0, review: 1, blocked: 2, ready: 3, done: 4 })[status] ?? 5; }
+function statusOrder(status) { return ({ running: 0, retry_wait: 1, review: 2, blocked: 3, ready: 4, done: 5 })[status] ?? 6; }
 
 function preferTask(candidate, current) {
   const candidateRank = statusOrder(candidate.status);
@@ -779,7 +779,13 @@ function preferTask(candidate, current) {
 }
 
 function statusLabel(status) {
-  return ({ ready: "待开始", running: "进行中", review: "待审核", blocked: "已阻塞", done: "已完成", cancelled: "已取消" })[status] ?? status;
+  return ({ ready: "待开始", running: "进行中", retry_wait: "自动恢复中", review: "待审核", blocked: "已阻塞", done: "已完成", cancelled: "已取消" })[status] ?? status;
+}
+
+function displayedTaskStatus(run, card) {
+  const status = card?.status ?? run.status;
+  if (status === "blocked" && run.failure?.automaticRetry && run.failure?.nextRetryAt) return "retry_wait";
+  return status;
 }
 
 function taskActionLabel(task) {

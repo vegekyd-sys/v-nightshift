@@ -47,6 +47,7 @@ export class NightShiftStore {
         card_id TEXT,
         status TEXT NOT NULL,
         summary TEXT,
+        failure_json TEXT,
         updated_at TEXT NOT NULL,
         PRIMARY KEY(instance_id, stage_id, attempt)
       );
@@ -70,6 +71,7 @@ export class NightShiftStore {
         card_id TEXT,
         status TEXT NOT NULL,
         summary TEXT,
+        failure_json TEXT,
         updated_at TEXT NOT NULL,
         PRIMARY KEY(instance_id, content_item_id, stage_id, attempt),
         FOREIGN KEY(instance_id, content_item_id) REFERENCES content_items(instance_id, id)
@@ -133,6 +135,12 @@ export class NightShiftStore {
     }
     if (!approvalColumns.some((column) => column.name === "binding_hash")) {
       this.db.exec("ALTER TABLE approvals ADD COLUMN binding_hash TEXT");
+    }
+    for (const table of ["stage_runs", "content_item_runs"]) {
+      const columns = this.db.prepare(`PRAGMA table_info(${table})`).all();
+      if (!columns.some((column) => column.name === "failure_json")) {
+        this.db.exec(`ALTER TABLE ${table} ADD COLUMN failure_json TEXT`);
+      }
     }
   }
 
@@ -370,12 +378,13 @@ export class NightShiftStore {
   upsertStageRun(run, now = new Date()) {
     this.db
       .prepare(`
-        INSERT INTO stage_runs(instance_id, stage_id, attempt, card_id, status, summary, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO stage_runs(instance_id, stage_id, attempt, card_id, status, summary, failure_json, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(instance_id, stage_id, attempt) DO UPDATE SET
           card_id=excluded.card_id,
           status=excluded.status,
           summary=excluded.summary,
+          failure_json=excluded.failure_json,
           updated_at=excluded.updated_at
       `)
       .run(
@@ -385,6 +394,7 @@ export class NightShiftStore {
         run.cardId ?? null,
         run.status,
         run.summary ?? null,
+        run.failure ? JSON.stringify(run.failure) : null,
         now.toISOString(),
       );
     return this.listStageRuns(run.instanceId).find(
@@ -396,31 +406,33 @@ export class NightShiftStore {
     return this.db
       .prepare(`
         SELECT instance_id AS instanceId, stage_id AS stageId, attempt, card_id AS cardId,
-               status, summary, updated_at AS updatedAt
+               status, summary, failure_json AS failureJson, updated_at AS updatedAt
         FROM stage_runs WHERE instance_id = ? ORDER BY rowid
       `)
-      .all(instanceId);
+      .all(instanceId)
+      .map(runRow);
   }
 
   upsertContentItemRun(run, now = new Date()) {
     this.db.prepare(`
-      INSERT INTO content_item_runs(instance_id, content_item_id, stage_id, attempt, card_id, status, summary, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO content_item_runs(instance_id, content_item_id, stage_id, attempt, card_id, status, summary, failure_json, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(instance_id, content_item_id, stage_id, attempt) DO UPDATE SET
         card_id=excluded.card_id,
         status=excluded.status,
         summary=excluded.summary,
+        failure_json=excluded.failure_json,
         updated_at=excluded.updated_at
-    `).run(run.instanceId, run.contentItemId, run.stageId, run.attempt ?? 1, run.cardId ?? null, run.status, run.summary ?? null, now.toISOString());
+    `).run(run.instanceId, run.contentItemId, run.stageId, run.attempt ?? 1, run.cardId ?? null, run.status, run.summary ?? null, run.failure ? JSON.stringify(run.failure) : null, now.toISOString());
     return this.listContentItemRuns(run.instanceId).find((entry) => entry.contentItemId === run.contentItemId && entry.stageId === run.stageId && entry.attempt === (run.attempt ?? 1));
   }
 
   listContentItemRuns(instanceId) {
     return this.db.prepare(`
       SELECT instance_id AS instanceId, content_item_id AS contentItemId, stage_id AS stageId,
-             attempt, card_id AS cardId, status, summary, updated_at AS updatedAt
+             attempt, card_id AS cardId, status, summary, failure_json AS failureJson, updated_at AS updatedAt
       FROM content_item_runs WHERE instance_id = ? ORDER BY rowid
-    `).all(instanceId);
+    `).all(instanceId).map(runRow);
   }
 
   recordApproval(approval, now = new Date()) {
@@ -615,6 +627,14 @@ function externalOperationRow(row) {
     result: row.result_json ? JSON.parse(row.result_json) : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function runRow(row) {
+  return {
+    ...row,
+    failure: row.failureJson ? JSON.parse(row.failureJson) : null,
+    failureJson: undefined,
   };
 }
 

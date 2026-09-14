@@ -197,6 +197,182 @@ test("blocks a terminal Agent Session when its output contract fails", async () 
   store.close();
 });
 
+test("corrects a false review state after an infrastructure failure without running handoff validation", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  let validations = 0;
+  const runtime = new NightShiftRuntime({
+    store,
+    workboard,
+    completionValidator: async () => { validations += 1; throw new Error("handoff missing"); },
+  });
+  const release = runtime.publish(source);
+  runtime.startInstance({ id: "NS-INFRA-FAILURE", workflowSha256: release.workflowSha256 });
+  workboard.cards.push({
+    id: "card-infra-failure",
+    status: "review",
+    sessionKey: "agent:main:subagent:infra-failure",
+    runId: "run-infra-failure",
+    execution: { status: "blocked", startedAt: 100 },
+    labels: ["instance:NS-INFRA-FAILURE", "stage:plan"],
+  });
+  workboard.sessions.set("agent:main:subagent:infra-failure", {
+    messages: [{ role: "assistant", content: "The agent run failed before producing a reply.", errorMessage: "database is locked", stopReason: "error", timestamp: 200 }],
+  });
+
+  await runtime.reconcile("NS-INFRA-FAILURE");
+
+  const run = store.listStageRuns("NS-INFRA-FAILURE")[0];
+  assert.equal(validations, 0);
+  assert.equal(workboard.cards[0].status, "blocked");
+  assert.equal(run.status, "blocked");
+  assert.equal(run.failure.kind, "database_lock");
+  assert.equal(run.failure.source, "gateway");
+  assert.equal(run.failure.retryable, true);
+  assert.equal(run.failure.automaticRetry, true);
+  assert.doesNotMatch(run.summary, /handoff/i);
+  assert.ok(store.listEvents("NS-INFRA-FAILURE").some((event) => event.type === "stage.attempt.failed"));
+  store.close();
+});
+
+test("automatically reopens a due retryable infrastructure failure on the same card", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard });
+  const release = runtime.publish(source);
+  runtime.startInstance({ id: "NS-AUTO-RETRY", workflowSha256: release.workflowSha256 });
+  workboard.cards.push({
+    id: "card-auto-retry",
+    status: "review",
+    sessionKey: "agent:main:subagent:auto-retry",
+    runId: "run-auto-retry",
+    execution: { status: "blocked", startedAt: 100 },
+    labels: ["instance:NS-AUTO-RETRY", "stage:plan"],
+  });
+  workboard.sessions.set("agent:main:subagent:auto-retry", {
+    messages: [{ role: "assistant", errorMessage: "database is locked", stopReason: "error", timestamp: 200 }],
+  });
+  await runtime.reconcile("NS-AUTO-RETRY");
+  const failed = store.listStageRuns("NS-AUTO-RETRY")[0];
+  store.upsertStageRun({ ...failed, failure: { ...failed.failure, nextRetryAt: "1970-01-01T00:00:00.000Z" } });
+
+  await runtime.reconcile("NS-AUTO-RETRY");
+
+  const retried = store.listStageRuns("NS-AUTO-RETRY")[0];
+  assert.equal(workboard.cards[0].status, "ready");
+  assert.equal(workboard.releaseCalls.length, 1);
+  assert.equal(retried.status, "ready");
+  assert.equal(retried.failure, null);
+  assert.ok(store.listEvents("NS-AUTO-RETRY").some((event) => event.type === "stage.retry.automatic"));
+  store.close();
+});
+
+test("does not auto-retry a side-effect stage without a resumable external task", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard });
+  const release = runtime.publish(source);
+  runtime.startInstance({
+    id: "NS-PAID-UNCERTAIN",
+    workflowSha256: release.workflowSha256,
+    contentItems: [{ id: "video-1", title: "Paid video", route: "AI_GENERATE" }],
+  });
+  workboard.cards.push({
+    id: "card-paid-uncertain",
+    status: "review",
+    sessionKey: "agent:main:subagent:paid-uncertain",
+    runId: "run-paid-uncertain",
+    execution: { status: "blocked", startedAt: 100 },
+    labels: ["instance:NS-PAID-UNCERTAIN", "content-item:video-1", "stage:produce"],
+  });
+  workboard.sessions.set("agent:main:subagent:paid-uncertain", {
+    messages: [{ role: "assistant", errorMessage: "database is locked", stopReason: "error", timestamp: 200 }],
+  });
+
+  await runtime.reconcile("NS-PAID-UNCERTAIN");
+
+  const run = store.listContentItemRuns("NS-PAID-UNCERTAIN")[0];
+  assert.equal(run.failure.retryable, true);
+  assert.equal(run.failure.automaticRetry, false);
+  assert.equal(run.failure.nextRetryAt, null);
+  assert.equal(workboard.releaseCalls.length, 0);
+  store.close();
+});
+
+test("allows a side-effect retry only when the ledger has a resumable external task", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard });
+  const release = runtime.publish(source);
+  runtime.startInstance({
+    id: "NS-PAID-RESUMABLE",
+    workflowSha256: release.workflowSha256,
+    contentItems: [{ id: "video-1", title: "Paid video", route: "AI_GENERATE" }],
+  });
+  store.reserveExternalOperation({
+    idempotencyKey: "NS-PAID-RESUMABLE:video-1:produce",
+    instanceId: "NS-PAID-RESUMABLE",
+    contentItemId: "video-1",
+    stageId: "produce",
+    ownerCardId: "card-paid-resumable",
+    requestHash: "request-hash",
+  });
+  store.checkpointExternalOperation("NS-PAID-RESUMABLE:video-1:produce", {
+    status: "executing",
+    externalTaskId: "supplier-task-1",
+  });
+  workboard.cards.push({
+    id: "card-paid-resumable",
+    status: "review",
+    sessionKey: "agent:main:subagent:paid-resumable",
+    runId: "run-paid-resumable",
+    execution: { status: "blocked", startedAt: "1970-01-01T00:00:00.100Z" },
+    labels: ["instance:NS-PAID-RESUMABLE", "content-item:video-1", "stage:produce"],
+  });
+  workboard.sessions.set("agent:main:subagent:paid-resumable", {
+    messages: [{ role: "assistant", errorMessage: "database is locked", stopReason: "ERROR", timestamp: "1970-01-01T00:00:00.200Z" }],
+  });
+
+  await runtime.reconcile("NS-PAID-RESUMABLE");
+
+  const run = store.listContentItemRuns("NS-PAID-RESUMABLE")[0];
+  assert.equal(run.failure.automaticRetry, true);
+  assert.ok(run.failure.nextRetryAt);
+  store.close();
+});
+
+test("does not automatically retry after a recorded human takeover", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard });
+  const release = runtime.publish(source);
+  runtime.startInstance({ id: "NS-HUMAN-TAKEOVER", workflowSha256: release.workflowSha256 });
+  store.saveHumanAttempt({ cardId: "card-human-takeover", instanceId: "NS-HUMAN-TAKEOVER", status: "started" });
+  workboard.cards.push({
+    id: "card-human-takeover",
+    status: "review",
+    sessionKey: "agent:main:subagent:human-takeover",
+    runId: "run-human-takeover",
+    execution: { status: "blocked", startedAt: 100 },
+    labels: ["instance:NS-HUMAN-TAKEOVER", "stage:plan"],
+  });
+  workboard.sessions.set("agent:main:subagent:human-takeover", {
+    messages: [{ role: "assistant", errorMessage: "database is locked", stopReason: "error", timestamp: 200 }],
+  });
+
+  await runtime.reconcile("NS-HUMAN-TAKEOVER");
+
+  const run = store.listStageRuns("NS-HUMAN-TAKEOVER")[0];
+  assert.equal(run.failure.retryable, true);
+  assert.equal(run.failure.automaticRetry, false);
+  store.close();
+});
+
 test("approval card completion does not skip the guarded agent stage", async () => {
   const source = await readFile(workflowPath, "utf8");
   const store = new NightShiftStore();
