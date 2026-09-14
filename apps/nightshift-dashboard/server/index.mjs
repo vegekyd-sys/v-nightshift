@@ -849,7 +849,7 @@ async function loadDeliverables(instanceId, contentItemId = null) {
   return normalizeDeliverablesManifest(source, { instanceId, contentItemId });
 }
 
-async function validateCompletion({ card, contentItemId, instance, release, stageId, submittedAttempt }) {
+async function validateCompletion({ card, contentItemId, instance, release, reuseExecutionEvidence = false, stageId, submittedAttempt, terminalSession }) {
   const stage = release?.spec?.stages?.find((entry) => entry.id === stageId);
   const evidence = {};
   const human = humanCompletionEvidence({ store, card, instance, stageId, contentItemId, submittedAttempt });
@@ -857,56 +857,80 @@ async function validateCompletion({ card, contentItemId, instance, release, stag
   if (stage?.actor === "agent" && !human) {
     const attempt = nativeCardAttempts(card).at(-1);
     if (!attempt?.sessionKey || !attempt.runId) throw new Error("Agent completion requires an auditable Workboard Session and runId");
-    const result = await workboard.getSession(attempt.sessionKey, { limit: 120 });
-    const rangeStart = Number(attempt.startedAt || 0) - 5000;
-    const rangeEnd = Number(attempt.endedAt || Number.POSITIVE_INFINITY) + 5000;
-    const messages = (result.messages ?? []).filter((message) =>
-      !message.timestamp || (Number(message.timestamp) >= rangeStart && Number(message.timestamp) <= rangeEnd));
-    evidence.execution = validateExecutionEvidence({
-      cardId: card.id,
-      messages,
-      requiredSkills: card.metadata?.automation?.skills ?? [],
-    });
+    if (reuseExecutionEvidence) {
+      evidence.execution = { source: "previous-terminal-validation", status: "reused" };
+    } else {
+      try {
+        const result = terminalSession ?? await workboard.getSession(attempt.sessionKey, { limit: 120 });
+        const rangeStart = Number(attempt.startedAt || 0) - 5000;
+        const rangeEnd = Number(attempt.endedAt || Number.POSITIVE_INFINITY) + 5000;
+        const messages = (result.messages ?? []).filter((message) =>
+          !message.timestamp || (Number(message.timestamp) >= rangeStart && Number(message.timestamp) <= rangeEnd));
+        evidence.execution = validateExecutionEvidence({
+          cardId: card.id,
+          messages,
+          requiredSkills: card.metadata?.automation?.skills ?? [],
+        });
+      } catch (error) {
+        error.completionPhase ??= "execution";
+        throw error;
+      }
+    }
     evidence.sessionKey = attempt.sessionKey;
     evidence.runId = attempt.runId;
   }
   if ((stage?.sideEffects ?? []).length > 0) {
-    const contentItem = contentItemId
-      ? store.listContentItems(instance.id).find((entry) => entry.id === contentItemId)
-      : null;
-    const operationKeys = resolveNightShiftOperationKeys({ card, release, instance, contentItem });
-    const operation = findNightShiftExternalOperation({
-      card,
-      candidateIdempotencyKeys: operationKeys.candidateIdempotencyKeys,
-      operations: store.listExternalOperations(instance.id),
-    });
-    if (!operation || operation.ownerCardId !== card.id || operation.status !== "succeeded") {
-      throw new Error("External side effect has no succeeded Night Shift operation checkpoint");
+    try {
+      const contentItem = contentItemId
+        ? store.listContentItems(instance.id).find((entry) => entry.id === contentItemId)
+        : null;
+      const operationKeys = resolveNightShiftOperationKeys({ card, release, instance, contentItem });
+      const operation = findNightShiftExternalOperation({
+        card,
+        candidateIdempotencyKeys: operationKeys.candidateIdempotencyKeys,
+        operations: store.listExternalOperations(instance.id),
+      });
+      if (!operation || operation.ownerCardId !== card.id || operation.status !== "succeeded") {
+        throw new Error("External side effect has no succeeded Night Shift operation checkpoint");
+      }
+      evidence.externalOperation = {
+        externalTaskId: operation.externalTaskId,
+        idempotencyKey: operation.idempotencyKey,
+        requestHash: operation.requestHash,
+        status: operation.status,
+      };
+    } catch (error) {
+      error.completionPhase ??= "side_effect";
+      throw error;
     }
-    evidence.externalOperation = {
-      externalTaskId: operation.externalTaskId,
-      idempotencyKey: operation.idempotencyKey,
-      requestHash: operation.requestHash,
-      status: operation.status,
-    };
   }
   let handoff = null;
   if (release?.spec?.handoff?.version === 1) {
-    const manifest = await loadStageHandoff({ contentItemId, instance, release, stageId, required: true });
-    handoff = normalizeStageHandoff(manifest, { contentItemId, instanceId: instance.id, release, stageId });
+    try {
+      const manifest = await loadStageHandoff({ contentItemId, instance, release, stageId, required: true });
+      handoff = normalizeStageHandoff(manifest, { contentItemId, instanceId: instance.id, release, stageId });
+    } catch (error) {
+      error.completionPhase ??= "handoff";
+      throw error;
+    }
   }
   if (release?.spec?.completion?.mode === "strict-v1") {
-    evidence.outputs = (await validateDeclaredCompletion({
-      checkUrl: checkCompletionUrl,
-      instanceCreatedAt: instance.createdAt,
-      loadArtifact: async (artifact) => {
-        const loaded = await loadInstanceArtifact({ artifact, contentItemId, instance, hash: Boolean(human) });
-        if (human) (evidence.artifacts ??= []).push({ artifact, sha256: loaded.sha256 });
-        return loaded;
-      },
-      manifest: handoff,
-      stage,
-    })).output;
+    try {
+      evidence.outputs = (await validateDeclaredCompletion({
+        checkUrl: checkCompletionUrl,
+        instanceCreatedAt: instance.createdAt,
+        loadArtifact: async (artifact) => {
+          const loaded = await loadInstanceArtifact({ artifact, contentItemId, instance, hash: Boolean(human) });
+          if (human) (evidence.artifacts ??= []).push({ artifact, sha256: loaded.sha256 });
+          return loaded;
+        },
+        manifest: handoff,
+        stage,
+      })).output;
+    } catch (error) {
+      error.completionPhase ??= "outputs";
+      throw error;
+    }
   }
   if (handoff) evidence.handoff = handoff;
   if (!stage?.outputs?.includes("deliveryManifest")) return checkedCompletionEvidence(card, evidence);

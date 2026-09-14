@@ -111,8 +111,8 @@ export class NightShiftRuntime {
           completionAlreadyValidated = recovered.status === "done";
         }
       }
-      if (status === "blocked" && (!failure || failure.kind === "contract_error") && stage.actor === "agent" && card.sessionKey && !this.store.getHumanAttempt?.(card.id)) {
-        const recovered = await this.recoverWrittenArtifacts({ card, cards: currentCards, contentItemId, instance, release, stageId });
+      if (status === "blocked" && (!failure || recoverableContractFailure(failure)) && stage.actor === "agent" && card.sessionKey && !this.store.getHumanAttempt?.(card.id)) {
+        const recovered = await this.recoverWrittenArtifacts({ card, cards: currentCards, contentItemId, failure, instance, release, stageId });
         if (recovered) {
           status = recovered.status;
           summary = recovered.summary;
@@ -177,6 +177,31 @@ export class NightShiftRuntime {
     if (!card.sessionKey || ["done", "cancelled"].includes(card.status)) return null;
     if (typeof this.workboard.getSession !== "function") return null;
     if (typeof this.workboard.completeCard !== "function" || typeof this.workboard.blockCard !== "function") return null;
+    const attempt = terminalAttempt(card);
+    const knownFailure = this.store.getEvent?.(`attempt-failure:${card.id}:${attempt}`);
+    if (knownFailure?.payload?.failure) {
+      if (card.status !== "blocked") {
+        const blocked = await this.workboard.blockCard(card.id, { reason: knownFailure.payload.summary });
+        Object.assign(card, blocked);
+      }
+      return {
+        status: "blocked",
+        summary: knownFailure.payload.summary,
+        failure: knownFailure.payload.failure,
+      };
+    }
+    const knownContractFailure = this.store.getEvent?.(`terminal-blocked:${card.id}:${attempt}`);
+    if (knownContractFailure?.payload?.failure) {
+      if (card.status !== "blocked") {
+        const blocked = await this.workboard.blockCard(card.id, { reason: knownContractFailure.payload.summary });
+        Object.assign(card, blocked);
+      }
+      return {
+        status: "blocked",
+        summary: knownContractFailure.payload.summary,
+        failure: knownContractFailure.payload.failure,
+      };
+    }
     let session;
     try {
       session = await this.workboard.getSession(card.sessionKey, { limit: 12 });
@@ -191,12 +216,7 @@ export class NightShiftRuntime {
     if (latest?.role !== "assistant" || !["stop", "error", "aborted"].includes(stopReason) || terminalAt < startedAt) return null;
     const terminalFailure = classifyTerminalFailure({ message: latest, session });
     if (terminalFailure) {
-      const attempt = card.runId ?? card.execution?.runId ?? card.metadata?.automation?.attempt ?? 1;
       const eventId = `attempt-failure:${card.id}:${attempt}`;
-      const existing = this.store.listEvents(instance.id, 1000).find((event) => event.eventId === eventId);
-      if (existing?.payload?.failure) {
-        return { status: "blocked", summary: existing.payload.summary, failure: existing.payload.failure };
-      }
       const previousFailures = this.store.listEvents(instance.id, 1000).filter((event) =>
         event.type === "stage.attempt.failed" && event.payload?.cardId === card.id);
       const safeToRetry = this.safeToAutomaticallyRetry({ card, contentItemId, instance, release, stageId });
@@ -226,7 +246,7 @@ export class NightShiftRuntime {
     const terminalText = messageText(latest);
     try {
       if (this.completionValidator) {
-        await this.completionValidator({ card, contentItemId, instance, release, stageId });
+        await this.completionValidator({ card, contentItemId, instance, release, stageId, terminalSession: session });
       }
     } catch (error) {
       const reason = boundedReason(`Terminal Agent Session did not satisfy the Workflow output contract: ${error.message}`);
@@ -234,14 +254,14 @@ export class NightShiftRuntime {
       const blocked = await this.workboard.blockCard(card.id, { reason });
       Object.assign(card, blocked);
       this.store.appendEvent({
+        eventId: `terminal-blocked:${card.id}:${attempt}`,
         instanceId: instance.id,
         type: "stage.terminal.blocked",
-        payload: { cardId: card.id, contentItemId, error: error.message, failure, stageId, terminalAt },
+        payload: { cardId: card.id, contentItemId, error: error.message, failure, stageId, summary: reason, terminalAt },
       });
       return { status: "blocked", summary: reason, failure };
     }
     const summary = boundedSummary(terminalText || `${stageId} completed with validated outputs`);
-    const attempt = card.runId ?? card.execution?.runId ?? card.metadata?.automation?.attempt ?? 1;
     try {
       const completed = await this.workboard.completeCard(card.id, {
         summary,
@@ -329,10 +349,17 @@ export class NightShiftRuntime {
     }
   }
 
-  async recoverWrittenArtifacts({ card, cards, contentItemId, instance, release, stageId }) {
+  async recoverWrittenArtifacts({ card, cards, contentItemId, failure, instance, release, stageId }) {
     if (!this.completionValidator || typeof this.workboard.completeCard !== "function") return null;
     try {
-      await this.completionValidator({ card, contentItemId, instance, release, stageId });
+      await this.completionValidator({
+        card,
+        contentItemId,
+        instance,
+        release,
+        reuseExecutionEvidence: recoverableContractFailure(failure),
+        stageId,
+      });
     } catch (error) {
       return { status: "blocked", summary: `Completion validation failed: ${error.message}`, failure: contractFailure(error) };
     }
@@ -728,7 +755,20 @@ function contractFailure(error) {
     retryable: false,
     automaticRetry: false,
     nextRetryAt: null,
+    validationPhase: error?.completionPhase ?? inferContractFailurePhase(error),
   };
+}
+
+function recoverableContractFailure(failure) {
+  return failure?.kind === "contract_error" && ["handoff", "outputs", "side_effect"].includes(failure.validationPhase);
+}
+
+function inferContractFailurePhase(error) {
+  const message = String(error?.message ?? error).toLowerCase();
+  if (message.includes("handoff")) return "handoff";
+  if (/(artifact|deliverable|manifest|output)/.test(message)) return "outputs";
+  if (/(external side effect|checkpoint|ledger)/.test(message)) return "side_effect";
+  return "unknown";
 }
 
 function timestampMs(value) {
@@ -736,6 +776,10 @@ function timestampMs(value) {
   if (Number.isFinite(numeric)) return numeric;
   const parsed = Date.parse(String(value ?? ""));
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function terminalAttempt(card) {
+  return card.runId ?? card.execution?.runId ?? card.metadata?.automation?.attempt ?? 1;
 }
 
 function messageText(message) {

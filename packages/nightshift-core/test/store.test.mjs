@@ -103,6 +103,14 @@ test("persists immutable releases, instances, stage runs, approvals, and audit e
     store.listEvents("NS-STORE-1").map((event) => event.type),
     ["approval.recorded", "content-items.replaced", "content-items.replaced", "instance.created"],
   );
+  store.appendEvent({
+    eventId: "known-event",
+    instanceId: "NS-STORE-1",
+    type: "test.known",
+    payload: { value: 1 },
+  });
+  assert.deepEqual(store.getEvent("known-event")?.payload, { value: 1 });
+  assert.equal(store.getEvent("missing-event"), null);
   store.close();
 });
 

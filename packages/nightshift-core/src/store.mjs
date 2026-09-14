@@ -567,6 +567,13 @@ export class NightShiftStore {
     return id;
   }
 
+  getEvent(eventId) {
+    const row = this.db
+      .prepare("SELECT * FROM audit_events WHERE event_id = ?")
+      .get(eventId);
+    return row ? auditEventRow(row) : null;
+  }
+
   listEvents(instanceId = null, limit = 100) {
     const rows = instanceId
       ? this.db
@@ -575,14 +582,7 @@ export class NightShiftStore {
       : this.db
           .prepare("SELECT * FROM audit_events ORDER BY sequence DESC LIMIT ?")
           .all(limit);
-    return rows.map((row) => ({
-      sequence: row.sequence,
-      eventId: row.event_id,
-      instanceId: row.instance_id,
-      type: row.type,
-      payload: JSON.parse(row.payload_json),
-      createdAt: row.created_at,
-    }));
+    return rows.map(auditEventRow);
   }
 }
 
@@ -627,6 +627,17 @@ function externalOperationRow(row) {
     result: row.result_json ? JSON.parse(row.result_json) : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function auditEventRow(row) {
+  return {
+    sequence: row.sequence,
+    eventId: row.event_id,
+    instanceId: row.instance_id,
+    type: row.type,
+    payload: JSON.parse(row.payload_json),
+    createdAt: row.created_at,
   };
 }
 

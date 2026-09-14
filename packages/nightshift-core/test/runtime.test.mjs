@@ -189,9 +189,11 @@ test("blocks a terminal Agent Session when its output contract fails", async () 
   });
 
   await runtime.reconcile("NS-RUNTIME-TERMINAL-BLOCK");
+  await runtime.reconcile("NS-RUNTIME-TERMINAL-BLOCK");
 
   assert.equal(workboard.cards[0].status, "blocked");
   assert.equal(workboard.blockCalls.length, 1);
+  assert.equal(workboard.sessionCalls.length, 1);
   assert.match(workboard.blockCalls[0].reason, /handoff missing/);
   assert.ok(store.listEvents("NS-RUNTIME-TERMINAL-BLOCK").some((event) => event.type === "stage.terminal.blocked"));
   store.close();
@@ -222,6 +224,7 @@ test("corrects a false review state after an infrastructure failure without runn
   });
 
   await runtime.reconcile("NS-INFRA-FAILURE");
+  await runtime.reconcile("NS-INFRA-FAILURE");
 
   const run = store.listStageRuns("NS-INFRA-FAILURE")[0];
   assert.equal(validations, 0);
@@ -231,8 +234,52 @@ test("corrects a false review state after an infrastructure failure without runn
   assert.equal(run.failure.source, "gateway");
   assert.equal(run.failure.retryable, true);
   assert.equal(run.failure.automaticRetry, true);
+  assert.equal(workboard.sessionCalls.length, 1);
   assert.doesNotMatch(run.summary, /handoff/i);
   assert.ok(store.listEvents("NS-INFRA-FAILURE").some((event) => event.type === "stage.attempt.failed"));
+  store.close();
+});
+
+test("reuses a persisted terminal failure event without reading the Session again", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard });
+  const release = runtime.publish(source);
+  runtime.startInstance({ id: "NS-PERSISTED-FAILURE", workflowSha256: release.workflowSha256 });
+  workboard.cards.push({
+    id: "card-persisted-failure",
+    status: "review",
+    sessionKey: "agent:main:subagent:persisted-failure",
+    runId: "run-persisted-failure",
+    execution: { status: "blocked", startedAt: 100 },
+    labels: ["instance:NS-PERSISTED-FAILURE", "stage:plan"],
+  });
+  store.appendEvent({
+    eventId: "attempt-failure:card-persisted-failure:run-persisted-failure",
+    instanceId: "NS-PERSISTED-FAILURE",
+    type: "stage.attempt.failed",
+    payload: {
+      cardId: "card-persisted-failure",
+      failure: {
+        kind: "database_lock",
+        source: "gateway",
+        rawError: "database is locked",
+        retryable: true,
+        automaticRetry: false,
+        nextRetryAt: null,
+      },
+      stageId: "plan",
+      summary: "Gateway database lock",
+    },
+  });
+
+  await runtime.reconcile("NS-PERSISTED-FAILURE");
+
+  assert.equal(workboard.cards[0].status, "blocked");
+  assert.equal(workboard.blockCalls.length, 1);
+  assert.equal(workboard.sessionCalls.length, 0);
+  assert.equal(store.listStageRuns("NS-PERSISTED-FAILURE")[0].failure.kind, "database_lock");
   store.close();
 });
 
@@ -981,6 +1028,7 @@ class FakeWorkboard {
     this.dispatchCalls = [];
     this.updateCalls = [];
     this.sessions = new Map();
+    this.sessionCalls = [];
   }
 
   async listCards() {
@@ -1032,6 +1080,7 @@ class FakeWorkboard {
   }
 
   async getSession(sessionKey) {
+    this.sessionCalls.push(sessionKey);
     return this.sessions.get(sessionKey) ?? { messages: [] };
   }
 
