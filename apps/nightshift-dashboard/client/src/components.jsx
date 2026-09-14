@@ -158,10 +158,8 @@ export function Drawer({ card, delivery, deliveryState, deliveryError, handoff, 
       }
     };
     load();
-    const timer = selectedAttempt.status === "running" ? setInterval(() => load(true), 5000) : null;
     return () => {
       active = false;
-      if (timer) clearInterval(timer);
     };
   }, [card?.id, selectedAttempt?.runId, selectedAttempt?.status, sessionExpanded]);
   if (!card) return null;

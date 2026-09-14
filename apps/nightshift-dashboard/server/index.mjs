@@ -2,6 +2,7 @@ import { runSchedulerPass } from "../../../packages/nightshift-core/src/schedule
 import { tickWithFaultProjection } from "../../../packages/nightshift-core/src/scheduler-state.mjs";
 import { createCompletionUrlChecker } from "./completion-url.mjs";
 import { SchedulerCircuit } from "./scheduler-circuit.mjs";
+import { createSessionReader } from "./session-reader.mjs";
 import { HumanAttemptController, humanCompletionEvidence, publicHumanAttempt, evidenceHash } from "../../../packages/nightshift-core/src/human-attempt.mjs";
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
@@ -69,6 +70,7 @@ const runtime = new NightShiftRuntime({
   store,
   workboard,
 });
+const readSession = createSessionReader({ getSession: (...args) => workboard.getSession(...args) });
 const humanAttempts = new HumanAttemptController({ store, workboard, validateCompletion });
 const checkCompletionUrl = createCompletionUrlChecker();
 let cardCache = [];
@@ -322,7 +324,12 @@ async function handleApi(request, response, url) {
     // Native Workboard retries reuse the same OpenClaw session. A large history
     // can exceed the Gateway CLI response timeout before we apply the attempt
     // time-range filter, so keep the RPC window bounded to recent run traffic.
-    const result = await workboard.getSession(attempt.sessionKey, { limit: 80 });
+    const result = await readSession({
+      cacheKey: `${card.id}:${attempt.runId}`,
+      limit: 80,
+      sessionKey: attempt.sessionKey,
+      terminal: card.status !== "running" || attempt.status !== "running",
+    });
     const nextAttempt = attempts.find((entry) => Number(entry.startedAt) > Number(attempt.startedAt));
     const rangeStart = Number(attempt.startedAt || 0) - 5000;
     const rangeEnd = Number(attempt.endedAt || nextAttempt?.startedAt || Number.POSITIVE_INFINITY) + 5000;
