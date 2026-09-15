@@ -2,6 +2,7 @@ import { runSchedulerPass } from "../../../packages/nightshift-core/src/schedule
 import { tickWithFaultProjection } from "../../../packages/nightshift-core/src/scheduler-state.mjs";
 import { createCompletionUrlChecker } from "./completion-url.mjs";
 import { SchedulerCircuit } from "./scheduler-circuit.mjs";
+import { createHostPressureProbe } from "./host-pressure-probe.mjs";
 import { DispatchPressureGuard } from "./dispatch-pressure-guard.mjs";
 import { WorkboardChangeScheduler } from "./workboard-change-scheduler.mjs";
 import { createSessionReader } from "./session-reader.mjs";
@@ -99,6 +100,7 @@ const dispatchPressureGuard = new DispatchPressureGuard({
   maxActive: schedulerMaxWorkboardActive,
   redLatencyMs: gatewayRedLatencyMs,
 });
+const probeHostPressure = createHostPressureProbe({ gatewayUrl: workboard.gatewayUrl });
 let tickQueue = Promise.resolve();
 let shuttingDown = false;
 let capacityProbePromise = null;
@@ -788,14 +790,15 @@ function runScheduler({ trigger = "manual" } = {}) {
 }
 
 function probeDispatchCapacity() {
-  if (capacityProbePromise || schedulerPromise || shuttingDown) return capacityProbePromise;
+  if (capacityProbePromise || shuttingDown) return capacityProbePromise;
   if (dispatchPressureGuard.lastProbe && !cardCache.some(card => card.status === "ready")) return;
   capacityProbePromise = (async () => {
     const running = activeCardCount(cardCache);
     let pressure;
     try {
-      const probe = await workboard.probeGatewayCapacity();
-      pressure = dispatchPressureGuard.recordProbe({ ...probe, running });
+      const hostPressure = await probeHostPressure();
+      const probe = hostPressure.blocked ? {} : await workboard.probeGatewayCapacity();
+      pressure = dispatchPressureGuard.recordProbe({ ...probe, hostPressure, running });
     } catch (error) {
       pressure = dispatchPressureGuard.recordProbe({ error: error.message, running });
     }
