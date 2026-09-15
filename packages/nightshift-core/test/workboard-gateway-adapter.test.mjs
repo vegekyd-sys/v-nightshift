@@ -233,17 +233,17 @@ test("defers without sleeping after three starts in a fifteen-second window", as
   assert.equal(resumed.started.length, 2);
 });
 
-test("measures a lightweight ordinary Session RPC on the persistent connection", async () => {
+test("measures admission latency without enumerating historical Sessions", async () => {
   let now = 1_000;
   const adapter = new WorkboardGatewayAdapter({ now: () => now });
   const calls = [];
   adapter.call = async (method, params) => {
     calls.push({ method, params });
     now += 75;
-    return { sessions: [] };
+    return { maxActiveSessions: 45, pending: 0, workers: [{ activeCount: 2, queued: 0 }] };
   };
   assert.equal(await adapter.probeGatewayLatency(), 75);
-  assert.deepEqual(calls, [{ method: "sessions.list", params: { limit: 1 } }]);
+  assert.deepEqual(calls, [{ method: "vlab.workers.status", params: {} }]);
 });
 
 
@@ -268,4 +268,18 @@ test("an ambiguous create reconciles the board before scoped planning resumes", 
   assert.equal(calls.at(-1).params.cardIds,undefined);
   await adapter.listCards({cardIds:['known']});
   assert.deepEqual(calls.at(-1).params.cardIds,['known']);
+});
+
+
+test("capacity probe includes foreground occupancy and fails closed on invalid telemetry", async () => {
+  const adapter = new WorkboardGatewayAdapter();
+  adapter.call = async method => {
+    assert.equal(method, "vlab.workers.status", "capacity checks must not scan Session history");
+    return { maxActiveSessions: 45, pending: 2, workers: [{ activeCount: 5, queued: 1 }, { activeCount: 3, queued: 0 }] };
+  };
+  assert.deepEqual((await adapter.probeGatewayCapacity()).workerPool, { capacity: 45, active: 8, queued: 3 });
+  for (const bad of [null, {}, { maxActiveSessions: 45, pending: 0, workers: [{ activeCount: 2 }] }]) {
+    adapter.call = async () => bad;
+    await assert.rejects(adapter.probeGatewayCapacity());
+  }
 });
