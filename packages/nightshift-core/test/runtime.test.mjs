@@ -1280,3 +1280,23 @@ test("deferred completion validation cannot unlock downstream work", async () =>
   assert.equal(store.listStageRuns("NS-DEFERRED")[0].status, "blocked");
   store.close();
 });
+
+
+test("never marks a cancelled legacy card done without a persisted output contract", async () => {
+  const source = (await readFile(workflowPath, "utf8"))
+    .replace("  completion: {mode: strict-v1}\n", "")
+    .replace("  handoff: {version: 1, mode: stage-input-output}\n", "");
+  const store = new NightShiftStore(), workboard = new FakeWorkboard();
+  let validations = 0;
+  const runtime = new NightShiftRuntime({ store, workboard, completionValidator: async () => { validations++; return {execution: {status: "reused"}}; } });
+  const release = runtime.publish(source);
+  runtime.startInstance({id: "NS-CANCELLED-LEGACY", workflowSha256: release.workflowSha256});
+  workboard.cards.push({id: "cancelled-legacy", status: "blocked", sessionKey: "agent:main:subagent:cancelled-legacy", runId: "cancelled-run", execution: {status: "blocked", startedAt: 100}, labels: ["instance:NS-CANCELLED-LEGACY", "stage:plan"]});
+  workboard.sessions.set("agent:main:subagent:cancelled-legacy", {messages: [{role: "toolResult", content: [{type: "text", text: "Aborted"}], timestamp: 200}]});
+  await runtime.reconcile("NS-CANCELLED-LEGACY");
+  assert.equal(validations, 0);
+  assert.equal(workboard.cards[0].status, "blocked");
+  assert.equal(workboard.completeCalls.length, 0);
+  assert.notEqual(store.listStageRuns("NS-CANCELLED-LEGACY")[0].status, "done");
+  store.close();
+});
