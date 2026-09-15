@@ -84,8 +84,14 @@ export class DispatchPressureGuard {
     }
     if (this.greenStreak >= this.samplesToGrow) {
       this.holdUntilMs = 0;
+      // Existing jobs keep running during a pause. Once recovery is observed,
+      // allow one new job beyond current occupancy instead of rebuilding an
+      // artificial ceiling below the jobs that are already running.
+      this.targetMaxActive = Math.min(this.maxActive, Math.max(
+        this.targetMaxActive + 1,
+        this.recoveringPressure ? normalizedRunning + 1 : this.minActive,
+      ));
       this.recoveringPressure = false;
-      this.targetMaxActive = Math.min(this.maxActive, this.targetMaxActive + 1);
       this.greenStreak = 0;
     }
     if (!this.recoveringPressure && at >= this.holdUntilMs && normalizedRunning < this.targetMaxActive) {
