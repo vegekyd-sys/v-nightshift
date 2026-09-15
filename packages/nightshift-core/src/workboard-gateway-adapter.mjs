@@ -179,14 +179,17 @@ export class WorkboardGatewayAdapter {
   }
 
   async probeGatewayLatency() {
-    const started = this.now();
-    await this.call("sessions.list", { limit: 1 });
-    return Math.max(0, this.now() - started);
+    return (await this.probeGatewayCapacity()).latencyMs;
   }
 
   async probeGatewayCapacity() {
-    const latencyMs = await this.probeGatewayLatency();
+    // Probe the admission path without enumerating historical Sessions. A list
+    // limit caps the response, not the cost of loading and merging the stores.
+    // This RPC still waits on the shared Gateway event loop and validates the
+    // live Worker occupancy, so overload and queued foreground work fail closed.
+    const started = this.now();
     const status = await this.call("vlab.workers.status", {});
+    const latencyMs = Math.max(0, this.now() - started);
     const capacity = status.maxActiveSessions;
     if (!Number.isSafeInteger(capacity) || capacity < 1 || !Array.isArray(status.workers)) throw new Error("Worker pool capacity is unavailable");
     const count = value => {
