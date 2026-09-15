@@ -29,6 +29,8 @@ export class DispatchPressureGuard {
     this.redCooldownMs = positiveInteger(redCooldownMs, "redCooldownMs");
     this.now = now;
     this.greenStreak = 0;
+    this.recoveryGreenStartedAt = null;
+    this.recoveryGreenSamples = 0;
     this.holdUntilMs = 0;
     this.recoveringPressure = false;
     this.idleLatencySamples = [];
@@ -52,6 +54,8 @@ export class DispatchPressureGuard {
     if (error || normalizedLatency === null || normalizedLatency >= thresholds.redLatencyMs) {
       this.targetMaxActive = Math.max(this.minActive, Math.floor(this.targetMaxActive / 2));
       this.greenStreak = 0;
+      this.recoveryGreenStartedAt = null;
+      this.recoveryGreenSamples = 0;
       this.holdUntilMs = at + this.redCooldownMs;
       this.recoveringPressure = true;
       this.startCredits = 0;
@@ -66,6 +70,8 @@ export class DispatchPressureGuard {
     if (normalizedLatency > thresholds.greenLatencyMs) {
       this.targetMaxActive = Math.max(this.minActive, Math.min(this.targetMaxActive, Math.max(this.minActive, normalizedRunning)));
       this.greenStreak = 0;
+      this.recoveryGreenStartedAt = null;
+      this.recoveryGreenSamples = 0;
       // Yellow means pause until observed recovery, not another red cooldown.
       // Periodic healthy-host maintenance must not indefinitely extend a hold.
       // An existing red deadline remains intact.
@@ -75,6 +81,27 @@ export class DispatchPressureGuard {
         at: new Date(at).toISOString(), error: null, latencyMs: normalizedLatency, level: "yellow",
       };
       return this.snapshot(normalizedRunning);
+    }
+    // A periodic isolated pause must not starve a healthy pool forever. Four
+    // fresh successful probes spanning at least 15 seconds can end the red
+    // cooldown early. Recovery admits only one new job, then needs new probes.
+    const recoveryHeadroom = workerPool && workerPool.queued === 0 &&
+      workerPool.capacity - workerPool.active > this.reservedInteractiveSlots;
+    const continuous = this.lastProbe?.level === "green" &&
+      at - Date.parse(this.lastProbe.at) <= this.probeMaxAgeMs;
+    if (this.recoveringPressure && recoveryHeadroom) {
+      if (!continuous || this.recoveryGreenStartedAt === null) {
+        this.recoveryGreenStartedAt = at;
+        this.recoveryGreenSamples = 0;
+      }
+      this.recoveryGreenSamples += 1;
+      if (this.recoveryGreenSamples >= 4 && at - this.recoveryGreenStartedAt >= 15_000) {
+        this.holdUntilMs = 0;
+        this.greenStreak = this.samplesToGrow - 1;
+      }
+    } else {
+      this.recoveryGreenStartedAt = null;
+      this.recoveryGreenSamples = 0;
     }
     if (at < this.holdUntilMs) {
       this.greenStreak = 0;
