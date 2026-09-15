@@ -39,7 +39,9 @@ export class PersistentGatewayRpcClient {
     try {
       return await client.request(method, params, { timeoutMs: this.requestTimeoutMs });
     } catch (error) {
-      if (!isDisconnectedError(error)) throw error;
+      // A disconnect may occur after a mutation committed. Retrying a create or
+      // dispatch could launch twice; the scheduler reconciles authoritative state.
+      if (!isDisconnectedError(error) || !READ_ONLY_METHODS.has(method)) throw error;
       this.connected = false;
       const reconnected = await this.ensureConnected();
       return reconnected.request(method, params, { timeoutMs: this.requestTimeoutMs });
@@ -89,8 +91,13 @@ export class PersistentGatewayRpcClient {
           }
         },
         onHelloOk: () => {
+          const reconnected = this.hasConnected === true;
           this.connected = true;
+          this.hasConnected = true;
           resolveReady(client);
+          if (reconnected) for (const listener of this.listeners) {
+            try { listener({event: "nightshift.gateway.reconnected", payload: {}}); } catch {}
+          }
         },
         requestTimeoutMs: this.requestTimeoutMs,
         role: "operator",
@@ -155,6 +162,12 @@ export async function loadGatewayClient(entry) {
   }
   return runtime.GatewayClient;
 }
+
+const READ_ONLY_METHODS = new Set([
+  "workboard.cards.list", "workboard.cards.runs", "workboard.cards.stats",
+  "workboard.notifications.list", "workboard.notifications.events",
+  "sessions.list", "sessions.get", "skills.status",
+]);
 
 function gatewayIsLoopback(gatewayUrl) {
   const hostname = new URL(gatewayUrl).hostname;

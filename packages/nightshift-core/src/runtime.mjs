@@ -28,6 +28,7 @@ export class NightShiftRuntime {
     this.terminalInspectionMaxStarts = positiveDispatchLimit(terminalInspectionMaxStarts, "terminalInspectionMaxStarts");
     this.terminalInspectionWindowMs = positiveInteger(terminalInspectionWindowMs, "terminalInspectionWindowMs");
     this.terminalInspectionStarts = [];
+    this.nextReconcileAt = 0;
     this.store = store;
     this.workboard = workboard;
   }
@@ -80,6 +81,7 @@ export class NightShiftRuntime {
   }
 
   async reconcile(instanceId, cards = null, { inspectSessions = true } = {}) {
+    this.nextReconcileAt = 0;
     const currentCards = cards ?? await this.workboard.listCards();
     const instance = this.store.getInstance(instanceId);
     if (!instance) throw new Error(`Unknown instance ${instanceId}`);
@@ -138,6 +140,10 @@ export class NightShiftRuntime {
         completionAlreadyValidated = true;
       } else if (status === "done" && stage.actor === "agent" && card.sessionKey && !this.consumeTerminalInspectionBudget()) {
         completionValidationDeferred = true;
+        // A native done card still needs the Workflow artifact contract. Keep
+        // its local projection pending until validation has actually passed.
+        status = "running";
+        summary = "Waiting for completion validation";
       }
       if (status === "done" && this.completionValidator && !completionAlreadyValidated && !completionValidationDeferred) {
         try {
@@ -335,7 +341,10 @@ export class NightShiftRuntime {
   consumeTerminalInspectionBudget(now = Date.now()) {
     const cutoff = now - this.terminalInspectionWindowMs;
     this.terminalInspectionStarts = this.terminalInspectionStarts.filter((startedAt) => startedAt > cutoff);
-    if (this.terminalInspectionStarts.length >= this.terminalInspectionMaxStarts) return false;
+    if (this.terminalInspectionStarts.length >= this.terminalInspectionMaxStarts) {
+      this.nextReconcileAt = this.terminalInspectionStarts[0] + this.terminalInspectionWindowMs;
+      return false;
+    }
     this.terminalInspectionStarts.push(now);
     return true;
   }
@@ -587,6 +596,10 @@ export class NightShiftRuntime {
       contentItems,
       contentItemRuns,
     });
+    const dueTimes = [
+      ...actions.filter(action => action.type === "schedule_timer").map(action => Date.parse(action.waitUntil)),
+      ...[...runs, ...contentItemRuns].filter(run => run.failure?.automaticRetry).map(run => Date.parse(run.failure.nextRetryAt)),
+    ].filter(at => Number.isFinite(at) && at > Date.now());
     let dispatchResult = null;
     const applied = await this.workboard.applyPlan(actions, { cards: currentCards, dryRun });
     if (!dryRun) {
@@ -672,7 +685,10 @@ export class NightShiftRuntime {
         this.store.appendEvent({ instanceId, type: "instance.completed", payload: { contentItemCount: contentItems.length } });
       }
     }
-    return { actions, applied, dispatch: dispatchResult, instance: this.store.getInstance(instanceId) };
+    const now = Date.now();
+    const pendingTimes = [...dueTimes, this.nextReconcileAt].filter(at => Number.isFinite(at) && at > 0);
+    return { actions, applied, dispatch: dispatchResult, instance: this.store.getInstance(instanceId),
+      retryAfterMs: pendingTimes.length ? Math.max(1, Math.min(...pendingTimes) - now) : null };
   }
 
   async approve({

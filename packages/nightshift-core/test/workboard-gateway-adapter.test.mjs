@@ -103,9 +103,7 @@ test("uses one persistent Gateway transport and forwards native Workboard change
   const changes = [];
   adapter.onChange((change) => changes.push(change));
 
-  await adapter.connect();
-  await adapter.listCards();
-  await adapter.listCards();
+  await Promise.all([adapter.connect(), adapter.listCards(), adapter.listCards()]);
   eventListener({ event: "plugin.workboard.changed", payload: { revision: 7 } });
 
   assert.equal(created, 1);
@@ -254,4 +252,20 @@ test("9.1 JSON errors on stdout become actionable summaries without exposing the
   assert.equal(gatewayRpcFailureDetail({ stdout: JSON.stringify({ ok: false, error: { message: 'unknown agent id "main"' } }), stderr: "" }), 'unknown agent id "main"');
   assert.equal(gatewayRpcFailureDetail({ stderr: "token secret-value rejected" }, "secret-value"), "token [redacted] rejected");
   assert.equal(gatewayRpcFailureDetail({ stdout: JSON.stringify({ ok: true, secret: "must not expose" }) }), "");
+});
+
+
+test("an ambiguous create reconciles the board before scoped planning resumes", async () => {
+  const dir=await mkdtemp(join(tmpdir(), "nightshift-ambiguous-"));
+  const configPath=join(dir,"config.json");await writeFile(configPath,JSON.stringify({gateway:{auth:{token:"fixture"}}}));
+  const calls=[];
+  const adapter=new WorkboardGatewayAdapter({configPath,entry:"/fixture/index.js",gatewayUrl:"ws://localhost:1",rpcClientFactory:()=>({
+    onEvent(){return ()=>{};},
+    async request(method,params){calls.push({method,params});if(method==='workboard.cards.create')throw Error('socket closed after commit');return {cards:[{id:'orphan-after-commit'}]};}
+  })});
+  await assert.rejects(adapter.call('workboard.cards.create',{}),/socket closed/);
+  assert.deepEqual(await adapter.listCards({cardIds:[]}),[{id:'orphan-after-commit'}]);
+  assert.equal(calls.at(-1).params.cardIds,undefined);
+  await adapter.listCards({cardIds:['known']});
+  assert.deepEqual(calls.at(-1).params.cardIds,['known']);
 });

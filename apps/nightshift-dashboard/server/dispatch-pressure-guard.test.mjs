@@ -73,3 +73,30 @@ test("one green probe authorizes only one cold start", () => {
   assert.equal(guard.snapshot(1).availableStarts, 0);
   assert.equal(guard.snapshot(1).dispatchAllowed, false);
 });
+
+
+test("an old green probe cannot authorize a start after Gateway conditions change", () => {
+  let now = 1_000;
+  const guard = new DispatchPressureGuard({now: () => now, probeMaxAgeMs: 5_000});
+  guard.recordProbe({latencyMs: 80});
+  now += 5_001;
+  assert.equal(guard.snapshot().availableStarts, 0);
+  assert.equal(guard.snapshot().dispatchAllowed, false);
+});
+
+
+test("reserves ordinary Session capacity using the shared Worker occupancy", () => {
+  const guard=new DispatchPressureGuard({initialMaxActive:36});
+  const pool={capacity:45,active:44,queued:0};
+  assert.equal(guard.recordProbe({latencyMs:20,running:30,workerPool:pool}).availableStarts,1);
+  assert.equal(guard.recordProbe({latencyMs:20,running:30,workerPool:{...pool,active:45}}).availableStarts,0);
+  assert.equal(guard.recordProbe({latencyMs:20,running:36,workerPool:{...pool,active:36}}).availableStarts,0);
+  assert.equal(guard.recordProbe({latencyMs:20,running:10,workerPool:{...pool,active:15,queued:1}}).availableStarts,0);
+});
+
+test("foreground load cannot be learned as an idle latency baseline", () => {
+  const guard=new DispatchPressureGuard();
+  const probe=guard.recordProbe({latencyMs:600,running:0,workerPool:{capacity:45,active:4,queued:0}});
+  assert.equal(probe.baselineLatencyMs,null);
+  assert.equal(probe.dispatchAllowed,false);
+});

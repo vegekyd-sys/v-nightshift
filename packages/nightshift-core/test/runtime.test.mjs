@@ -1256,3 +1256,27 @@ test("artifact recovery applies to plan and retains exact missing-output diagnos
   assert.equal(workboard.cards[0].status, "done");
   store.close();
 });
+
+
+test("deferred completion validation cannot unlock downstream work", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({store, workboard, completionValidator: async () => { throw new Error("artifact missing"); }});
+  const release = runtime.publish(source);
+  runtime.startInstance({id: "NS-DEFERRED", workflowSha256: release.workflowSha256, agentBindings: {"content-operator": "main"}, inputs: {targetCount: 1}});
+  await runtime.tick("NS-DEFERRED");
+  workboard.cards[0].status = "done";
+  workboard.cards[0].sessionKey = "agent:main:subagent:deferred";
+  runtime.setContentItems("NS-DEFERRED", [{id: "item", title: "Item", route: "SCENE_EDIT"}]);
+  runtime.terminalInspectionStarts = Array(3).fill(Date.now());
+  const result = await runtime.tick("NS-DEFERRED");
+  assert(result.retryAfterMs > 0 && result.retryAfterMs <= 30000);
+  assert.equal(result.actions.length, 0);
+  assert.notEqual(store.listStageRuns("NS-DEFERRED")[0].status, "done");
+  runtime.terminalInspectionStarts = [];
+  const checked = await runtime.tick("NS-DEFERRED");
+  assert.equal(checked.retryAfterMs, null);
+  assert.equal(store.listStageRuns("NS-DEFERRED")[0].status, "blocked");
+  store.close();
+});

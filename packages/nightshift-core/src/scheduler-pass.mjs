@@ -41,6 +41,7 @@ export async function runSchedulerPass({
   const activeAtStart = cards.filter(cardConsumesDispatchSlot).length;
   let remainingStarts = Math.min(dispatchMaxStarts, Math.max(0, maxWorkboardActive - activeAtStart));
   let retryAfterMs = null;
+  let dispatched = 0;
   for (const instance of eligible) {
     try {
       await syncContentItemsManifest(instance);
@@ -60,8 +61,10 @@ export async function runSchedulerPass({
       const startedCards = started.map((entry) => entry.card).filter(Boolean);
       if (dispatchEnabled && started.length > 0) {
         remainingStarts = Math.max(0, remainingStarts - started.length);
+        dispatched += started.length;
         cards = mergeCards(cards, startedCards);
       }
+      if (result.retryAfterMs > 0) retryAfterMs = Math.min(retryAfterMs ?? Infinity, result.retryAfterMs);
       if (result.dispatch?.retryAfterMs > 0) {
         retryAfterMs = retryAfterMs === null
           ? result.dispatch.retryAfterMs
@@ -72,10 +75,10 @@ export async function runSchedulerPass({
       warnings.push(`${instance.id}: ${error.message}`);
     }
   }
-  if (changed) await refreshCards({ cardIds });
+  if (changed) await refreshCards({ cardIds: schedulerCardIds(store) });
   return {
     dispatchMaxStarts,
-    dispatched: dispatchEnabled ? dispatchMaxStarts - remainingStarts : 0,
+    dispatched,
     dispatchEnabled,
     warnings,
     instances: eligible.length,
