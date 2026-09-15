@@ -30,6 +30,7 @@ export class DispatchPressureGuard {
     this.holdUntilMs = 0;
     this.idleLatencySamples = [];
     this.lastProbe = null;
+    this.startCredits = 0;
   }
 
   recordProbe({ error = null, latencyMs = null, running = 0 } = {}) {
@@ -45,6 +46,7 @@ export class DispatchPressureGuard {
       this.targetMaxActive = Math.max(this.minActive, Math.floor(this.targetMaxActive / 2));
       this.greenStreak = 0;
       this.holdUntilMs = at + this.redCooldownMs;
+      this.startCredits = 0;
       this.lastProbe = {
         at: new Date(at).toISOString(),
         error: error ? String(error) : null,
@@ -57,16 +59,27 @@ export class DispatchPressureGuard {
       this.targetMaxActive = Math.max(this.minActive, Math.min(this.targetMaxActive, Math.max(this.minActive, normalizedRunning)));
       this.greenStreak = 0;
       this.holdUntilMs = at + this.redCooldownMs;
+      this.startCredits = 0;
       this.lastProbe = {
         at: new Date(at).toISOString(), error: null, latencyMs: normalizedLatency, level: "yellow",
       };
       return this.snapshot(normalizedRunning);
     }
-    this.greenStreak += 1;
-    if (at >= this.holdUntilMs && this.greenStreak >= this.samplesToGrow) {
+    if (at < this.holdUntilMs) {
+      this.greenStreak = 0;
+      this.startCredits = 0;
+    } else {
+      this.greenStreak += 1;
+    }
+    if (this.greenStreak >= this.samplesToGrow) {
       this.holdUntilMs = 0;
       this.targetMaxActive = Math.min(this.maxActive, this.targetMaxActive + 1);
       this.greenStreak = 0;
+    }
+    if (at >= this.holdUntilMs && normalizedRunning < this.targetMaxActive) {
+      // One successful probe authorizes one cold start. A second start needs a
+      // fresh probe so a burst cannot outrun the ordinary-Session SLO signal.
+      this.startCredits = Math.max(this.startCredits, 1);
     }
     this.lastProbe = {
       at: new Date(at).toISOString(), error: null, latencyMs: normalizedLatency, level: "green",
@@ -79,9 +92,11 @@ export class DispatchPressureGuard {
     const hold = this.now() < this.holdUntilMs;
     const thresholds = this.effectiveThresholds();
     return {
-      availableStarts: !probed || hold ? 0 : Math.max(0, this.targetMaxActive - Math.max(0, running)),
+      availableStarts: !probed || hold
+        ? 0
+        : Math.min(this.startCredits, Math.max(0, this.targetMaxActive - Math.max(0, running))),
       baselineLatencyMs: thresholds.baselineLatencyMs,
-      dispatchAllowed: probed && !hold,
+      dispatchAllowed: probed && !hold && this.startCredits > 0,
       greenLatencyMs: thresholds.greenLatencyMs,
       holdUntil: hold ? new Date(this.holdUntilMs).toISOString() : null,
       lastProbe: this.lastProbe,
@@ -90,6 +105,11 @@ export class DispatchPressureGuard {
       running: Math.max(0, running),
       targetMaxActive: this.targetMaxActive,
     };
+  }
+
+  consumeStarts(count) {
+    const consumed = Math.max(0, Number(count) || 0);
+    this.startCredits = Math.max(0, this.startCredits - consumed);
   }
 
   effectiveThresholds() {

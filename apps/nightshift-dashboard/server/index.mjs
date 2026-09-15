@@ -769,6 +769,7 @@ function runScheduler({ trigger = "manual" } = {}) {
       maxWorkboardActive: pressure.targetMaxActive,
       store, runtime, workboard, refreshCards, syncContentItemsManifest,
     }));
+    dispatchPressureGuard.consumeStarts(result.dispatched);
     lastSchedulerAt = new Date().toISOString();
     lastSchedulerDurationMs = Date.now() - started;
     lastSchedulerError = result.warnings.length ? result.warnings.join("; ") : null;
