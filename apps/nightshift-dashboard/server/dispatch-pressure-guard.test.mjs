@@ -134,3 +134,16 @@ test("yellow during red recovery preserves the full red deadline without extendi
   now+=5_000;
   assert.equal(guard.recordProbe({latencyMs:20,running:1}).availableStarts,1);
 });
+
+
+test("healthy recovery admits one new job beyond jobs that kept running during red cooldown", () => {
+  let now=1000;const guard=new DispatchPressureGuard({now:()=>now,initialMaxActive:20});
+  assert.equal(guard.recordProbe({latencyMs:1500,running:20}).targetMaxActive,10);
+  now+=60000;assert.equal(guard.recordProbe({latencyMs:20,running:20}).availableStarts,0);
+  now+=5000;const recovered=guard.recordProbe({latencyMs:20,running:20});
+  assert.equal(recovered.targetMaxActive,21);assert.equal(recovered.availableStarts,1);
+  guard.consumeStarts(1);assert.equal(guard.snapshot(21).availableStarts,0);
+  guard.recordProbe({latencyMs:1500,running:36});now+=60000;guard.recordProbe({latencyMs:20,running:36});now+=5000;
+  assert.equal(guard.recordProbe({latencyMs:20,running:36}).availableStarts,0);
+  assert.equal(guard.snapshot(36).targetMaxActive,36);
+});
