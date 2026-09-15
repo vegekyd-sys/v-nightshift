@@ -49,6 +49,8 @@ test("yellow pressure stops new starts without killing running workers", () => {
   now += 60_000;
   assert.equal(guard.snapshot(3).dispatchAllowed, false);
   assert.equal(guard.snapshot(3).availableStarts, 0);
+  assert.equal(guard.recordProbe({ latencyMs: 100, running: 3 }).dispatchAllowed, false);
+  now += 5_000;
   const recovered = guard.recordProbe({ latencyMs: 100, running: 3 });
   assert.equal(recovered.dispatchAllowed, true);
   assert.equal(recovered.availableStarts, 1);
@@ -99,4 +101,36 @@ test("foreground load cannot be learned as an idle latency baseline", () => {
   const probe=guard.recordProbe({latencyMs:600,running:0,workerPool:{capacity:45,active:4,queued:0}});
   assert.equal(probe.baselineLatencyMs,null);
   assert.equal(probe.dispatchAllowed,false);
+});
+
+
+test("periodic yellow maintenance does not starve an idle pool after two green probes", () => {
+  let now=1_000;
+  const guard=new DispatchPressureGuard({now:()=>now});
+  guard.recordProbe({latencyMs:20});
+  for(let cycle=0;cycle<4;cycle++){
+    now+=30_000;
+    assert.equal(guard.recordProbe({latencyMs:600,running:1}).dispatchAllowed,false);
+    assert.equal(guard.snapshot(0).holdUntil,null);
+    now+=5_000;
+    assert.equal(guard.recordProbe({latencyMs:20,running:1}).dispatchAllowed,false);
+    now+=5_000;
+    assert.equal(guard.recordProbe({latencyMs:20,running:1}).availableStarts,1);
+    guard.consumeStarts(1);
+    assert.equal(guard.snapshot(1).availableStarts,0);
+  }
+});
+
+test("yellow during red recovery preserves the full red deadline without extending it", () => {
+  let now=1_000;
+  const guard=new DispatchPressureGuard({now:()=>now});
+  const red=guard.recordProbe({latencyMs:1500,running:1});
+  now+=50_000;
+  assert.equal(guard.recordProbe({latencyMs:600,running:1}).holdUntil,red.holdUntil);
+  now+=5_000;
+  assert.equal(guard.recordProbe({latencyMs:20,running:1}).availableStarts,0);
+  now+=5_000;
+  assert.equal(guard.recordProbe({latencyMs:20,running:1}).availableStarts,0);
+  now+=5_000;
+  assert.equal(guard.recordProbe({latencyMs:20,running:1}).availableStarts,1);
 });

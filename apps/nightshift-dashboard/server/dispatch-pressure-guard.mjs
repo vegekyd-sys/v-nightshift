@@ -30,6 +30,7 @@ export class DispatchPressureGuard {
     this.now = now;
     this.greenStreak = 0;
     this.holdUntilMs = 0;
+    this.recoveringPressure = false;
     this.idleLatencySamples = [];
     this.lastProbe = null;
     this.startCredits = 0;
@@ -52,6 +53,7 @@ export class DispatchPressureGuard {
       this.targetMaxActive = Math.max(this.minActive, Math.floor(this.targetMaxActive / 2));
       this.greenStreak = 0;
       this.holdUntilMs = at + this.redCooldownMs;
+      this.recoveringPressure = true;
       this.startCredits = 0;
       this.lastProbe = {
         at: new Date(at).toISOString(),
@@ -64,7 +66,10 @@ export class DispatchPressureGuard {
     if (normalizedLatency > thresholds.greenLatencyMs) {
       this.targetMaxActive = Math.max(this.minActive, Math.min(this.targetMaxActive, Math.max(this.minActive, normalizedRunning)));
       this.greenStreak = 0;
-      this.holdUntilMs = at + this.redCooldownMs;
+      // Yellow means pause until observed recovery, not another red cooldown.
+      // Periodic healthy-host maintenance must not indefinitely extend a hold.
+      // An existing red deadline remains intact.
+      this.recoveringPressure = true;
       this.startCredits = 0;
       this.lastProbe = {
         at: new Date(at).toISOString(), error: null, latencyMs: normalizedLatency, level: "yellow",
@@ -79,10 +84,11 @@ export class DispatchPressureGuard {
     }
     if (this.greenStreak >= this.samplesToGrow) {
       this.holdUntilMs = 0;
+      this.recoveringPressure = false;
       this.targetMaxActive = Math.min(this.maxActive, this.targetMaxActive + 1);
       this.greenStreak = 0;
     }
-    if (at >= this.holdUntilMs && normalizedRunning < this.targetMaxActive) {
+    if (!this.recoveringPressure && at >= this.holdUntilMs && normalizedRunning < this.targetMaxActive) {
       // One successful probe authorizes one cold start. A second start needs a
       // fresh probe so a burst cannot outrun the ordinary-Session SLO signal.
       this.startCredits = Math.max(this.startCredits, 1);
@@ -102,11 +108,12 @@ export class DispatchPressureGuard {
       ? Math.max(0, this.workerPool.capacity - Math.max(this.reservedInteractiveSlots, foreground) - running)
       : Infinity;
     const poolBusy = (this.workerPool?.queued ?? 0) > 0;
-    const availableStarts = !probed || hold || poolBusy ? 0
+    const availableStarts = !probed || hold || this.recoveringPressure || poolBusy ? 0
       : Math.min(this.startCredits, Math.max(0, this.targetMaxActive - Math.max(0, running)), capacity);
     return {
       workerPool: this.workerPool,
       reservedInteractiveSlots: this.reservedInteractiveSlots,
+      recoveringPressure: this.recoveringPressure,
       availableStarts: availableStarts,
       baselineLatencyMs: thresholds.baselineLatencyMs,
       dispatchAllowed: availableStarts > 0,
