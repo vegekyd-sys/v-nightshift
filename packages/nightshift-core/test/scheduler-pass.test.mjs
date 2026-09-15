@@ -145,3 +145,22 @@ test("returns the earliest non-blocking dispatch-window retry", async () => {
 
   assert.equal(result.retryAfterMs, 8_000);
 });
+
+
+test("refreshes newly materialized downstream IDs in the same pass", async () => {
+  const f = fixture();
+  let created = false;
+  const scopes = [];
+  f.store.listStageRuns = id => [{ cardId: `${id}-card`, status: "ready" }, ...(id === "P47" && created ? [{ cardId: "new-child", status: "ready" }] : [])];
+  f.refreshCards = async options => { scopes.push(options.cardIds); return f.cards; };
+  f.runtime.tick = async () => { created = true; return { applied: [{card: {id: "new-child"}}], dispatch: null }; };
+  await runSchedulerPass(f);
+  assert.ok(scopes.at(-1).includes("new-child"));
+});
+
+test("occupied slots are not reported as starts when no task launched", async () => {
+  const f = fixture();
+  f.cards[0].status = "running";
+  const result = await runSchedulerPass({...f, dispatchMaxStarts: 3, maxWorkboardActive: 1});
+  assert.equal(result.dispatched, 0);
+});

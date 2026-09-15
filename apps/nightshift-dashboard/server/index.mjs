@@ -59,7 +59,7 @@ const schedulerFailureCooldownMs = positiveInteger(process.env.NIGHTSHIFT_SCHEDU
 const schedulerEventDebounceMs = positiveInteger(process.env.NIGHTSHIFT_SCHEDULER_EVENT_DEBOUNCE_MS, 100, 10_000);
 const schedulerEventMinIntervalMs = positiveInteger(process.env.NIGHTSHIFT_SCHEDULER_EVENT_MIN_INTERVAL_MS, 5_000, 30_000);
 const schedulerRepairIntervalMs = positiveInteger(process.env.NIGHTSHIFT_SCHEDULER_REPAIR_INTERVAL_MS, 300_000, 3_600_000);
-const gatewayCapacityProbeIntervalMs = positiveInteger(process.env.NIGHTSHIFT_GATEWAY_CAPACITY_PROBE_INTERVAL_MS, 30_000, 300_000);
+const gatewayCapacityProbeIntervalMs = positiveInteger(process.env.NIGHTSHIFT_GATEWAY_CAPACITY_PROBE_INTERVAL_MS, 5_000, 300_000);
 const gatewayGreenLatencyMs = positiveInteger(process.env.NIGHTSHIFT_GATEWAY_GREEN_LATENCY_MS, 250, 10_000);
 const gatewayRedLatencyMs = positiveInteger(process.env.NIGHTSHIFT_GATEWAY_RED_LATENCY_MS, 1_000, 30_000);
 const dispatchInitialMaxActive = positiveInteger(process.env.NIGHTSHIFT_DISPATCH_INITIAL_MAX_ACTIVE, 3, schedulerMaxWorkboardActive);
@@ -115,6 +115,7 @@ const changeScheduler = new WorkboardChangeScheduler({
   run: runScheduler,
   workboard,
 });
+workboard.needsFullSnapshot = true; // Recover cards committed before a prior Scheduler crash.
 changeScheduler.start();
 workboard.connect()
   .then(() => probeDispatchCapacity())
@@ -788,12 +789,13 @@ function runScheduler({ trigger = "manual" } = {}) {
 
 function probeDispatchCapacity() {
   if (capacityProbePromise || schedulerPromise || shuttingDown) return capacityProbePromise;
+  if (dispatchPressureGuard.lastProbe && !cardCache.some(card => card.status === "ready")) return;
   capacityProbePromise = (async () => {
     const running = activeCardCount(cardCache);
     let pressure;
     try {
-      const latencyMs = await workboard.probeGatewayLatency();
-      pressure = dispatchPressureGuard.recordProbe({ latencyMs, running });
+      const probe = await workboard.probeGatewayCapacity();
+      pressure = dispatchPressureGuard.recordProbe({ ...probe, running });
     } catch (error) {
       pressure = dispatchPressureGuard.recordProbe({ error: error.message, running });
     }
@@ -900,8 +902,14 @@ function serializedOperation(operation) {
   return run;
 }
 
-function serializedTick(instanceId, options) {
-  return serializedOperation(() => tickWithFaultProjection({ instanceId, options, runtime, store, workboard }));
+async function serializedTick(instanceId, options) {
+  // Every API launch request enters the same scheduler and pressure budget.
+  // Materialize/validate synchronously, then enqueue admission separately.
+  const result = await serializedOperation(() => tickWithFaultProjection({
+    instanceId, options: { ...options, dispatch: false }, runtime, store, workboard,
+  }));
+  if (options.dispatch && !options.dryRun) changeScheduler.enqueue("api.dispatch");
+  return result;
 }
 
 function positiveInteger(value, fallback, maximum) {

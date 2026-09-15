@@ -13,7 +13,7 @@ function section(source, start, end) {
   return source.slice(first, last);
 }
 
-test("adapter parameters pass the deployed Gateway handler; legacy maxStarts is rejected", { skip: !bundle }, async () => {
+test("scoped adapter parameters pass the deployed Gateway handler; legacy maxStarts is rejected", { skip: !bundle }, async () => {
   const source = await readFile(bundle, "utf8");
   const dispatched = [];
   const sandbox = {
@@ -22,7 +22,7 @@ test("adapter parameters pass the deployed Gateway handler; legacy maxStarts is 
     respondError: (respond, error) => respond(false, null, { message: error.message }),
     dispatchAndStartWorkboardCards: async ({ options }) => {
       dispatched.push(options);
-      return { started: [{ card: { id: options.cardId }, sessionKey: "native-session", runId: "native-run" }], startFailures: [], promoted: [], reclaimed: [], blocked: [], orchestrated: [] };
+      return { started: [{ cardId: options.cardIds?.[0], sessionKey: "native-session", runId: "native-run" }], startFailures: [], promoted: [], reclaimed: [], blocked: [], orchestrated: [] };
     },
   };
   const createHandler = vm.runInNewContext(
@@ -39,7 +39,7 @@ test("adapter parameters pass the deployed Gateway handler; legacy maxStarts is 
   adapter.call = call;
   const result = await adapter.dispatch(3, { cardIds: ["only-this-card"] });
   assert.deepEqual(result.startFailures, []);
-  assert.deepEqual(JSON.parse(JSON.stringify(dispatched)), [{ cardId: "only-this-card", maxStarts: 1 }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(dispatched)), [{ boardId: "test", cardIds: ["only-this-card"], maxStarts: 1 }]);
   assert.match(source, /registerGatewayMethod\("workboard\.cards\.start"[\s\S]*?directCard: true/);
 });
 

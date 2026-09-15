@@ -38,3 +38,18 @@ test("reuses one Gateway client for RPC and forwards Workboard change events", a
   assert.deepEqual(events, [{ event: "workboard.changed", payload: { revision: 2 } }]);
   await client.close();
 });
+
+
+test("does not replay an ambiguous mutation after a socket disconnect", async () => {
+  let options, calls = 0;
+  class Fake {
+    constructor(o) { options = o; }
+    start() { queueMicrotask(() => options.onHelloOk({})); }
+    async request() { calls++; throw new Error("socket closed after commit"); }
+    stop() {}
+  }
+  const client = new PersistentGatewayRpcClient({entry: "/opt/dist/index.js", gatewayUrl: "ws://localhost:1", token: "test", gatewayClientLoader: async () => Fake});
+  await assert.rejects(client.request("workboard.cards.create", {}), /socket closed/);
+  assert.equal(calls, 1);
+  await client.close();
+});

@@ -35,12 +35,15 @@ export class WorkboardGatewayAdapter {
     this.changeListeners = new Set();
     this.rpcClient = null;
     this.rpcEventUnsubscribe = null;
+    this.needsFullSnapshot = false;
   }
 
   async listCards({ cardIds } = {}) {
-    const ids = Array.isArray(cardIds) ? uniqueCardIds(cardIds) : null;
+    const recovering = this.needsFullSnapshot;
+    const ids = !recovering && Array.isArray(cardIds) ? uniqueCardIds(cardIds) : null;
     if (ids?.length === 0) return [];
     const result = await this.call("workboard.cards.list", { boardId: this.board, ...(ids ? { cardIds: ids } : {}) });
+    if (recovering) this.needsFullSnapshot = false;
     return result.cards ?? [];
   }
 
@@ -181,6 +184,22 @@ export class WorkboardGatewayAdapter {
     return Math.max(0, this.now() - started);
   }
 
+  async probeGatewayCapacity() {
+    const latencyMs = await this.probeGatewayLatency();
+    const status = await this.call("vlab.workers.status", {});
+    const capacity = status.maxActiveSessions;
+    if (!Number.isSafeInteger(capacity) || capacity < 1 || !Array.isArray(status.workers)) throw new Error("Worker pool capacity is unavailable");
+    const count = value => {
+      if (!Number.isSafeInteger(value) || value < 0) throw new Error("Worker pool occupancy is unavailable");
+      return value;
+    };
+    return {latencyMs, workerPool: {
+      capacity,
+      active: status.workers.reduce((sum, worker) => sum + count(worker.activeCount), 0),
+      queued: count(status.pending) + status.workers.reduce((sum, worker) => sum + count(worker.queued), 0),
+    }};
+  }
+
   onChange(listener) {
     this.changeListeners.add(listener);
     return () => this.changeListeners.delete(listener);
@@ -197,7 +216,11 @@ export class WorkboardGatewayAdapter {
     if (!this.configPath) throw new Error("OPENCLAW_CONFIG_PATH is required");
     if (!this.runner) {
       const client = await this.ensureRpcClient();
-      return client.request(method, params);
+      try { return await client.request(method, params); }
+      catch (error) {
+        if (/^workboard\.cards\.(create|dispatchWithOptions|complete|block|release|move|update)$/.test(method)) this.needsFullSnapshot = true;
+        throw error;
+      }
     }
     const config = JSON.parse(await readFile(this.configPath, "utf8"));
     const token = config.gateway?.auth?.token;
@@ -223,6 +246,11 @@ export class WorkboardGatewayAdapter {
 
   async ensureRpcClient(token = null) {
     if (this.rpcClient) return this.rpcClient;
+    if (!this.rpcClientPromise) this.rpcClientPromise = this.createRpcClient(token).finally(() => { this.rpcClientPromise = null; });
+    return this.rpcClientPromise;
+  }
+
+  async createRpcClient(token) {
     let resolvedToken = token;
     if (!resolvedToken) {
       if (!this.configPath) throw new Error("OPENCLAW_CONFIG_PATH is required");
@@ -242,7 +270,8 @@ export class WorkboardGatewayAdapter {
       token: resolvedToken,
     });
     this.rpcEventUnsubscribe = client.onEvent((event) => {
-      if (event?.event !== "plugin.workboard.changed") return;
+      if (event?.event !== "plugin.workboard.changed" && event?.event !== "nightshift.gateway.reconnected") return;
+      if (event.event === "nightshift.gateway.reconnected") this.needsFullSnapshot = true;
       for (const listener of this.changeListeners) {
         try {
           listener(event.payload ?? {});

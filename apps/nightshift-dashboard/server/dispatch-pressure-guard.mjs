@@ -10,6 +10,8 @@ export class DispatchPressureGuard {
     redLatencyMs = 1_000,
     redCooldownMs = 60_000,
     samplesToGrow = 2,
+    probeMaxAgeMs = 10_000,
+    reservedInteractiveSlots = 9,
   } = {}) {
     this.baselineGreenMultiplier = positiveNumber(baselineGreenMultiplier, "baselineGreenMultiplier");
     this.baselineRedMultiplier = positiveNumber(baselineRedMultiplier, "baselineRedMultiplier");
@@ -31,13 +33,17 @@ export class DispatchPressureGuard {
     this.idleLatencySamples = [];
     this.lastProbe = null;
     this.startCredits = 0;
+    this.probeMaxAgeMs = positiveInteger(probeMaxAgeMs, "probeMaxAgeMs");
+    this.reservedInteractiveSlots = positiveInteger(reservedInteractiveSlots, "reservedInteractiveSlots");
+    this.workerPool = null;
   }
 
-  recordProbe({ error = null, latencyMs = null, running = 0 } = {}) {
+  recordProbe({ error = null, latencyMs = null, running = 0, workerPool = null } = {}) {
     const at = this.now();
+    this.workerPool = workerPool;
     const normalizedRunning = Math.max(0, Number(running) || 0);
     const normalizedLatency = Number.isFinite(latencyMs) ? Math.max(0, latencyMs) : null;
-    if (!error && normalizedLatency !== null && normalizedRunning === 0 && normalizedLatency < this.redLatencyMs) {
+    if (!error && normalizedLatency !== null && normalizedRunning === 0 && (!workerPool || workerPool.active === 0) && normalizedLatency < this.redLatencyMs) {
       this.idleLatencySamples.push(normalizedLatency);
       if (this.idleLatencySamples.length > 8) this.idleLatencySamples.shift();
     }
@@ -88,15 +94,22 @@ export class DispatchPressureGuard {
   }
 
   snapshot(running = 0) {
-    const probed = this.lastProbe !== null;
+    const probed = this.lastProbe !== null && this.now() - Date.parse(this.lastProbe.at) <= this.probeMaxAgeMs;
     const hold = this.now() < this.holdUntilMs;
     const thresholds = this.effectiveThresholds();
+    const foreground = Math.max(0, (this.workerPool?.active ?? running) - running);
+    const capacity = this.workerPool
+      ? Math.max(0, this.workerPool.capacity - Math.max(this.reservedInteractiveSlots, foreground) - running)
+      : Infinity;
+    const poolBusy = (this.workerPool?.queued ?? 0) > 0;
+    const availableStarts = !probed || hold || poolBusy ? 0
+      : Math.min(this.startCredits, Math.max(0, this.targetMaxActive - Math.max(0, running)), capacity);
     return {
-      availableStarts: !probed || hold
-        ? 0
-        : Math.min(this.startCredits, Math.max(0, this.targetMaxActive - Math.max(0, running))),
+      workerPool: this.workerPool,
+      reservedInteractiveSlots: this.reservedInteractiveSlots,
+      availableStarts: availableStarts,
       baselineLatencyMs: thresholds.baselineLatencyMs,
-      dispatchAllowed: probed && !hold && this.startCredits > 0,
+      dispatchAllowed: availableStarts > 0,
       greenLatencyMs: thresholds.greenLatencyMs,
       holdUntil: hold ? new Date(this.holdUntilMs).toISOString() : null,
       lastProbe: this.lastProbe,
