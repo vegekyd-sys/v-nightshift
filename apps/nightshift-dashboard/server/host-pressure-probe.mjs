@@ -34,13 +34,16 @@ export function createHostPressureProbe({ gatewayUrl, platform = process.platfor
       previous = { at, swapOutPages };
       const reasons = [];
       if (!warm) reasons.push("host sample warming up");
-      if (availableKiB < Math.max(2 * 1024 * 1024, totalKiB * 0.15)) reasons.push("low available memory");
+      // A newly admitted full Agent can allocate gigabytes before the next probe.
+      // Keep headroom for that burst and foreground Sessions before reclaim starts.
+      const admissionReserveKiB = Math.max(4 * 1024 * 1024, totalKiB * 0.4);
+      if (availableKiB < admissionReserveKiB) reasons.push("insufficient memory headroom");
       if (memoryFullAvg10 >= 1) reasons.push("memory reclaim stalls");
       // Global I/O PSI also counts deliberately throttled background checks.
       // Observe it here; Gateway latency governs disk contention admission.
       if (swapOutPagesPerSecond !== null && swapOutPagesPerSecond >= 1024) reasons.push("active swap-out");
       return { enabled: true, at: new Date(at).toISOString(), blocked: reasons.length > 0, reason: reasons.join("; ") || null,
-        availableMiB: Math.round(availableKiB / 1024), totalMiB: Math.round(totalKiB / 1024), memoryFullAvg10, ioFullAvg10, swapOutPagesPerSecond };
+        availableMiB: Math.round(availableKiB / 1024), admissionReserveMiB: Math.ceil(admissionReserveKiB / 1024), totalMiB: Math.round(totalKiB / 1024), memoryFullAvg10, ioFullAvg10, swapOutPagesPerSecond };
     } catch (error) {
       previous = null;
       return { enabled: true, blocked: true, reason: `host pressure probe failed: ${error.message}` };
