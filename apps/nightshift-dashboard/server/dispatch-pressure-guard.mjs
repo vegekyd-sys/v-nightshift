@@ -39,11 +39,14 @@ export class DispatchPressureGuard {
     this.probeMaxAgeMs = positiveInteger(probeMaxAgeMs, "probeMaxAgeMs");
     this.reservedInteractiveSlots = positiveInteger(reservedInteractiveSlots, "reservedInteractiveSlots");
     this.workerPool = null;
+    this.hostPressure = null;
   }
 
-  recordProbe({ error = null, latencyMs = null, running = 0, workerPool = null } = {}) {
+  recordProbe({ error = null, latencyMs = null, running = 0, workerPool = null, hostPressure = null } = {}) {
     const at = this.now();
     this.workerPool = workerPool;
+    this.hostPressure = hostPressure;
+    if (hostPressure?.blocked) error = hostPressure.reason || "host under resource pressure";
     const normalizedRunning = Math.max(0, Number(running) || 0);
     const normalizedLatency = Number.isFinite(latencyMs) ? Math.max(0, latencyMs) : null;
     if (!error && normalizedLatency !== null && normalizedRunning === 0 && (!workerPool || workerPool.active === 0) && normalizedLatency < this.redLatencyMs) {
@@ -145,6 +148,7 @@ export class DispatchPressureGuard {
       : Math.min(this.startCredits, Math.max(0, this.targetMaxActive - Math.max(0, running)), capacity);
     return {
       workerPool: this.workerPool,
+      hostPressure: this.hostPressure,
       reservedInteractiveSlots: this.reservedInteractiveSlots,
       recoveringPressure: this.recoveringPressure,
       availableStarts: availableStarts,
