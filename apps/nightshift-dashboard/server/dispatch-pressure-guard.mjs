@@ -1,5 +1,7 @@
 export class DispatchPressureGuard {
   constructor({
+    baselineGreenMultiplier = 1.25,
+    baselineRedMultiplier = 2,
     greenLatencyMs = 250,
     initialMaxActive = 3,
     maxActive = 36,
@@ -9,6 +11,11 @@ export class DispatchPressureGuard {
     redCooldownMs = 60_000,
     samplesToGrow = 2,
   } = {}) {
+    this.baselineGreenMultiplier = positiveNumber(baselineGreenMultiplier, "baselineGreenMultiplier");
+    this.baselineRedMultiplier = positiveNumber(baselineRedMultiplier, "baselineRedMultiplier");
+    if (this.baselineRedMultiplier <= this.baselineGreenMultiplier) {
+      throw new Error("baselineRedMultiplier must exceed baselineGreenMultiplier");
+    }
     this.greenLatencyMs = positiveNumber(greenLatencyMs, "greenLatencyMs");
     this.redLatencyMs = positiveNumber(redLatencyMs, "redLatencyMs");
     if (this.redLatencyMs <= this.greenLatencyMs) throw new Error("redLatencyMs must exceed greenLatencyMs");
@@ -21,13 +28,20 @@ export class DispatchPressureGuard {
     this.now = now;
     this.greenStreak = 0;
     this.holdUntilMs = 0;
+    this.idleLatencySamples = [];
     this.lastProbe = null;
   }
 
   recordProbe({ error = null, latencyMs = null, running = 0 } = {}) {
     const at = this.now();
+    const normalizedRunning = Math.max(0, Number(running) || 0);
     const normalizedLatency = Number.isFinite(latencyMs) ? Math.max(0, latencyMs) : null;
-    if (error || normalizedLatency === null || normalizedLatency >= this.redLatencyMs) {
+    if (!error && normalizedLatency !== null && normalizedRunning === 0 && normalizedLatency < this.redLatencyMs) {
+      this.idleLatencySamples.push(normalizedLatency);
+      if (this.idleLatencySamples.length > 8) this.idleLatencySamples.shift();
+    }
+    const thresholds = this.effectiveThresholds();
+    if (error || normalizedLatency === null || normalizedLatency >= thresholds.redLatencyMs) {
       this.targetMaxActive = Math.max(this.minActive, Math.floor(this.targetMaxActive / 2));
       this.greenStreak = 0;
       this.holdUntilMs = at + this.redCooldownMs;
@@ -37,16 +51,16 @@ export class DispatchPressureGuard {
         latencyMs: normalizedLatency,
         level: "red",
       };
-      return this.snapshot(running);
+      return this.snapshot(normalizedRunning);
     }
-    if (normalizedLatency > this.greenLatencyMs) {
-      this.targetMaxActive = Math.max(this.minActive, Math.min(this.targetMaxActive, Math.max(this.minActive, running)));
+    if (normalizedLatency > thresholds.greenLatencyMs) {
+      this.targetMaxActive = Math.max(this.minActive, Math.min(this.targetMaxActive, Math.max(this.minActive, normalizedRunning)));
       this.greenStreak = 0;
       this.holdUntilMs = at + this.redCooldownMs;
       this.lastProbe = {
         at: new Date(at).toISOString(), error: null, latencyMs: normalizedLatency, level: "yellow",
       };
-      return this.snapshot(running);
+      return this.snapshot(normalizedRunning);
     }
     this.greenStreak += 1;
     if (at >= this.holdUntilMs && this.greenStreak >= this.samplesToGrow) {
@@ -57,21 +71,37 @@ export class DispatchPressureGuard {
     this.lastProbe = {
       at: new Date(at).toISOString(), error: null, latencyMs: normalizedLatency, level: "green",
     };
-    return this.snapshot(running);
+    return this.snapshot(normalizedRunning);
   }
 
   snapshot(running = 0) {
+    const probed = this.lastProbe !== null;
     const hold = this.now() < this.holdUntilMs;
+    const thresholds = this.effectiveThresholds();
     return {
-      availableStarts: hold ? 0 : Math.max(0, this.targetMaxActive - Math.max(0, running)),
-      dispatchAllowed: !hold,
-      greenLatencyMs: this.greenLatencyMs,
+      availableStarts: !probed || hold ? 0 : Math.max(0, this.targetMaxActive - Math.max(0, running)),
+      baselineLatencyMs: thresholds.baselineLatencyMs,
+      dispatchAllowed: probed && !hold,
+      greenLatencyMs: thresholds.greenLatencyMs,
       holdUntil: hold ? new Date(this.holdUntilMs).toISOString() : null,
       lastProbe: this.lastProbe,
       maxActive: this.maxActive,
-      redLatencyMs: this.redLatencyMs,
+      redLatencyMs: thresholds.redLatencyMs,
       running: Math.max(0, running),
       targetMaxActive: this.targetMaxActive,
+    };
+  }
+
+  effectiveThresholds() {
+    const baselineLatencyMs = upperQuartile(this.idleLatencySamples);
+    return {
+      baselineLatencyMs,
+      greenLatencyMs: baselineLatencyMs === null
+        ? this.greenLatencyMs
+        : Math.max(this.greenLatencyMs, Math.ceil(baselineLatencyMs * this.baselineGreenMultiplier)),
+      redLatencyMs: baselineLatencyMs === null
+        ? this.redLatencyMs
+        : Math.max(this.redLatencyMs, Math.ceil(baselineLatencyMs * this.baselineRedMultiplier)),
     };
   }
 }
@@ -90,4 +120,10 @@ function positiveNumber(value, name) {
 
 function clamp(value, minimum, maximum) {
   return Math.max(minimum, Math.min(maximum, value));
+}
+
+function upperQuartile(values) {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.ceil(sorted.length * 0.75) - 1];
 }
