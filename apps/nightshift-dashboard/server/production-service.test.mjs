@@ -37,3 +37,12 @@ test("release packager builds and includes the dashboard distribution", async ()
   assert.match(script, /npm --prefix "\$stage" run dashboard:build/);
   assert.match(script, /printf '%s\\n' "\$commit_sha" >"\$stage\/RELEASE_COMMIT"/);
 });
+
+test("project start cannot bypass the Gateway pressure guard", async () => {
+  const server = await readFile(new URL("./index.mjs", import.meta.url), "utf8");
+
+  assert.match(server, /const result = await scheduleStartedInstance\(instanceId\);/);
+  assert.match(server, /serializedTick\(instanceId, \{ dispatch: false, dryRun: false \}\)/);
+  assert.match(server, /changeScheduler\.enqueue\("instance\.started"\)/);
+  assert.doesNotMatch(server, /serializedTick\(instanceId, \{ dispatch: true, dryRun: false \}\)/);
+});

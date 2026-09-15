@@ -116,9 +116,11 @@ const changeScheduler = new WorkboardChangeScheduler({
   workboard,
 });
 changeScheduler.start();
-workboard.connect().catch((error) => {
-  console.error(`Night Shift persistent Gateway connection failed: ${error.message}`);
-});
+workboard.connect()
+  .then(() => probeDispatchCapacity())
+  .catch((error) => {
+    console.error(`Night Shift persistent Gateway connection failed: ${error.message}`);
+  });
 capacityProbeTimer = setInterval(() => probeDispatchCapacity(), gatewayCapacityProbeIntervalMs);
 capacityProbeTimer.unref?.();
 
@@ -485,13 +487,13 @@ async function handleApi(request, response, url) {
     let initialScheduleError = null;
     if (created.status === "active") {
       try {
-        const scheduled = await serializedTick(created.id, { dispatch: body.dispatch !== false });
+        const scheduled = await scheduleStartedInstance(created.id);
         initialSchedule = {
           actionCount: scheduled.actions.length,
           cardIds: scheduled.applied.map((entry) => entry.card?.id).filter(Boolean),
-          dispatched: body.dispatch !== false && store.getInstanceControl(created.id).automaticDispatch,
+          dispatched: false,
+          queuedForGuardedDispatch: body.dispatch !== false && store.getInstanceControl(created.id).automaticDispatch,
         };
-        await refreshCards();
       } catch (error) {
         initialScheduleError = error.message;
       }
@@ -519,9 +521,12 @@ async function handleApi(request, response, url) {
       return;
     }
     store.updateInstanceStatus(instanceId, "active");
-    const result = await serializedTick(instanceId, { dispatch: true, dryRun: false });
-    await refreshCards();
-    json(response, 200, { instance: store.getInstance(instanceId), schedule: result });
+    const result = await scheduleStartedInstance(instanceId);
+    json(response, 200, {
+      instance: store.getInstance(instanceId),
+      schedule: result,
+      queuedForGuardedDispatch: store.getInstanceControl(instanceId).automaticDispatch,
+    });
     return;
   }
   if (request.method === "PATCH" && instanceInputMatch) {
@@ -819,6 +824,19 @@ async function startInstance(instance) {
   };
   await writeProjectInputsSnapshot(prepared);
   return runtime.startInstance(prepared);
+}
+
+async function scheduleStartedInstance(instanceId) {
+  // Project start materializes its ready cards but never starts a Session
+  // directly. The event scheduler owns every launch so the shared Gateway
+  // pressure guard and global burst budget cannot be bypassed by concurrent
+  // create/start API calls.
+  const result = await serializedTick(instanceId, { dispatch: false, dryRun: false });
+  await refreshCards();
+  if (store.getInstanceControl(instanceId).automaticDispatch) {
+    changeScheduler.enqueue("instance.started");
+  }
+  return result;
 }
 
 async function writeProjectInputsSnapshot(instance) {
