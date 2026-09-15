@@ -147,3 +147,60 @@ test("healthy recovery admits one new job beyond jobs that kept running during r
   assert.equal(guard.recordProbe({latencyMs:20,running:36}).availableStarts,0);
   assert.equal(guard.snapshot(36).targetMaxActive,36);
 });
+
+test("sustained healthy headroom recovers one start before a periodic red cooldown expires", () => {
+  let now = 0;
+  const guard = new DispatchPressureGuard({ initialMaxActive: 12, now: () => now });
+  const pool = { capacity: 45, active: 12, queued: 0 };
+  guard.recordProbe({ latencyMs: 1_500, running: 12, workerPool: pool });
+  for (now = 5_000; now <= 15_000; now += 5_000) {
+    assert.equal(guard.recordProbe({ latencyMs: 80, running: 12, workerPool: pool }).availableStarts, 0);
+  }
+  const recovered = guard.recordProbe({ latencyMs: 80, running: 12, workerPool: pool });
+  assert.equal(recovered.targetMaxActive, 13);
+  assert.equal(recovered.availableStarts, 1);
+  assert.equal(recovered.holdUntil, null);
+  guard.consumeStarts(1);
+  assert.equal(guard.snapshot(13).availableStarts, 0);
+});
+
+test("rapid probes and interrupted healthy observations cannot shorten red cooldown", () => {
+  for (const interruption of ["rapid", "yellow", "red", "stale", "queued", "reserve"]) {
+    let now = 0;
+    const guard = new DispatchPressureGuard({ now: () => now });
+    const pool = { capacity: 45, active: 10, queued: 0 };
+    guard.recordProbe({ latencyMs: 1_500, running: 10, workerPool: pool });
+    for (let i = 1; i <= 3; i++) {
+      now = i * (interruption === "rapid" ? 1_000 : 5_000);
+      guard.recordProbe({ latencyMs: 80, running: 10, workerPool: pool });
+    }
+    now += interruption === "stale" ? 10_001 : 1_000;
+    const latencyMs = interruption === "yellow" ? 500 : interruption === "red" ? 1_500 : 80;
+    const workerPool = interruption === "queued" ? { ...pool, queued: 1 }
+      : interruption === "reserve" ? { ...pool, active: 36 } : pool;
+    assert.equal(guard.recordProbe({ latencyMs, running: 10, workerPool }).availableStarts, 0, interruption);
+    now += 1_000;
+    assert.equal(guard.recordProbe({ latencyMs: 80, running: 10, workerPool: pool }).availableStarts, 0, interruption);
+  }
+});
+
+test("periodic red pauses permit bounded progress with healthy intervals while sustained red never starts", () => {
+  let now = 0, running = 3;
+  const guard = new DispatchPressureGuard({ now: () => now });
+  for (let cycle = 0; cycle < 40; cycle++) {
+    now = cycle * 60_000;
+    const pool = { capacity: 45, active: running, queued: 0 };
+    assert.equal(guard.recordProbe({ latencyMs: 1_500, running, workerPool: pool }).availableStarts, 0);
+    for (let sample = 0; sample < 4; sample++) {
+      now += 5_000;
+      const result = guard.recordProbe({ latencyMs: 80, running, workerPool: pool });
+      if (result.availableStarts) { running++; guard.consumeStarts(1); }
+      assert(running <= 36);
+    }
+  }
+  assert.equal(running, 36);
+  for (let sample = 0; sample < 20; sample++) {
+    now += 5_000;
+    assert.equal(guard.recordProbe({ latencyMs: 1_500, running: 0, workerPool: { capacity: 45, active: 0, queued: 0 } }).availableStarts, 0);
+  }
+});
