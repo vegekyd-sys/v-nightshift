@@ -410,6 +410,14 @@ export class NightShiftRuntime {
 
   async recoverWrittenArtifacts({ card, cards, contentItemId, failure, instance, release, stageId, terminalSession = null }) {
     if (!this.completionValidator || typeof this.workboard.completeCard !== "function") return null;
+    const stage = release?.spec?.stages?.find((entry) => entry.id === stageId);
+    // A legacy completion check validates attempt provenance only. It cannot
+    // prove that a cancelled or unfinished attempt produced its outputs.
+    const hasArtifactContract = stage?.outputs?.includes("deliveryManifest") || (
+      release?.spec?.completion?.mode === "strict-v1" &&
+      release?.spec?.handoff?.version === 1 && (stage?.completeWhen?.length ?? 0) > 0
+    );
+    if (!hasArtifactContract) return null;
     try {
       await this.completionValidator({
         card,
