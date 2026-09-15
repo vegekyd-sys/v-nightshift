@@ -1,3 +1,4 @@
+import { activeCardCount } from "./active-card-count.mjs";
 import { runSchedulerPass } from "../../../packages/nightshift-core/src/scheduler-pass.mjs";
 import { tickWithFaultProjection } from "../../../packages/nightshift-core/src/scheduler-state.mjs";
 import { createCompletionUrlChecker } from "./completion-url.mjs";
@@ -919,19 +920,6 @@ function positiveInteger(value, fallback, maximum) {
   if (value === undefined || value === null || value === "") return fallback;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= maximum ? parsed : fallback;
-}
-
-function activeCardCount(cards) {
-  const now = Date.now();
-  return cards.filter((card) => card.status === "running"
-    || card.execution?.status === "running"
-    || claimExpiryMs(card.metadata?.claim?.expiresAt) > now).length;
-}
-
-function claimExpiryMs(value) {
-  if (typeof value === "number") return value;
-  const parsed = Date.parse(value ?? "");
-  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 async function refreshCards({ cardIds = null } = {}) {
