@@ -22,7 +22,7 @@ test("learns an idle Gateway baseline without learning from running-worker press
   assert.equal(idle.greenLatencyMs, 750);
   assert.equal(idle.redLatencyMs, 1_200);
   assert.equal(idle.dispatchAllowed, true);
-  assert.equal(idle.availableStarts, 3);
+  assert.equal(idle.availableStarts, 1);
 
   const loaded = guard.recordProbe({ latencyMs: 1_300, running: 3 });
   assert.equal(loaded.lastProbe.level, "red");
@@ -47,8 +47,11 @@ test("yellow pressure stops new starts without killing running workers", () => {
   assert.equal(pressure.dispatchAllowed, false);
   assert.equal(pressure.availableStarts, 0);
   now += 60_000;
-  assert.equal(guard.snapshot(3).dispatchAllowed, true);
-  assert.equal(guard.snapshot(3).availableStarts, 2);
+  assert.equal(guard.snapshot(3).dispatchAllowed, false);
+  assert.equal(guard.snapshot(3).availableStarts, 0);
+  const recovered = guard.recordProbe({ latencyMs: 100, running: 3 });
+  assert.equal(recovered.dispatchAllowed, true);
+  assert.equal(recovered.availableStarts, 1);
 });
 
 test("red pressure halves the target and opens a cooldown", () => {
@@ -59,5 +62,14 @@ test("red pressure halves the target and opens a cooldown", () => {
   assert.equal(pressure.dispatchAllowed, false);
   assert.equal(pressure.availableStarts, 0);
   now += 60_000;
-  assert.equal(guard.snapshot(2).availableStarts, 3);
+  assert.equal(guard.snapshot(2).availableStarts, 0);
+});
+
+test("one green probe authorizes only one cold start", () => {
+  const guard = new DispatchPressureGuard({ initialMaxActive: 6 });
+  const pressure = guard.recordProbe({ latencyMs: 80, running: 0 });
+  assert.equal(pressure.availableStarts, 1);
+  guard.consumeStarts(1);
+  assert.equal(guard.snapshot(1).availableStarts, 0);
+  assert.equal(guard.snapshot(1).dispatchAllowed, false);
 });
