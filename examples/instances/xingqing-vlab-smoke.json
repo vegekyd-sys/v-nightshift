@@ -1,0 +1,31 @@
+{
+  "id": "NS-LAB-XINGQING-001",
+  "name": "VLab 星擎 Workflow Smoke",
+  "status": "active",
+  "agentBindings": {
+    "content-operator": "main"
+  },
+  "inputs": {
+    "customerId": "synthetic-customer",
+    "briefUrl": "https://example.invalid/nightshift/brief",
+    "authorizationScope": {
+      "paidProduction": false,
+      "externalPublication": false
+    }
+  },
+  "contentItems": [
+    {
+      "id": "video-ai-01",
+      "title": "AI 产品视觉",
+      "route": "AI_GENERATE",
+      "status": "planned"
+    },
+    {
+      "id": "video-scene-01",
+      "title": "Scene 实拍剪辑",
+      "route": "SCENE_EDIT",
+      "status": "planned"
+    }
+  ],
+  "approvals": []
+}
