@@ -27,6 +27,22 @@ sudo scripts/manage-nightshift-production.sh deploy <artifact.tgz> <sha256> <com
 
 The deploy command prints the immutable release, backup, and exact rollback command. It stops/restarts only Night Shift, not `openclaw-gateway.service`.
 
+Append `--code-only` for a release without a SQLite schema change. It skips the multi-gigabyte state snapshot, so scheduling pauses only for the dependency install, and rollback restores the previous release and unit while leaving the data directory untouched.
+
+## Elastic admission
+
+Night Shift starts new native cards only while the Gateway host has headroom, and keeps Worker sessions free for interactive use. The service exposes the effective values in `/api/health`; tune them in a systemd drop-in and restart only Night Shift.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `NIGHTSHIFT_RESERVED_INTERACTIVE_SLOTS` | 9 | Worker sessions never handed to Night Shift; foreground load above this shrinks Night Shift capacity further. |
+| `NIGHTSHIFT_HOST_MEMORY_RESERVE_PERCENT` | 40 | Percent of host RAM that must stay available before a new job is admitted. |
+| `NIGHTSHIFT_HOST_MEMORY_RESERVE_MIB` | 4096 | Absolute floor for the same reserve. The larger of the two applies. |
+| `NIGHTSHIFT_DISPATCH_INITIAL_MAX_ACTIVE` | 3 | Concurrency the ramp starts from after a restart or a red probe. |
+| `NIGHTSHIFT_GATEWAY_GREEN_LATENCY_MS` / `_RED_LATENCY_MS` | 250 / 1000 | Worker status RPC latency that pauses growth or halves the target. |
+
+The 40 percent default was sized on a 16 GiB lab host. A 32 GiB production host that should run Night Shift whenever it is idle normally uses 20 percent with the 4 GiB floor.
+
 ## Required acceptance
 
 1. Loopback health and `nightshiftctl health`.
