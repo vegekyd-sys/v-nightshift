@@ -65,6 +65,11 @@ const gatewayCapacityProbeIntervalMs = positiveInteger(process.env.NIGHTSHIFT_GA
 const gatewayGreenLatencyMs = positiveInteger(process.env.NIGHTSHIFT_GATEWAY_GREEN_LATENCY_MS, 250, 10_000);
 const gatewayRedLatencyMs = positiveInteger(process.env.NIGHTSHIFT_GATEWAY_RED_LATENCY_MS, 1_000, 30_000);
 const dispatchInitialMaxActive = positiveInteger(process.env.NIGHTSHIFT_DISPATCH_INITIAL_MAX_ACTIVE, 3, schedulerMaxWorkboardActive);
+// Elastic admission knobs. Interactive slots are Worker sessions never handed to
+// Night Shift; the memory reserve is host RAM kept free before a new job starts.
+const reservedInteractiveSlots = positiveInteger(process.env.NIGHTSHIFT_RESERVED_INTERACTIVE_SLOTS, 9, 128);
+const hostMemoryReserveMiB = positiveInteger(process.env.NIGHTSHIFT_HOST_MEMORY_RESERVE_MIB, 4096, 262_144);
+const hostMemoryReservePercent = positiveInteger(process.env.NIGHTSHIFT_HOST_MEMORY_RESERVE_PERCENT, 40, 90);
 const publicAuth = await loadPublicAuth(process.env.NIGHTSHIFT_BASIC_AUTH_FILE);
 await mkdir(dataDir, { recursive: true });
 const store = new NightShiftStore(join(dataDir, "nightshift.sqlite"));
@@ -100,8 +105,13 @@ const dispatchPressureGuard = new DispatchPressureGuard({
   initialMaxActive: dispatchInitialMaxActive,
   maxActive: schedulerMaxWorkboardActive,
   redLatencyMs: gatewayRedLatencyMs,
+  reservedInteractiveSlots,
 });
-const probeHostPressure = createHostPressureProbe({ gatewayUrl: workboard.gatewayUrl });
+const probeHostPressure = createHostPressureProbe({
+  gatewayUrl: workboard.gatewayUrl,
+  reserveFloorMiB: hostMemoryReserveMiB,
+  reservePercent: hostMemoryReservePercent,
+});
 let tickQueue = Promise.resolve();
 let shuttingDown = false;
 let capacityProbePromise = null;
@@ -181,6 +191,9 @@ async function handleApi(request, response, url) {
       schedulerRepairIntervalMs,
       dispatchPressure: dispatchPressureGuard.snapshot(activeCardCount(cardCache)),
       gatewayCapacityProbeIntervalMs,
+      reservedInteractiveSlots,
+      hostMemoryReserveMiB,
+      hostMemoryReservePercent,
       lastSchedulerTrigger,
       gatewayConnected: workboard.connected,
       schedulerStalled,

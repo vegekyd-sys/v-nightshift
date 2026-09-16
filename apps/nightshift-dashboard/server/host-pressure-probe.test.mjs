@@ -16,3 +16,9 @@ test("background disk activity alone does not starve an otherwise healthy host",
 
 // The live elastic batch exhausted memory between otherwise green probes.
 test("reserves allocation headroom before reclaim or swap begins and recovers when released",async()=>{const f=fixture();await f.probe();f.step();f.set({available:5*1024*1024});const held=await f.probe();assert.equal(held.memoryFullAvg10,0);assert.equal(held.swapOutPagesPerSecond,0);assert.equal(held.blocked,true);assert.equal(held.reason,"insufficient memory headroom");assert.equal(held.admissionReserveMiB,6554);f.step();f.set({available:8*1024*1024});assert.equal((await f.probe()).blocked,false);});
+
+// Production has twice the lab's RAM; the reserve must follow the host, not a constant.
+test("operators size the admission reserve per host",async()=>{let at=0;const make=(o)=>createHostPressureProbe({gatewayUrl:"ws://127.0.0.1:22793",platform:"linux",now:()=>at,read:async p=>p==="/proc/meminfo"?"MemTotal: 33554432 kB\nMemAvailable: 8388608 kB":p==="/proc/vmstat"?"pswpout 0":"some avg10=0.00\nfull avg10=0.00 avg60=0.00",...o});
+ const lenient=make({reserveFloorMiB:4096,reservePercent:20});await lenient();at+=5000;const l=await lenient();assert.equal(l.admissionReserveMiB,6554);assert.equal(l.blocked,false);
+ const strict=make({});await strict();at+=5000;const s=await strict();assert.equal(s.admissionReserveMiB,13108);assert.equal(s.reason,"insufficient memory headroom");
+ for(const bad of [{reservePercent:0},{reservePercent:100},{reserveFloorMiB:-1}])assert.throws(()=>make(bad),/must be/);});
