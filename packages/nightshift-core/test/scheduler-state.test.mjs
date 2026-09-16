@@ -25,3 +25,19 @@ test("projects expose dispatch failure immediately and clear it after a successf
   await tickWithFaultProjection(input);
   assert.equal(controls.get("A").fault, null);
 });
+
+test("a single project tick reads only that project's cards from the board", async () => {
+  const calls = [];
+  const store = {
+    getInstanceControl: () => ({ automaticDispatch: true, fault: null }),
+    setInstanceControl() {},
+    appendEvent() {},
+    listStageRuns: () => [{ stageId: "plan", status: "ready", cardId: "card-plan" }],
+    listContentItemRuns: () => [{ status: "ready", cardId: "card-item" }],
+  };
+  const runtime = { tick: async (_id, options) => { calls.push({ tick: options.cards }); return { dispatch: null }; } };
+  const workboard = { listCards: async (options) => { calls.push({ list: options }); return [{ id: "card-plan" }]; } };
+  await tickWithFaultProjection({ instanceId: "A", options: {}, runtime, store, workboard });
+  assert.deepEqual(calls[0], { list: { cardIds: ["card-plan", "card-item"] } });
+  assert.deepEqual(calls[1].tick, [{ id: "card-plan" }]);
+});

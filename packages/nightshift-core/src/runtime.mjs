@@ -80,9 +80,19 @@ export class NightShiftRuntime {
     return this.store.updateInstanceInputs(instanceId, patch);
   }
 
+  // Every card this service created for a project is linked to one of its
+  // runs, so a project can be read from the native board by exact ID.
+  instanceCardIds(instanceId) {
+    const ids = new Set();
+    for (const run of [...this.store.listStageRuns(instanceId), ...this.store.listContentItemRuns(instanceId)]) {
+      if (typeof run.cardId === "string" && run.cardId) ids.add(run.cardId);
+    }
+    return [...ids];
+  }
+
   async reconcile(instanceId, cards = null, { inspectSessions = true } = {}) {
     this.nextReconcileAt = 0;
-    const currentCards = cards ?? await this.workboard.listCards();
+    const currentCards = cards ?? await this.workboard.listCards({ cardIds: this.instanceCardIds(instanceId) });
     const instance = this.store.getInstance(instanceId);
     if (!instance) throw new Error(`Unknown instance ${instanceId}`);
     const release = this.store.getRelease(instance.workflowSha256)?.manifest;
@@ -545,7 +555,7 @@ export class NightShiftRuntime {
     if (!stage || !["agent", "system"].includes(stage.actor)) throw new Error("Only blocked executable stages can be retried");
     const missingApproval = requiredApproval(stage, instance, new Date(), contentItemId ?? null);
     if (missingApproval) throw new Error("Execution confirmation is required before this stage can be retried");
-    const cards = await this.workboard.listCards();
+    const cards = await this.workboard.listCards({ cardIds: [cardId] });
     const card = cards.find((entry) => entry.id === cardId);
     if (!card || card.status !== "blocked") throw new Error("Retry requires a blocked Workboard card");
     const contentItem = contentItemId
@@ -588,7 +598,7 @@ export class NightShiftRuntime {
     dryRun = false,
     inspectSessions = true,
   } = {}) {
-    const currentCards = cards ?? await this.workboard.listCards();
+    const currentCards = cards ?? await this.workboard.listCards({ cardIds: this.instanceCardIds(instanceId) });
     await this.reconcile(instanceId, currentCards, { inspectSessions });
     const instance = this.store.getInstance(instanceId);
     if (!instance) throw new Error(`Unknown instance ${instanceId}`);
@@ -738,7 +748,7 @@ export class NightShiftRuntime {
       : this.store.upsertStageRun({ ...run, status: "done" });
     const requiredScope = stage?.approval?.scope ?? "stage";
     if (stage?.approval?.before === effect && requiredScope === scope) {
-      const cards = await this.workboard.listCards();
+      const cards = await this.workboard.listCards({ cardIds: this.instanceCardIds(instanceId) });
       const blockedExecutionCard = cards.find((card) => {
         const labels = card.labels ?? [];
         if (card.status !== "blocked" || labels.includes("nightshift:approval")) return false;

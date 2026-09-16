@@ -164,3 +164,22 @@ test("occupied slots are not reported as starts when no task launched", async ()
   const result = await runSchedulerPass({...f, dispatchMaxStarts: 3, maxWorkboardActive: 1});
   assert.equal(result.dispatched, 0);
 });
+
+import { instanceCardIds, visibleCardIds } from "../src/scheduler-pass.mjs";
+
+test("project and visible card ids come from recorded runs, never from a board scan", () => {
+  const runs = {
+    A: [{ cardId: "a1" }, { cardId: "a2" }, { cardId: "a1" }, { cardId: null }],
+    B: [{ cardId: "b1" }],
+    C: [{ cardId: "c1" }],
+  };
+  const store = {
+    listInstances: () => [{ id: "A", status: "active" }, { id: "B", status: "paused" }, { id: "C", status: "archived" }],
+    listStageRuns: (id) => runs[id].slice(0, 1),
+    listContentItemRuns: (id) => runs[id].slice(1),
+  };
+  assert.deepEqual(instanceCardIds(store, "A"), ["a1", "a2"]);
+  assert.deepEqual(instanceCardIds(store, "C"), ["c1"]);
+  // Archived projects stay on the native board but are never read by default.
+  assert.deepEqual(visibleCardIds(store).sort(), ["a1", "a2", "b1"]);
+});

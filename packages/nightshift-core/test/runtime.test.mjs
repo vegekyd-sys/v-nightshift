@@ -1300,3 +1300,31 @@ test("never marks a cancelled legacy card done without a persisted output contra
   assert.notEqual(store.listStageRuns("NS-CANCELLED-LEGACY")[0].status, "done");
   store.close();
 });
+
+// Production carried 2,288 cards; a tick that lists the whole board costs the
+// shared Gateway a main-thread walk of every card. A project reads by exact ID.
+test("ticks and retries after the first read the board by the project's card ids", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const listCalls = [];
+  const original = workboard.listCards.bind(workboard);
+  workboard.listCards = async (options) => { listCalls.push(options); return original(options); };
+  const runtime = new NightShiftRuntime({ board: "nightshift-lab", store, workboard });
+  const release = runtime.publish(source);
+  runtime.startInstance({
+    id: "NS-RUNTIME-SCOPED",
+    name: "Scoped reads",
+    workflowSha256: release.workflowSha256,
+    agentBindings: { "content-operator": "main" },
+    inputs: { targetCount: 1 },
+  });
+  await runtime.tick("NS-RUNTIME-SCOPED");
+  const created = workboard.cards.map((card) => card.id);
+  assert.ok(created.length > 0);
+  await runtime.tick("NS-RUNTIME-SCOPED");
+  assert.ok(listCalls.length >= 2);
+  assert.deepEqual(listCalls[0], { cardIds: [] });
+  assert.deepEqual(listCalls.at(-1), { cardIds: created });
+  assert.ok(listCalls.every((call) => Array.isArray(call?.cardIds)), "every board read is scoped");
+});
