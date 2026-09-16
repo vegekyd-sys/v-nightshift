@@ -14,6 +14,7 @@ export class WorkboardGatewayAdapter {
     now = Date.now,
     rpcClientFactory = (options) => new PersistentGatewayRpcClient(options),
     rpcTimeoutMs = process.env.NIGHTSHIFT_GATEWAY_RPC_TIMEOUT_MS ?? 30_000,
+    logBoardReads = process.env.NIGHTSHIFT_LOG_BOARD_READS === "1",
     runner,
     startBurst = process.env.NIGHTSHIFT_DISPATCH_START_BURST ?? 3,
     startIntervalMs = process.env.NIGHTSHIFT_DISPATCH_START_INTERVAL_MS ?? 15_000,
@@ -27,6 +28,7 @@ export class WorkboardGatewayAdapter {
     this.now = now;
     this.rpcClientFactory = rpcClientFactory;
     this.rpcTimeoutMs = positiveTimeout(rpcTimeoutMs);
+    this.logBoardReads = Boolean(logBoardReads);
     this.runner = runner;
     this.startBurst = dispatchBurst(startBurst);
     this.startIntervalMs = dispatchInterval(startIntervalMs);
@@ -42,9 +44,16 @@ export class WorkboardGatewayAdapter {
     const recovering = this.needsFullSnapshot;
     const ids = !recovering && Array.isArray(cardIds) ? uniqueCardIds(cardIds) : null;
     if (ids?.length === 0) return [];
+    const started = this.now();
     const result = await this.call("workboard.cards.list", { boardId: this.board, ...(ids ? { cardIds: ids } : {}) });
     if (recovering) this.needsFullSnapshot = false;
-    return result.cards ?? [];
+    const cards = result.cards ?? [];
+    // Every board read is an observable event so acceptance can prove that
+    // no hot path lists the whole board.
+    if (this.logBoardReads) {
+      console.error(JSON.stringify({ event: "board.read", scope: ids ? "ids" : "board", requested: ids?.length ?? null, returned: cards.length, ms: Math.round(this.now() - started), recovering }));
+    }
+    return cards;
   }
 
   async applyPlan(actions, { cards = null, dryRun = false } = {}) {

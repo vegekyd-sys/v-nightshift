@@ -2,7 +2,16 @@ import { readFile } from "node:fs/promises";
 
 // Only the machine that runs the Gateway is relevant. Remote Gateway users
 // retain the Gateway latency/pool gate rather than probing the dashboard host.
-export function createHostPressureProbe({ gatewayUrl, platform = process.platform, read = readFile, now = Date.now } = {}) {
+export function createHostPressureProbe({
+  gatewayUrl, platform = process.platform, read = readFile, now = Date.now,
+  // Headroom kept free for foreground Sessions and for the multi-gigabyte burst a
+  // newly admitted Agent can allocate before the next probe. Operators size this
+  // per host: a 16 GiB lab and a 32 GiB production box do not share one percent.
+  reserveFloorMiB = 4096, reservePercent = 40,
+} = {}) {
+  const floorKiB = positiveNumber(reserveFloorMiB, "reserveFloorMiB") * 1024;
+  const fraction = positiveNumber(reservePercent, "reservePercent") / 100;
+  if (fraction >= 1) throw new Error("reservePercent must be below 100");
   let local = false;
   try { local = ["localhost", "127.0.0.1", "[::1]"].includes(new URL(gatewayUrl).hostname); } catch {}
   const enabled = platform === "linux" && local;
@@ -34,9 +43,7 @@ export function createHostPressureProbe({ gatewayUrl, platform = process.platfor
       previous = { at, swapOutPages };
       const reasons = [];
       if (!warm) reasons.push("host sample warming up");
-      // A newly admitted full Agent can allocate gigabytes before the next probe.
-      // Keep headroom for that burst and foreground Sessions before reclaim starts.
-      const admissionReserveKiB = Math.max(4 * 1024 * 1024, totalKiB * 0.4);
+      const admissionReserveKiB = Math.max(floorKiB, totalKiB * fraction);
       if (availableKiB < admissionReserveKiB) reasons.push("insufficient memory headroom");
       if (memoryFullAvg10 >= 1) reasons.push("memory reclaim stalls");
       // Global I/O PSI also counts deliberately throttled background checks.
@@ -49,4 +56,10 @@ export function createHostPressureProbe({ gatewayUrl, platform = process.platfor
       return { enabled: true, blocked: true, reason: `host pressure probe failed: ${error.message}` };
     }
   };
+}
+
+function positiveNumber(value, name) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) throw new Error(`${name} must be positive`);
+  return parsed;
 }

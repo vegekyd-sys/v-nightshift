@@ -1,5 +1,5 @@
 import { activeCardCount } from "./active-card-count.mjs";
-import { runSchedulerPass } from "../../../packages/nightshift-core/src/scheduler-pass.mjs";
+import { runSchedulerPass, instanceCardIds, visibleCardIds } from "../../../packages/nightshift-core/src/scheduler-pass.mjs";
 import { tickWithFaultProjection } from "../../../packages/nightshift-core/src/scheduler-state.mjs";
 import { createCompletionUrlChecker } from "./completion-url.mjs";
 import { SchedulerCircuit } from "./scheduler-circuit.mjs";
@@ -65,6 +65,14 @@ const gatewayCapacityProbeIntervalMs = positiveInteger(process.env.NIGHTSHIFT_GA
 const gatewayGreenLatencyMs = positiveInteger(process.env.NIGHTSHIFT_GATEWAY_GREEN_LATENCY_MS, 250, 10_000);
 const gatewayRedLatencyMs = positiveInteger(process.env.NIGHTSHIFT_GATEWAY_RED_LATENCY_MS, 1_000, 30_000);
 const dispatchInitialMaxActive = positiveInteger(process.env.NIGHTSHIFT_DISPATCH_INITIAL_MAX_ACTIVE, 3, schedulerMaxWorkboardActive);
+// Elastic admission knobs. Interactive slots are Worker sessions never handed to
+// Night Shift; the memory reserve is host RAM kept free before a new job starts.
+const reservedInteractiveSlots = positiveInteger(process.env.NIGHTSHIFT_RESERVED_INTERACTIVE_SLOTS, 9, 128);
+const hostMemoryReserveMiB = positiveInteger(process.env.NIGHTSHIFT_HOST_MEMORY_RESERVE_MIB, 4096, 262_144);
+const hostMemoryReservePercent = positiveInteger(process.env.NIGHTSHIFT_HOST_MEMORY_RESERVE_PERCENT, 40, 90);
+// An explicit refresh=1 read is served from the cache when the last board read
+// is younger than this. Pollers cannot turn the API into a board scan loop.
+const cardRefreshMinIntervalMs = positiveInteger(process.env.NIGHTSHIFT_CARD_REFRESH_MIN_INTERVAL_MS, 30_000, 600_000);
 const publicAuth = await loadPublicAuth(process.env.NIGHTSHIFT_BASIC_AUTH_FILE);
 await mkdir(dataDir, { recursive: true });
 const store = new NightShiftStore(join(dataDir, "nightshift.sqlite"));
@@ -100,8 +108,13 @@ const dispatchPressureGuard = new DispatchPressureGuard({
   initialMaxActive: dispatchInitialMaxActive,
   maxActive: schedulerMaxWorkboardActive,
   redLatencyMs: gatewayRedLatencyMs,
+  reservedInteractiveSlots,
 });
-const probeHostPressure = createHostPressureProbe({ gatewayUrl: workboard.gatewayUrl });
+const probeHostPressure = createHostPressureProbe({
+  gatewayUrl: workboard.gatewayUrl,
+  reserveFloorMiB: hostMemoryReserveMiB,
+  reservePercent: hostMemoryReservePercent,
+});
 let tickQueue = Promise.resolve();
 let shuttingDown = false;
 let capacityProbePromise = null;
@@ -181,6 +194,10 @@ async function handleApi(request, response, url) {
       schedulerRepairIntervalMs,
       dispatchPressure: dispatchPressureGuard.snapshot(activeCardCount(cardCache)),
       gatewayCapacityProbeIntervalMs,
+      reservedInteractiveSlots,
+      hostMemoryReserveMiB,
+      hostMemoryReservePercent,
+      cardRefreshMinIntervalMs,
       lastSchedulerTrigger,
       gatewayConnected: workboard.connected,
       schedulerStalled,
@@ -194,7 +211,7 @@ async function handleApi(request, response, url) {
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/bootstrap") {
-    if (url.searchParams.get("refresh") === "1") await refreshCards();
+    if (url.searchParams.get("refresh") === "1") await refreshVisibleCards();
     const instances = store.listInstances().filter((instance) => instance.status !== "archived").map((instance) => ({
       ...instance,
       contentItems: store.listContentItems(instance.id),
@@ -271,7 +288,7 @@ async function handleApi(request, response, url) {
       reason: "Archived from Live Board",
       cardCounts: countCardsByStatus(projectCards),
     });
-    refreshCards().catch((error) => {
+    refreshCards({ cardIds: instanceCardIds(store, archived.id) }).catch((error) => {
       lastSchedulerError = error.message;
     });
     json(response, 200, { id: archived.id, status: archived.status });
@@ -293,7 +310,7 @@ async function handleApi(request, response, url) {
         json(response, 200, { ...withInstanceLinks(instance), reused: true });
         return;
       }
-      const cards = (await refreshCards()).filter((card) => cardInstanceId(card) === instanceId);
+      const cards = (await refreshCards({ cardIds: instanceCardIds(store, instanceId) })).filter((card) => cardInstanceId(card) === instanceId);
       const running = cards.filter((card) => card.status === "running");
       if (running.length > 0) {
         json(response, 409, { error: `项目仍有 ${running.length} 个 Agent 正在工作，不能归档` });
@@ -316,14 +333,14 @@ async function handleApi(request, response, url) {
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/governance/audit") {
-    const cards = url.searchParams.get("refresh") === "1" ? await refreshCards() : cardCache;
+    const cards = url.searchParams.get("refresh") === "1" ? await refreshVisibleCards({ includeArchived: true }) : cardCache;
     json(response, 200, auditNightShiftGovernance({ cards, instances: store.listInstances() }));
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/cards") {
-    const cards = url.searchParams.get("refresh") === "1" ? await refreshCards() : cardCache;
     const status = url.searchParams.get("status");
     const includeArchived = url.searchParams.get("includeArchived") === "1";
+    const cards = url.searchParams.get("refresh") === "1" ? await refreshVisibleCards({ includeArchived }) : cardCache;
     const instances = store.listInstances().filter((instance) => instance.status !== "archived");
     const filtered = includeArchived ? cards : visibleCards(cards, instances);
     json(response, 200, { cards: (status ? filtered.filter((card) => card.status === status) : filtered).map(withCardLinks) });
@@ -353,7 +370,7 @@ async function handleApi(request, response, url) {
   const cardSessionMatch = url.pathname.match(/^\/api\/cards\/([^/]+)\/session$/);
   if (request.method === "GET" && cardSessionMatch) {
     const cardId = decodeURIComponent(cardSessionMatch[1]);
-    const card = cardCache.find((entry) => entry.id === cardId) ?? (await refreshCards()).find((entry) => entry.id === cardId);
+    const card = cardCache.find((entry) => entry.id === cardId) ?? (await refreshCards({ cardIds: [cardId] })).find((entry) => entry.id === cardId);
     if (!card) {
       json(response, 404, { error: "Workboard card not found" });
       return;
@@ -562,7 +579,7 @@ async function handleApi(request, response, url) {
         dispatch: body.dispatch === true,
         dryRun: body.dryRun === true,
       });
-    if (!body.dryRun) await refreshCards();
+    if (!body.dryRun) await refreshCards({ cardIds: instanceCardIds(store, decodeURIComponent(tickMatch[1])) });
     json(
       response,
       200,
@@ -573,7 +590,7 @@ async function handleApi(request, response, url) {
   const operationMatch = url.pathname.match(/^\/api\/cards\/([^/]+)\/operations\/(reserve|checkpoint)$/);
   if (request.method === "POST" && operationMatch) {
     const cardId = decodeURIComponent(operationMatch[1]);
-    const card = cardCache.find((entry) => entry.id === cardId) ?? (await refreshCards()).find((entry) => entry.id === cardId);
+    const card = cardCache.find((entry) => entry.id === cardId) ?? (await refreshCards({ cardIds: [cardId] })).find((entry) => entry.id === cardId);
     if (!card) {
       json(response, 404, { error: "Workboard card not found" });
       return;
@@ -641,7 +658,7 @@ async function handleApi(request, response, url) {
       json(response, 422, { error: "cardIds must contain between 1 and 100 card IDs" });
       return;
     }
-    const cards = await refreshCards();
+    const cards = await refreshCards({ cardIds });
     const decisions = cardIds.map((cardId) => {
       const card = cards.find((entry) => entry.id === cardId);
       if (!card) throw new Error(`Workboard card not found: ${cardId}`);
@@ -658,7 +675,7 @@ async function handleApi(request, response, url) {
         results.push({ cardId: decision.card.id, error: error.message, ok: false });
       }
     }
-    await refreshCards();
+    await refreshCards({ cardIds: [...new Set(cardIds.flatMap((id) => [id, ...instanceCardIds(store, cardInstanceId(cards.find((entry) => entry.id === id)) ?? "")]))] });
     const failed = results.filter((entry) => !entry.ok);
     json(response, failed.length ? 207 : 200, { approved: results.length - failed.length, failed: failed.length, ok: failed.length === 0, results });
     return;
@@ -666,7 +683,7 @@ async function handleApi(request, response, url) {
   if (request.method === "POST" && decisionMatch) {
     const body = await bodyJson(request);
     const cardId = decodeURIComponent(decisionMatch[1]);
-    const card = cardCache.find((entry) => entry.id === cardId) ?? (await refreshCards()).find((entry) => entry.id === cardId);
+    const card = cardCache.find((entry) => entry.id === cardId) ?? (await refreshCards({ cardIds: [cardId] })).find((entry) => entry.id === cardId);
     if (!card) {
       json(response, 404, { error: "Workboard card not found" });
       return;
@@ -678,7 +695,8 @@ async function handleApi(request, response, url) {
         ? await runtime.requestChanges(input)
         : await runtime.reject(input);
     if (decisionMatch[2] === "approve") await recordHumanStageHandoff(input);
-    await refreshCards();
+    // A decision can create the next stage's cards; read the whole project.
+    await refreshCards({ cardIds: [...new Set([card.id, ...instanceCardIds(store, cardInstanceId(card) ?? "")])] });
     json(response, 200, result);
     return;
   }
@@ -702,7 +720,7 @@ async function handleApi(request, response, url) {
     const input = { instanceId: decodeURIComponent(takeoverMatch[1]), cardId: decodeURIComponent(takeoverMatch[2]), actor: operatorIdentity(request, body), reason: body.reason };
     const result = await serializedOperation(() => takeoverMatch[3] === "takeover" ? humanAttempts.takeover(input) : humanAttempts.complete(input));
     if (takeoverMatch[3] === "complete") await serializedTick(input.instanceId, { dispatch: false });
-    await refreshCards();
+    await refreshCards({ cardIds: instanceCardIds(store, input.instanceId) });
     json(response, 200, result);
     return;
   }
@@ -714,7 +732,7 @@ async function handleApi(request, response, url) {
     if (!store.getInstanceControl(instanceId).automaticDispatch) throw new Error("Automatic dispatch is disabled for this project");
     store.appendEvent({ instanceId, type: "dispatch.retry.requested", payload: { actor } });
     const result = await serializedTick(instanceId, { dispatch: true });
-    await refreshCards();
+    await refreshCards({ cardIds: instanceCardIds(store, instanceId) });
     json(response, 200, result);
     return;
   }
@@ -722,7 +740,7 @@ async function handleApi(request, response, url) {
   if (request.method === "POST" && retryMatch) {
     const body = await bodyJson(request);
     const result = await runtime.retry({ ...body, cardId: decodeURIComponent(retryMatch[1]) });
-    await refreshCards();
+    await refreshCards({ cardIds: [decodeURIComponent(retryMatch[1])] });
     json(response, 200, result);
     return;
   }
@@ -839,7 +857,7 @@ async function scheduleStartedInstance(instanceId) {
   // pressure guard and global burst budget cannot be bypassed by concurrent
   // create/start API calls.
   const result = await serializedTick(instanceId, { dispatch: false, dryRun: false });
-  await refreshCards();
+  await refreshCards({ cardIds: instanceCardIds(store, instanceId) });
   if (store.getInstanceControl(instanceId).automaticDispatch) {
     changeScheduler.enqueue("instance.started");
   }
@@ -920,6 +938,27 @@ function positiveInteger(value, fallback, maximum) {
   if (value === undefined || value === null || value === "") return fallback;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= maximum ? parsed : fallback;
+}
+
+// Explicit refresh entry points read only the cards of projects that are not
+// archived; the archived majority of a mature board is never shown or
+// scheduled. Governance may ask for the whole board. Either read is served
+// from the cache when a recent one exists, so a polling client cannot make
+// the Gateway walk its card store every few seconds.
+let lastVisibleRefreshAt = 0;
+let lastFullRefreshAt = 0;
+async function refreshVisibleCards({ includeArchived = false } = {}) {
+  const now = Date.now();
+  const last = includeArchived ? lastFullRefreshAt : Math.max(lastVisibleRefreshAt, lastFullRefreshAt);
+  if (now - last < cardRefreshMinIntervalMs) return cardCache;
+  if (includeArchived) {
+    const cards = await refreshCards();
+    lastFullRefreshAt = Date.now();
+    return cards;
+  }
+  await refreshCards({ cardIds: visibleCardIds(store) });
+  lastVisibleRefreshAt = Date.now();
+  return cardCache;
 }
 
 async function refreshCards({ cardIds = null } = {}) {

@@ -1,4 +1,7 @@
-const stoppedStatuses = new Set(["blocked", "done", "cancelled"]);
+// A card in review waits for a human; its Agent execution has ended even
+// though the native claim is retained until the reviewer decides. Production
+// carried nine such cards, each silently taking one Night Shift slot.
+const stoppedStatuses = new Set(["blocked", "done", "cancelled", "review"]);
 
 export function activeCardCount(cards, now = Date.now()) {
   return cards.filter((card) => {

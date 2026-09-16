@@ -117,3 +117,26 @@ function claimExpiryMs(value) {
   const parsed = Date.parse(value ?? "");
   return Number.isFinite(parsed) ? parsed : 0;
 }
+
+// Card IDs recorded for one project's stage and content-item runs. Every card
+// the service created for a project is linked to a run, so this set is the
+// project's complete board footprint without listing the whole board.
+export function instanceCardIds(store, instanceId) {
+  const ids = new Set();
+  for (const run of [...store.listStageRuns(instanceId), ...store.listContentItemRuns(instanceId)]) {
+    if (typeof run.cardId === "string" && run.cardId) ids.add(run.cardId);
+  }
+  return [...ids];
+}
+
+// Card IDs of every project that is not archived. Archived projects keep
+// their cards on the native board, but no view or scheduler reads them
+// except an explicit governance listing.
+export function visibleCardIds(store) {
+  const ids = new Set();
+  for (const instance of store.listInstances()) {
+    if (instance.status === "archived") continue;
+    for (const id of instanceCardIds(store, instance.id)) ids.add(id);
+  }
+  return [...ids];
+}

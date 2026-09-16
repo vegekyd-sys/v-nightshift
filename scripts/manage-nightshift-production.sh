@@ -32,10 +32,15 @@ case "${1:-}" in
     artifact=${2:-}
     expected_sha=${3:-}
     release_id=${4:-}
-    if [[ ! -f "$artifact" || ! "$expected_sha" =~ ^[a-f0-9]{64}$ || ! "$release_id" =~ ^[a-f0-9]{7,64}$ ]]; then
-      echo "Usage: $0 deploy <artifact.tgz> <sha256> <release-id>" >&2
+    mode=${5:-}
+    if [[ ! -f "$artifact" || ! "$expected_sha" =~ ^[a-f0-9]{64}$ || ! "$release_id" =~ ^[a-f0-9]{7,64}$ || ( -n "$mode" && "$mode" != "--code-only" ) ]]; then
+      echo "Usage: $0 deploy <artifact.tgz> <sha256> <release-id> [--code-only]" >&2
       exit 2
     fi
+    # --code-only skips the state snapshot. The Night Shift data directory holds
+    # tens of gigabytes of instance media; copying it stops scheduling for
+    # minutes and doubles disk use. Use it only for releases without a schema
+    # change, where rollback needs the previous code and service unit alone.
     echo "$expected_sha  $artifact" | sha256sum -c -
     if ! tar -tzf "$artifact" | grep -Ex '^\.?/?apps/nightshift-dashboard/dist/index\.html$' >/dev/null; then
       echo "Release artifact is missing apps/nightshift-dashboard/dist/index.html" >&2
@@ -64,7 +69,9 @@ case "${1:-}" in
       was_active=1
       systemctl stop "$service_name"
     fi
-    if [[ -d "$state_root" ]]; then
+    if [[ "$mode" == "--code-only" ]]; then
+      printf '%s\n' "$release_id" >"$backup/code-only"
+    elif [[ -d "$state_root" ]]; then
       cp -a "$state_root" "$backup/state.before"
     fi
     sudo -u openclaw tar -xzf "$artifact" -C "$release"
@@ -87,10 +94,13 @@ case "${1:-}" in
     fi
     timestamp=$(date -u +%Y%m%dT%H%M%SZ)
     systemctl stop "$service_name" || true
-    if [[ -d "$state_root" ]]; then
-      mv "$state_root" "$state_root.failed-$timestamp"
-    fi
+    # Only a backup that captured state may replace the live state directory.
+    # A code-only backup restores the previous release and unit and keeps the
+    # data directory exactly as it is.
     if [[ -d "$backup/state.before" ]]; then
+      if [[ -d "$state_root" ]]; then
+        mv "$state_root" "$state_root.failed-$timestamp"
+      fi
       cp -a "$backup/state.before" "$state_root"
       chown -R openclaw:openclaw "$state_root"
     fi

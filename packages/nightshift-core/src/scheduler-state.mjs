@@ -1,7 +1,10 @@
+import { instanceCardIds } from "./scheduler-pass.mjs";
+
 export async function tickWithFaultProjection({ instanceId, options, runtime, store, workboard }) {
   let operation = "snapshot";
   try {
-    const cards = options.cards ?? await workboard.listCards();
+    // One project's tick never needs the whole board.
+    const cards = options.cards ?? await workboard.listCards({ cardIds: instanceCardIds(store, instanceId) });
     operation = "tick";
     const result = await runtime.tick(instanceId, { ...options, cards });
     const runs = [...store.listStageRuns(instanceId), ...store.listContentItemRuns(instanceId)];
