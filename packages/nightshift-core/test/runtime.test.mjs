@@ -1328,3 +1328,36 @@ test("ticks and retries after the first read the board by the project's card ids
   assert.deepEqual(listCalls.at(-1), { cardIds: created });
   assert.ok(listCalls.every((call) => Array.isArray(call?.cardIds)), "every board read is scoped");
 });
+
+// Native Workboard creates a dependent human card in todo and promotes it to
+// ready once its upstream completes. On the shared VLab six review cards were
+// dispatched that way and blocked with "Dispatcher could not start worker".
+test("a human stage card promoted to ready natively is returned to review and never dispatched", async () => {
+  const source = await readFile(resolve(here, "./fixtures/auditable-attempt.workflow.md"), "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ board: "nightshift-lab", store, workboard });
+  const release = runtime.publish(source);
+  runtime.startInstance({
+    id: "NS-HUMAN-READY",
+    name: "Human stage promotion",
+    workflowSha256: release.workflowSha256,
+    agentBindings: { operator: "main" },
+    inputs: { row: "one" },
+  });
+  await runtime.tick("NS-HUMAN-READY", { dispatch: true });
+  const plan = workboard.cards.find((card) => card.labels.includes("stage:plan"));
+  assert.ok(plan);
+  plan.status = "done";
+  plan.sessionKey = "agent:main:subagent:plan";
+  await runtime.tick("NS-HUMAN-READY", { dispatch: true });
+  const review = workboard.cards.find((card) => card.labels.includes("stage:review"));
+  assert.ok(review, "review card is created after plan completes");
+  assert.equal(review.status, "review");
+  review.status = "ready";
+  workboard.dispatchCalls.length = 0;
+  await runtime.tick("NS-HUMAN-READY", { dispatch: true });
+  assert.equal(review.status, "review");
+  assert.equal(store.listStageRuns("NS-HUMAN-READY").find((run) => run.stageId === "review")?.status, "review");
+  assert.ok(workboard.dispatchCalls.every((call) => !call.options.cardIds.includes(review.id)), "human card is never dispatched");
+});

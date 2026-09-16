@@ -678,10 +678,30 @@ export class NightShiftRuntime {
           }
         }
         const now = Date.now();
+        // A human stage card is created in review with native dependencies.
+        // Workboard holds it in todo until its upstream completes and then
+        // promotes it to ready like any other card. Ready is an executable
+        // state, so put it back into review before choosing what to dispatch;
+        // a human card handed to the dispatcher has no Agent and blocks.
+        const stageActor = (card) => {
+          const stageId = (card.labels ?? []).find((label) => label.startsWith("stage:"))?.slice("stage:".length)
+            ?? card.metadata?.automation?.stageId;
+          return savedRelease.manifest.spec.stages.find((entry) => entry.id === stageId)?.actor ?? null;
+        };
+        for (const card of instanceCards.values()) {
+          if (card.status !== "ready" || stageActor(card) !== "human") continue;
+          await this.workboard.moveCard(card.id, "review");
+          card.status = "review";
+          const run = [...runs, ...contentItemRuns].find((entry) => entry.cardId === card.id);
+          if (run && run.status !== "review") {
+            const updated = { ...run, status: "review" };
+            if (run.contentItemId) this.store.upsertContentItemRun(updated); else this.store.upsertStageRun(updated);
+          }
+        }
         const active = [...instanceCards.values()].filter(cardConsumesDispatchSlot);
         const activeAcrossBoard = currentCards.filter(cardConsumesDispatchSlot).length;
         const cardIds = [...instanceCards.values()].filter((card) =>
-          card.status === "ready" && !active.includes(card) && !cardHasActiveClaim(card, now) && !(card.labels ?? []).includes("nightshift:approval"))
+          card.status === "ready" && ["agent", "system"].includes(stageActor(card)) && !active.includes(card) && !cardHasActiveClaim(card, now) && !(card.labels ?? []).includes("nightshift:approval"))
           .map((card) => card.id);
         const maxStarts = Math.min(
           this.dispatchMaxStarts,
