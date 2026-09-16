@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "instanceId": "EXAMPLE-INSTANCE-001",
+  "contentItemId": "video-scene-01",
+  "title": "客户与项目名称",
+  "proposal": {
+    "title": "策划与执行方案",
+    "externalUrl": "https://example.com/proposal",
+    "summaryPath": "plan/requirement-snapshot.md"
+  },
+  "video": {
+    "title": "最终成片",
+    "path": "produce/final.mp4",
+    "posterPath": "produce/final-contact-sheet.jpg",
+    "mimeType": "video/mp4",
+    "durationSeconds": 26,
+    "width": 720,
+    "height": 1280,
+    "sha256": "replace-with-deliverable-sha256",
+    "projectUrl": "https://www.makaron.app/projects/example"
+  },
+  "qc": {
+    "status": "passed",
+    "reportPath": "produce/machine-qc.md",
+    "summary": [
+      "完整解码通过",
+      "无异常黑帧",
+      "无异常静帧",
+      "音视频规格符合要求"
+    ]
+  },
+  "review": {
+    "cardId": "native-workboard-review-card-id",
+    "stageId": "review",
+    "status": "review"
+  }
+}
