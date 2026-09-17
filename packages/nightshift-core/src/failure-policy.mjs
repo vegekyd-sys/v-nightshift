@@ -15,8 +15,16 @@ export function classifyTerminalFailure({ message, session } = {}) {
   ].filter(Boolean).join("\n")) || `Agent Session ended with ${stopReason}`;
   const normalized = rawError.toLowerCase();
 
-  if (/database is locked|sqlite_busy|sqlite busy/.test(normalized)) {
+  // The coordinator wait is the same SQLite contention as an outright lock: the
+  // writer never got its turn. On V on 2026-09-17 two live produce cards were
+  // blocked by it and, classified as an Agent failure, would never have retried.
+  if (/database is locked|sqlite_busy|sqlite busy|db process coordinator wait exceeded/.test(normalized)) {
     return { kind: "database_lock", source: "gateway", rawError, retryable: true };
+  }
+  // The Worker never acknowledged or never progressed. That is the execution
+  // substrate, not the Agent's own work, so it is worth another attempt.
+  if (/worker stream acknowledgement timed out|worker request .*made no progress|worker (?:is )?unavailable/.test(normalized)) {
+    return { kind: "worker_unavailable", source: "gateway", rawError, retryable: true };
   }
   if (/gateway(?: rpc)?(?: request)? (?:timed out|timeout|unavailable)|openclaw gateway rpc failed/.test(normalized)) {
     return { kind: "gateway_unavailable", source: "gateway", rawError, retryable: true };
@@ -42,6 +50,7 @@ export function scheduleAutomaticRetry({ failure, failureCount, maxAttempts, now
 export function infrastructureFailureSummary(failure) {
   const label = {
     database_lock: "Gateway 数据库写入冲突",
+    worker_unavailable: "执行 Worker 未响应",
     gateway_unavailable: "Gateway 暂时不可用",
     connection_reset: "模型或网络连接中断",
     agent_interrupted: "Agent 运行被中断",

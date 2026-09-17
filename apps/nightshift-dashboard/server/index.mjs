@@ -70,6 +70,9 @@ const dispatchInitialMaxActive = positiveInteger(process.env.NIGHTSHIFT_DISPATCH
 const reservedInteractiveSlots = positiveInteger(process.env.NIGHTSHIFT_RESERVED_INTERACTIVE_SLOTS, 9, 128);
 const hostMemoryReserveMiB = positiveInteger(process.env.NIGHTSHIFT_HOST_MEMORY_RESERVE_MIB, 4096, 262_144);
 const hostMemoryReservePercent = positiveInteger(process.env.NIGHTSHIFT_HOST_MEMORY_RESERVE_PERCENT, 40, 90);
+// How soon to retry after a scheduler pass fails, doubling up to the ceiling.
+const schedulerRetryMinMs = positiveInteger(process.env.NIGHTSHIFT_SCHEDULER_RETRY_MIN_MS, 10_000, 600_000);
+const schedulerRetryMaxMs = positiveInteger(process.env.NIGHTSHIFT_SCHEDULER_RETRY_MAX_MS, 120_000, 600_000);
 // An explicit refresh=1 read is served from the cache when the last board read
 // is younger than this. Pollers cannot turn the API into a board scan loop.
 const cardRefreshMinIntervalMs = positiveInteger(process.env.NIGHTSHIFT_CARD_REFRESH_MIN_INTERVAL_MS, 30_000, 600_000);
@@ -126,10 +129,20 @@ const contentManifestHashes = new Map();
 
 await ensureWorkflow();
 await ensureSeedInstance();
+let schedulerRetryMs = 0;
 const changeScheduler = new WorkboardChangeScheduler({
   debounceMs: schedulerEventDebounceMs,
   minRunIntervalMs: schedulerEventMinIntervalMs,
-  onError: (error) => console.error(`Night Shift event scheduler failed: ${error.message}`),
+  onError: (error) => {
+    console.error(`Night Shift event scheduler failed: ${error.message}`);
+    // Events stop arriving exactly when the Gateway is gone, so a failed pass
+    // must schedule its own retry. A Gateway restart spends over a minute in
+    // preflight refusing connections; without this the only recovery was the
+    // five-minute repair tick, and every live project carried a dispatch fault
+    // until it came round. Observed on V on 2026-09-17 at 10:50.
+    schedulerRetryMs = Math.min(schedulerRetryMs ? schedulerRetryMs * 2 : schedulerRetryMinMs, schedulerRetryMaxMs);
+    changeScheduler.enqueueAfter("scheduler.retry", schedulerRetryMs);
+  },
   repairIntervalMs: schedulerRepairIntervalMs,
   run: runScheduler,
   workboard,
@@ -201,6 +214,7 @@ async function handleApi(request, response, url) {
       hostMemoryReserveMiB,
       hostMemoryReservePercent,
       cardRefreshMinIntervalMs,
+      schedulerRetryMs,
       lastSchedulerTrigger,
       gatewayConnected: workboard.connected,
       schedulerStalled,
@@ -795,6 +809,7 @@ function runScheduler({ trigger = "manual" } = {}) {
       store, runtime, workboard, refreshCards, syncContentItemsManifest,
     }));
     dispatchPressureGuard.consumeStarts(result.dispatched);
+    schedulerRetryMs = 0;
     lastSchedulerAt = new Date().toISOString();
     lastSchedulerDurationMs = Date.now() - started;
     lastSchedulerError = result.warnings.length ? result.warnings.join("; ") : null;
