@@ -624,6 +624,9 @@ export class NightShiftRuntime {
       for (const result of applied) {
         const card = result.card;
         if (!card) continue;
+        // Every card this project owns goes in the ledger, whether or not it also
+        // becomes a run. That is what keeps idempotency working under a scoped read.
+        this.store.recordActionCard?.({ actionKey: result.action.idempotencyKey, cardId: card.id, instanceId });
         if (result.action.type === "request_approval") {
           if (card.status === "done") {
             await this.workboard.moveCard(card.id, "review");

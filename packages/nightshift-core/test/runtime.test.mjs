@@ -7,6 +7,8 @@ import {
   NightShiftRuntime,
   NightShiftStore,
 } from "../src/index.mjs";
+import { instanceCardIds } from "../src/scheduler-pass.mjs";
+import { gatewayIdempotencyLabel } from "../src/workboard-gateway-adapter.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const workflowPath = resolve(here, "../../../examples/workflows/xingqing-content-delivery.workflow.md");
@@ -1153,8 +1155,15 @@ class FakeWorkboard {
     return this.cards;
   }
 
-  async applyPlan(actions) {
+  // Mirrors the real adapter: a card carrying this action's idempotency marker
+  // is reused. Without this the fake accepted every duplicate, which is why the
+  // suite stayed green while production built 2,254 duplicate approval cards.
+  async applyPlan(actions, { cards = null } = {}) {
+    const known = cards ? [...cards] : [...this.cards];
     return actions.map((action) => {
+      const marker = gatewayIdempotencyLabel(action.idempotencyKey ?? `${action.instanceId}:${action.stageId}:${action.contentItemId ?? ""}`);
+      const existing = known.find((card) => (card.labels ?? []).includes(marker));
+      if (existing) return { action, card: existing, status: "reused" };
       const card = action.card ?? {
         title: "Approval",
         status: "review",
@@ -1165,8 +1174,9 @@ class FakeWorkboard {
           "nightshift:approval",
         ],
       };
-      const created = { id: `card-${this.cards.length + 1}`, ...card };
+      const created = { id: `card-${this.cards.length + 1}`, ...card, labels: [...new Set([...(card.labels ?? []), marker])] };
       this.cards.push(created);
+      known.push(created);
       return { action, card: created, status: "created" };
     });
   }
@@ -1360,4 +1370,48 @@ test("a human stage card promoted to ready natively is returned to review and ne
   assert.equal(review.status, "review");
   assert.equal(store.listStageRuns("NS-HUMAN-READY").find((run) => run.stageId === "review")?.status, "review");
   assert.ok(workboard.dispatchCalls.every((call) => !call.options.cardIds.includes(review.id)), "human card is never dispatched");
+});
+
+// PR #33 scoped the board read to the cards recorded on stage and content-item
+// runs. An approval card is neither, so the idempotency scan stopped seeing it
+// and built another one on every pass: TK-0917-02 reached 1,346 duplicates in a
+// day, while a project from before the change held 8 across 181,032 passes.
+test("an approval card is reused when the board read is scoped to this project", async () => {
+  const source = await readFile(workflowPath, "utf8");
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard });
+  const release = runtime.publish(source);
+  runtime.startInstance({
+    id: "NS-APPROVAL-SCOPE",
+    workflowSha256: release.workflowSha256,
+    agentBindings: { "content-operator": "main" },
+  });
+  store.upsertStageRun({ instanceId: "NS-APPROVAL-SCOPE", stageId: "plan", status: "done" });
+  runtime.setContentItems("NS-APPROVAL-SCOPE", [{ id: "video-1", title: "First video", route: "AI_GENERATE" }]);
+  for (const stageId of ["route", "materials", "brief"]) {
+    store.upsertContentItemRun({ instanceId: "NS-APPROVAL-SCOPE", contentItemId: "video-1", stageId, status: "done" });
+  }
+  const first = await runtime.tick("NS-APPROVAL-SCOPE");
+  assert.equal(first.actions[0].type, "request_approval");
+  assert.equal(first.applied[0].status, "created");
+  const approvalCardId = first.applied[0].card.id;
+
+  // The ledger is what a scoped read has to go on: the approval card carries no run.
+  const scoped = instanceCardIds(store, "NS-APPROVAL-SCOPE");
+  assert.ok(scoped.includes(approvalCardId), "the approval card must be reachable by a scoped read");
+
+  // Replay the scheduler: hand the tick only the cards that scope resolves to.
+  for (let pass = 0; pass < 3; pass += 1) {
+    const cards = workboard.cards.filter((card) => instanceCardIds(store, "NS-APPROVAL-SCOPE").includes(card.id));
+    const again = await runtime.tick("NS-APPROVAL-SCOPE", { cards });
+    assert.equal(again.applied[0].status, "reused", `pass ${pass + 1} rebuilt the approval card`);
+    assert.equal(again.applied[0].card.id, approvalCardId);
+  }
+  assert.equal(
+    workboard.cards.filter((card) => (card.labels ?? []).includes("nightshift:approval")).length,
+    1,
+    "three further passes must not add approval cards",
+  );
+  store.close();
 });
