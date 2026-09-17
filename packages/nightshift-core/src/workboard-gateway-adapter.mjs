@@ -15,6 +15,9 @@ export class WorkboardGatewayAdapter {
     rpcClientFactory = (options) => new PersistentGatewayRpcClient(options),
     rpcTimeoutMs = process.env.NIGHTSHIFT_GATEWAY_RPC_TIMEOUT_MS ?? 30_000,
     logBoardReads = process.env.NIGHTSHIFT_LOG_BOARD_READS === "1",
+    // Card IDs to re-read after a failed Gateway mutation. Without it, recovery
+    // falls back to listing the whole board.
+    recoveryCardIds = null,
     runner,
     startBurst = process.env.NIGHTSHIFT_DISPATCH_START_BURST ?? 3,
     startIntervalMs = process.env.NIGHTSHIFT_DISPATCH_START_INTERVAL_MS ?? 15_000,
@@ -29,6 +32,7 @@ export class WorkboardGatewayAdapter {
     this.rpcClientFactory = rpcClientFactory;
     this.rpcTimeoutMs = positiveTimeout(rpcTimeoutMs);
     this.logBoardReads = Boolean(logBoardReads);
+    this.recoveryCardIds = typeof recoveryCardIds === "function" ? recoveryCardIds : null;
     this.runner = runner;
     this.startBurst = dispatchBurst(startBurst);
     this.startIntervalMs = dispatchInterval(startIntervalMs);
@@ -42,7 +46,18 @@ export class WorkboardGatewayAdapter {
 
   async listCards({ cardIds } = {}) {
     const recovering = this.needsFullSnapshot;
-    const ids = !recovering && Array.isArray(cardIds) ? uniqueCardIds(cardIds) : null;
+    let ids = Array.isArray(cardIds) ? uniqueCardIds(cardIds) : null;
+    if (recovering) {
+      // A failed mutation can leave the cache stale for cards outside this
+      // caller's scope, so recovery widens the read. It widens to the projects
+      // the service can still act on, never to the whole board: production
+      // carried 2,386 cards of which the archived majority is never scheduled,
+      // and the failure that triggers recovery is usually a Gateway already
+      // under load. Observed on V at 03:00 on 2026-09-17, where a cards.list
+      // timeout was answered with a 2,386-card scan.
+      const scope = this.recoveryCardIds?.();
+      ids = Array.isArray(scope) ? uniqueCardIds([...(ids ?? []), ...scope]) : null;
+    }
     if (ids?.length === 0) return [];
     const started = this.now();
     const result = await this.call("workboard.cards.list", { boardId: this.board, ...(ids ? { cardIds: ids } : {}) });
@@ -224,15 +239,23 @@ export class WorkboardGatewayAdapter {
   }
 
   async call(method, params) {
+    // A failed mutation can leave the local card cache stale, so both transports
+    // mark the next read for recovery. Marking only the persistent client left
+    // the CLI transport silently inconsistent.
+    try {
+      return await this.invoke(method, params);
+    } catch (error) {
+      if (MUTATION_METHOD.test(method)) this.needsFullSnapshot = true;
+      throw error;
+    }
+  }
+
+  async invoke(method, params) {
     if (!this.gatewayUrl) throw new Error("NIGHTSHIFT_GATEWAY_URL is required");
     if (!this.configPath) throw new Error("OPENCLAW_CONFIG_PATH is required");
     if (!this.runner) {
       const client = await this.ensureRpcClient();
-      try { return await client.request(method, params); }
-      catch (error) {
-        if (/^workboard\.cards\.(create|dispatchWithOptions|complete|block|release|move|update)$/.test(method)) this.needsFullSnapshot = true;
-        throw error;
-      }
+      return await client.request(method, params);
     }
     const config = JSON.parse(await readFile(this.configPath, "utf8"));
     const token = config.gateway?.auth?.token;
@@ -342,6 +365,8 @@ function dispatchBurst(value) {
   }
   return parsed;
 }
+
+const MUTATION_METHOD = /^workboard\.cards\.(create|dispatchWithOptions|complete|block|release|move|update)$/;
 
 function positiveTimeout(value) {
   const parsed = Number(value);
