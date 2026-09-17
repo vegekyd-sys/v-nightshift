@@ -283,3 +283,44 @@ test("capacity probe includes foreground occupancy and fails closed on invalid t
     await assert.rejects(adapter.probeGatewayCapacity());
   }
 });
+
+// On V at 03:00 on 2026-09-17 a cards.list timeout put the adapter into
+// recovery, and the next read scanned all 2,386 cards on a Gateway that was
+// already stalling. Recovery must widen to the projects the service can act
+// on, not to the whole board.
+test("recovery after a failed mutation re-reads visible projects, not the whole board", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "nightshift-recovery-"));
+  const configPath = join(dir, "openclaw.json");
+  await writeFile(configPath, JSON.stringify({ gateway: { auth: { token: "test-token" } } }));
+  const listParams = [];
+  let failMove = true;
+  const runner = async (_command, args) => {
+    const method = args[2];
+    const params = JSON.parse(args[args.indexOf("--params") + 1]);
+    if (method === "workboard.cards.list") {
+      listParams.push(params.cardIds ?? null);
+      return JSON.stringify({ cards: [] });
+    }
+    if (method === "workboard.cards.move") {
+      if (failMove) throw new Error("gateway request timeout for workboard.cards.move");
+      return JSON.stringify({ card: { id: params.cardId } });
+    }
+    throw new Error(`unexpected ${method}`);
+  };
+  const options = { board: "nightshift-lab", configPath, gatewayUrl: "ws://127.0.0.1:23793", runner };
+
+  const adapter = new WorkboardGatewayAdapter({ ...options, recoveryCardIds: () => ["visible-1", "visible-2"] });
+  await adapter.listCards({ cardIds: ["scoped-1"] });
+  assert.deepEqual(listParams.at(-1), ["scoped-1"], "an ordinary read stays scoped");
+  await assert.rejects(adapter.moveCard("scoped-1", "blocked"), /timeout/);
+  await adapter.listCards({ cardIds: ["scoped-1"] });
+  assert.deepEqual(listParams.at(-1), ["scoped-1", "visible-1", "visible-2"], "recovery widens to visible projects");
+  await adapter.listCards({ cardIds: ["scoped-1"] });
+  assert.deepEqual(listParams.at(-1), ["scoped-1"], "recovery is consumed by one read");
+
+  // Without a recovery scope the old whole-board behaviour is preserved.
+  const bare = new WorkboardGatewayAdapter(options);
+  await assert.rejects(bare.moveCard("scoped-1", "blocked"), /timeout/);
+  await bare.listCards({ cardIds: ["scoped-1"] });
+  assert.equal(listParams.at(-1), null, "no recovery scope still falls back to the whole board");
+});
