@@ -1,0 +1,99 @@
+import assert from "node:assert/strict";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import test from "node:test";
+import {
+  compileWorkflow,
+  handoffManifestExample,
+  humanStageHandoff,
+  loadWorkflow,
+  normalizeStageHandoff,
+  presentStageHandoff,
+  stageHandoffContract,
+  stageHandoffPath,
+} from "../src/index.mjs";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const fixture = resolve(here, "../../../examples/workflows/xingqing-content-delivery.workflow.md");
+
+test("derives each stage input from only its immediate predecessors", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const plan = stageHandoffContract(release, "plan");
+  assert.deepEqual(plan.inputs, [{ name: "projectInputs", sourceStage: "control-plane" }]);
+  const route = stageHandoffContract(release, "route");
+  assert.deepEqual(route.previous.map((entry) => entry.id), ["plan"]);
+  assert.deepEqual(route.inputs.map((entry) => entry.name), ["requirementSnapshot", "planUrl", "contentItemsManifest"]);
+  assert.deepEqual(route.outputs.map((entry) => entry.name), ["routeDecision"]);
+  assert.deepEqual(route.next.map((entry) => entry.id), ["materials"]);
+  assert.equal(presentStageHandoff({ release, stageId: "route", completed: true }).deliveryPlacement, null);
+});
+
+test("accepts the control-plane project snapshot as the root stage input", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const manifest = normalizeStageHandoff({
+    version: 1,
+    instanceId: "NS-ROOT",
+    contentItemId: null,
+    stageId: "plan",
+    inputs: [{
+      name: "projectInputs",
+      sourceStage: "control-plane",
+      summary: "Complete redacted project brief and constraints",
+      artifact: "project-inputs.json",
+    }],
+    outputs: stageHandoffContract(release, "plan").outputs.map((entry) => ({
+      ...entry,
+      summary: `Recorded ${entry.name}`,
+      artifact: `${entry.name}.json`,
+    })),
+  }, { instanceId: "NS-ROOT", release, stageId: "plan" });
+  assert.equal(manifest.inputs[0].artifact, "project-inputs.json");
+});
+
+test("places the finished video only on produce output and downstream input", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  assert.equal(presentStageHandoff({ release, stageId: "produce" }).deliveryPlacement, "output");
+  assert.equal(presentStageHandoff({ release, stageId: "review" }).deliveryPlacement, "input");
+});
+
+test("validates a recorded handoff against workflow input and output names", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const example = handoffManifestExample({ instanceId: "NS-1", contentItemId: "video-1", release, stageId: "route" });
+  const normalized = normalizeStageHandoff(example, { instanceId: "NS-1", contentItemId: "video-1", release, stageId: "route" });
+  assert.equal(normalized.outputs[0].name, "routeDecision");
+  assert.throws(
+    () => normalizeStageHandoff({ ...example, outputs: [] }, { instanceId: "NS-1", contentItemId: "video-1", release, stageId: "route" }),
+    /do not match/,
+  );
+  assert.match(stageHandoffPath({ instanceDir: "/srv/nightshift/NS-1", contentItemId: "video-1", release, stageId: "route" }), /content-items\/video-1\/handoffs\/route\.json$/);
+  assert.match(stageHandoffPath({ instanceDir: "/srv/nightshift/NS-1", release, stageId: "plan" }), /NS-1\/handoffs\/plan\.json$/);
+});
+
+test("exposes a recorded https publication artifact as a clickable link", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const example = handoffManifestExample({ instanceId: "NS-1", contentItemId: "video-1", release, stageId: "publish-feedback" });
+  const publicUrl = example.outputs.find((entry) => entry.name === "publicUrl");
+  publicUrl.artifact = "https://www.tiktok.com/@example/video/123";
+  const manifest = normalizeStageHandoff(example, { instanceId: "NS-1", contentItemId: "video-1", release, stageId: "publish-feedback" });
+  const presented = presentStageHandoff({ completed: true, manifest, release, stageId: "publish-feedback" });
+  assert.equal(presented.outputs.find((entry) => entry.name === "publicUrl").artifactUrl, publicUrl.artifact);
+  assert.equal(presented.outputs.find((entry) => entry.name === "publicationEvidence").artifactUrl, null);
+});
+
+test("records a human review as the output handed to publication", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const manifest = humanStageHandoff({
+    actor: "Reviewer",
+    approvalArtifact: "workboard-approval:card-1",
+    contentItemId: "video-1",
+    evidence: "Approved after visual review",
+    instanceDir: "/srv/nightshift/NS-1",
+    instanceId: "NS-1",
+    release,
+    stageId: "review",
+  });
+  assert.deepEqual(manifest.inputs.map((entry) => entry.name), ["finishedAsset", "machineQc", "deliveryManifest"]);
+  assert.deepEqual(manifest.outputs.map((entry) => entry.name), ["approvedAssetVersion"]);
+  assert.equal(manifest.outputs[0].summary, "Approved after visual review");
+  assert.equal(manifest.outputs[0].artifact, "workboard-approval:card-1");
+});
