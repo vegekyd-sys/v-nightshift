@@ -126,6 +126,10 @@ export function instanceCardIds(store, instanceId) {
   for (const run of [...store.listStageRuns(instanceId), ...store.listContentItemRuns(instanceId)]) {
     if (typeof run.cardId === "string" && run.cardId) ids.add(run.cardId);
   }
+  // Approval cards are not runs, so the ledger is the only record of them. Leave
+  // them out and the idempotency scan cannot see them, which is how one project
+  // accumulated 1,346 duplicate approval cards in a day.
+  for (const cardId of store.listActionCardIds?.(instanceId) ?? []) ids.add(cardId);
   return [...ids];
 }
 

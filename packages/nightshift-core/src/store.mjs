@@ -76,6 +76,14 @@ export class NightShiftStore {
         PRIMARY KEY(instance_id, content_item_id, stage_id, attempt),
         FOREIGN KEY(instance_id, content_item_id) REFERENCES content_items(instance_id, id)
       );
+
+      CREATE TABLE IF NOT EXISTS action_cards (
+        action_key TEXT PRIMARY KEY,
+        instance_id TEXT NOT NULL,
+        card_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS approvals (
         id TEXT PRIMARY KEY,
         instance_id TEXT NOT NULL REFERENCES instances(id),
@@ -433,6 +441,26 @@ export class NightShiftStore {
              attempt, card_id AS cardId, status, summary, failure_json AS failureJson, updated_at AS updatedAt
       FROM content_item_runs WHERE instance_id = ? ORDER BY rowid
     `).all(instanceId).map(runRow);
+  }
+
+  // Card idempotency cannot depend on a board read. An approval card is not a
+  // stage run, so a scoped read never returns it, and the label scan in
+  // applyAction then decided the card did not exist and created another one
+  // every pass: 2,254 duplicates across three projects on 2026-09-17. The
+  // ledger makes reuse independent of whatever the caller happened to read.
+  recordActionCard({ actionKey, cardId, instanceId }, now = new Date()) {
+    if (!actionKey || !cardId || !instanceId) return;
+    const at = now.toISOString();
+    this.db.prepare(
+      `INSERT INTO action_cards (action_key, instance_id, card_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(action_key) DO UPDATE SET card_id = excluded.card_id, updated_at = excluded.updated_at`,
+    ).run(String(actionKey), String(instanceId), String(cardId), at, at);
+  }
+
+  listActionCardIds(instanceId) {
+    return this.db.prepare("SELECT card_id FROM action_cards WHERE instance_id = ?")
+      .all(String(instanceId)).map((row) => row.card_id).filter(Boolean);
   }
 
   recordApproval(approval, now = new Date()) {
