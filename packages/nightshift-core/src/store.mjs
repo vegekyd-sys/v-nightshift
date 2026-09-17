@@ -79,11 +79,12 @@ export class NightShiftStore {
 
       CREATE TABLE IF NOT EXISTS action_cards (
         action_key TEXT PRIMARY KEY,
-        instance_id TEXT NOT NULL,
+        instance_id TEXT NOT NULL REFERENCES instances(id),
         card_id TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+      CREATE INDEX IF NOT EXISTS action_cards_instance_id_idx ON action_cards(instance_id);
       CREATE TABLE IF NOT EXISTS approvals (
         id TEXT PRIMARY KEY,
         instance_id TEXT NOT NULL REFERENCES instances(id),
