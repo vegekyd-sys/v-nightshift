@@ -57,3 +57,27 @@ test("an infrastructure failure still respects the side-effect gate", () => {
     { automaticRetry: false, nextRetryAt: null });
   assert.equal(scheduleAutomaticRetry({ failure, failureCount: 1, maxAttempts: 3, safeToRetry: true }).automaticRetry, true);
 });
+
+// Every failure that landed in the agent_error bucket on V between 2026-09-10
+// and 09-17 was transient: seven "Connection error.", six upstream 502s, three
+// coordinator timeouts. None was the Agent's own doing, yet all needed a human.
+test("the transient failures seen in production are retryable, and real Agent failures are not", () => {
+  const classify = (rawError) => classifyTerminalFailure({ message: { stopReason: "error", error: rawError } });
+  const transient = [
+    ["Connection error.", "connection_reset"],
+    ["502 <html> <head><title>502 Bad Gateway</title></head> <body>", "upstream_unavailable"],
+    ["503 Service Unavailable", "upstream_unavailable"],
+    ["Agent DB process coordinator wait exceeded 5000ms", "database_lock"],
+    ["Error:Worker stream acknowledgement timed out", "worker_unavailable"],
+  ];
+  for (const [rawError, kind] of transient) {
+    const failure = classify(rawError);
+    assert.equal(failure.kind, kind, rawError);
+    assert.equal(failure.retryable, true, rawError);
+  }
+  for (const rawError of ["tool refused the request", "the plan document is missing a required section"]) {
+    const failure = classify(rawError);
+    assert.equal(failure.kind, "agent_error", rawError);
+    assert.equal(failure.retryable, false, rawError);
+  }
+});
