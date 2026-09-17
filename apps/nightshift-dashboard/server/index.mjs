@@ -77,6 +77,9 @@ const publicAuth = await loadPublicAuth(process.env.NIGHTSHIFT_BASIC_AUTH_FILE);
 await mkdir(dataDir, { recursive: true });
 const store = new NightShiftStore(join(dataDir, "nightshift.sqlite"));
 const workboard = new WorkboardGatewayAdapter({
+  // Recovery after a failed Gateway mutation re-reads the projects this service
+  // can act on, instead of walking every archived card on the board.
+  recoveryCardIds: () => visibleCardIds(store),
   board,
   startBurst: dispatchStartBurst,
   startIntervalMs: dispatchStartIntervalMs,
