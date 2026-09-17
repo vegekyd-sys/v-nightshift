@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { compileWorkflow, normalizeContentItems, parseWorkflow, requiredSkillsByRole, validateProjectRequest } from "../src/index.mjs";
+import { CARD_LABEL_MAX, compileWorkflow, normalizeContentItems, parseWorkflow, requiredSkillsByRole, validateProjectRequest } from "../src/index.mjs";
 
 const workflowPath = new URL("../../../examples/workflows/xingqing-content-delivery.workflow.md", import.meta.url);
 
@@ -110,4 +110,13 @@ test("a content item id that would overflow its card label is refused at write t
     /27 characters or fewer.*curiosity-character-vignette \(28\)/,
   );
   assert.equal("content-item:".length + 27, 40);
+});
+
+// The Gateway's 40 is one input check with nothing depending on it. When it is
+// raised, Night Shift must accept longer ids from a drop-in, not a release.
+test("the card label budget is a knob, not a baked-in 40", () => {
+  const item = [{ id: "curiosity-character-vignette", title: "t", route: "SCENE_EDIT" }];
+  assert.equal(normalizeContentItems(item, { routes: ["SCENE_EDIT"], labelMax: 80 })[0].id, "curiosity-character-vignette");
+  assert.throws(() => normalizeContentItems(item, { routes: ["SCENE_EDIT"], labelMax: 40 }), /within 40/);
+  assert.equal(CARD_LABEL_MAX, 40, "the default still matches what the Gateway enforces today");
 });

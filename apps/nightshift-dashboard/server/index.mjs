@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { loadPublicAuth, requiresPublicAuth, verifyPublicAuth, resolveOperatorIdentity } from "./public-auth.mjs";
 import { resolveCardDecisionContext } from "./decision-context.mjs";
 import {
+  CARD_LABEL_MAX,
   deliverableArtifactPaths,
   auditNightShiftGovernance,
   findNightShiftExternalOperation,
@@ -208,6 +209,7 @@ async function handleApi(request, response, url) {
       hostMemoryReserveMiB,
       hostMemoryReservePercent,
       cardRefreshMinIntervalMs,
+      cardLabelMax: CARD_LABEL_MAX,
       schedulerRetryMs,
       lastSchedulerTrigger,
       gatewayConnected: workboard.connected,
