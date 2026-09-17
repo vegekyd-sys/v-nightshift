@@ -43,6 +43,11 @@ Night Shift starts new native cards only while the Gateway host has headroom, an
 | `NIGHTSHIFT_CARD_REFRESH_MIN_INTERVAL_MS` | 30000 | An explicit `refresh=1` read younger than this is served from the cache. |
 | `NIGHTSHIFT_CARD_LABEL_MAX` | 40 | Longest card label the Gateway accepts. A content item id gets this minus `content-item:`. Raise it here once the Gateway's own limit is raised. |
 | `NIGHTSHIFT_SCHEDULER_RETRY_MIN_MS` / `_MAX_MS` | 10000 / 120000 | Backoff between retries after a failed scheduler pass. |
+| `NIGHTSHIFT_SCHEDULER_EVENT_MIN_INTERVAL_MS` | 5000 | Floor between event-driven scheduler passes. Raising it trades stage handoff latency for Gateway main-thread time; 15000 is a reasonable production setting. |
+
+## Board read cost
+
+A routine pass reads only the cards that can still change; the five-minute repair pass reads every card its projects own. Measured on V on 2026-09-17 before this split: 17.6 reads a minute of 319 cards each, about a tenth of the Gateway main thread. Of those 319, 240 had already reached a terminal state and 168 belonged to paused or archived projects held in by a single stale `running` record.
 
 ## Board reads
 

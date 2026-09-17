@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runSchedulerPass } from "../src/scheduler-pass.mjs";
+import { runSchedulerPass, schedulerCardIds } from "../src/scheduler-pass.mjs";
 
 function fixture() {
   const instances = Array.from({ length: 48 }, (_, i) => ({ id: `P${i}`, status: "active" }));
@@ -182,4 +182,42 @@ test("project and visible card ids come from recorded runs, never from a board s
   assert.deepEqual(instanceCardIds(store, "C"), ["c1"]);
   // Archived projects stay on the native board but are never read by default.
   assert.deepEqual(visibleCardIds(store).sort(), ["a1", "a2", "b1"]);
+});
+
+// On V the scheduler read 319 cards every few seconds. 168 of them belonged to
+// nine paused or archived projects held in by a single stale "running" record,
+// and 240 had already reached a terminal state.
+test("a routine pass reads only what can change; the repair pass still reads everything", () => {
+  const now = Date.parse("2026-09-17T12:00:00Z");
+  const fresh = new Date(now - 60_000).toISOString();
+  const ancient = new Date(now - 6 * 3600_000).toISOString();
+  const runs = {
+    LIVE: [
+      { status: "running", cardId: "live-running", updatedAt: fresh },
+      { status: "done", cardId: "live-done", updatedAt: ancient },
+      { status: "ready", cardId: "live-ready", updatedAt: ancient },
+      { status: "blocked", cardId: "live-blocked", updatedAt: ancient },
+    ],
+    STALE: [
+      { status: "running", cardId: "stale-running", updatedAt: ancient },
+      { status: "done", cardId: "stale-done", updatedAt: ancient },
+    ],
+    DRAINING: [{ status: "running", cardId: "draining", updatedAt: fresh }],
+  };
+  const store = {
+    listInstances: () => [
+      { id: "LIVE", status: "active" },
+      { id: "STALE", status: "archived" },
+      { id: "DRAINING", status: "paused" },
+    ],
+    listStageRuns: (id) => runs[id] ?? [],
+    listContentItemRuns: () => [],
+  };
+  const routine = schedulerCardIds(store, null, { fullSweep: false, nowMs: now });
+  assert.deepEqual(routine.sort(), ["draining", "live-ready", "live-running"],
+    "terminal cards and the stale project are left out, but work still draining is not");
+  const repair = schedulerCardIds(store, null, { fullSweep: true, nowMs: now });
+  assert.deepEqual(repair.sort(), ["draining", "live-blocked", "live-done", "live-ready", "live-running"],
+    "the repair sweep still sees every card of a project it schedules");
+  assert.ok(!repair.includes("stale-running"), "a run that has not moved for hours is not work in flight");
 });
