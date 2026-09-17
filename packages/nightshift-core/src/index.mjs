@@ -26,6 +26,7 @@ export {
 } from "./deliverables.mjs";
 export {
   contentItemRouteAllowed,
+  CARD_LABEL_MAX,
   normalizeContentItems,
 } from "./content-items.mjs";
 export { requiredSkillsByRole, validateProjectRequest } from "./project.mjs";

@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { loadPublicAuth, requiresPublicAuth, verifyPublicAuth, resolveOperatorIdentity } from "./public-auth.mjs";
 import { resolveCardDecisionContext } from "./decision-context.mjs";
 import {
+  CARD_LABEL_MAX,
   deliverableArtifactPaths,
   auditNightShiftGovernance,
   findNightShiftExternalOperation,
@@ -135,13 +136,7 @@ const changeScheduler = new WorkboardChangeScheduler({
   minRunIntervalMs: schedulerEventMinIntervalMs,
   onError: (error) => {
     console.error(`Night Shift event scheduler failed: ${error.message}`);
-    // Events stop arriving exactly when the Gateway is gone, so a failed pass
-    // must schedule its own retry. A Gateway restart spends over a minute in
-    // preflight refusing connections; without this the only recovery was the
-    // five-minute repair tick, and every live project carried a dispatch fault
-    // until it came round. Observed on V on 2026-09-17 at 10:50.
-    schedulerRetryMs = Math.min(schedulerRetryMs ? schedulerRetryMs * 2 : schedulerRetryMinMs, schedulerRetryMaxMs);
-    changeScheduler.enqueueAfter("scheduler.retry", schedulerRetryMs);
+    scheduleSchedulerRetry();
   },
   repairIntervalMs: schedulerRepairIntervalMs,
   run: runScheduler,
@@ -214,6 +209,7 @@ async function handleApi(request, response, url) {
       hostMemoryReserveMiB,
       hostMemoryReservePercent,
       cardRefreshMinIntervalMs,
+      cardLabelMax: CARD_LABEL_MAX,
       schedulerRetryMs,
       lastSchedulerTrigger,
       gatewayConnected: workboard.connected,
@@ -820,10 +816,20 @@ function runScheduler({ trigger = "manual" } = {}) {
     lastSchedulerError = error.message;
     schedulerCircuit.recordFailure(error.message);
     console.error(`Night Shift scheduler failed: ${error.message}`);
+    scheduleSchedulerRetry();
   }).finally(() => {
     schedulerPromise = null;
   });
   return schedulerPromise;
+}
+
+// Events stop arriving exactly when the Gateway is gone, so a failed pass must
+// schedule its own retry; the repair tick is five minutes away. This pass keeps
+// its own catch and never rejects, so the scheduler's onError alone was never
+// reached. Both paths call this now.
+function scheduleSchedulerRetry() {
+  schedulerRetryMs = Math.min(schedulerRetryMs ? schedulerRetryMs * 2 : schedulerRetryMinMs, schedulerRetryMaxMs);
+  changeScheduler.enqueueAfter("scheduler.retry", schedulerRetryMs);
 }
 
 function probeDispatchCapacity() {
@@ -932,7 +938,22 @@ async function syncContentItemsManifest(instance) {
   const digest = createHash("sha256").update(source).digest("hex");
   if (contentManifestHashes.get(instance.id) === digest) return;
   const parsed = JSON.parse(source);
-  runtime.setContentItems(instance.id, Array.isArray(parsed) ? parsed : parsed.contentItems);
+  // The planning skill documents the array as `items`; earlier manifests use
+  // `contentItems`. Accept both rather than rejecting a manifest that follows
+  // the published contract.
+  const items = Array.isArray(parsed) ? parsed : (parsed?.contentItems ?? parsed?.items);
+  if (!Array.isArray(items) || items.length === 0) {
+    // "contentItems must contain at least one video task" reads as "the stage
+    // produced nothing", which sent us looking in the wrong place while the file
+    // held fifteen entries under another key.
+    const arrays = Object.entries(parsed ?? {})
+      .filter(([, value]) => Array.isArray(value) && value.length > 0)
+      .map(([key, value]) => `${key}(${value.length})`);
+    throw new Error(`${manifestPath} has no contentItems or items array`
+      + (arrays.length ? `; it holds ${arrays.join(", ")}` : "")
+      + ". Each entry needs stableId (or id) and title.");
+  }
+  runtime.setContentItems(instance.id, items);
   contentManifestHashes.set(instance.id, digest);
 }
 

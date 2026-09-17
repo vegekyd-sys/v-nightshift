@@ -46,3 +46,14 @@ test("project start cannot bypass the Gateway pressure guard", async () => {
   assert.match(server, /changeScheduler\.enqueue\("instance\.started"\)/);
   assert.doesNotMatch(server, /serializedTick\(instanceId, \{ dispatch: true, dryRun: false \}\)/);
 });
+
+// The scheduler pass catches its own failures and never rejects, so a retry
+// wired only to the event scheduler's onError never ran. Both paths must arm it.
+test("a failed scheduler pass arms its own retry", async () => {
+  const server = await readFile(new URL("./index.mjs", import.meta.url), "utf8");
+  const passFailure = server.slice(server.indexOf("Night Shift scheduler failed"));
+  assert.match(passFailure.slice(0, 260), /scheduleSchedulerRetry\(\)/,
+    "the pass-level catch must arm the retry, not rely on onError");
+  assert.match(server, /function scheduleSchedulerRetry\(\)[\s\S]{0,300}enqueueAfter\("scheduler\.retry"/);
+  assert.match(server, /onError: \(error\) => \{[\s\S]{0,200}scheduleSchedulerRetry\(\)/);
+});
