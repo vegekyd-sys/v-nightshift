@@ -32,7 +32,11 @@ export function normalizeContentItems(items, { maxItems = 50, routes = [], label
     if (!item || typeof item !== "object" || Array.isArray(item)) {
       throw new Error(`contentItems[${ordinal}] must be an object`);
     }
-    const id = String(item.id ?? "").trim();
+    // The planning skill documents `stableId`, and the workflow's completion rule
+    // is `everyItemHasStableIdAndTitle`. Agents that followed that contract
+    // exactly were rejected here for having no `id`, while an agent that added
+    // one by chance was accepted. Honour the documented field.
+    const id = String(item.id ?? item.stableId ?? "").trim();
     if (!ID_PATTERN.test(id)) throw new Error(`Invalid content item id: ${id || "<empty>"}`);
     if (id.length > idMax) {
       throw new Error(`Content item id must be ${idMax} characters or fewer so its Workboard label fits within ${labelMax}: ${id} (${id.length})`);

@@ -938,7 +938,22 @@ async function syncContentItemsManifest(instance) {
   const digest = createHash("sha256").update(source).digest("hex");
   if (contentManifestHashes.get(instance.id) === digest) return;
   const parsed = JSON.parse(source);
-  runtime.setContentItems(instance.id, Array.isArray(parsed) ? parsed : parsed.contentItems);
+  // The planning skill documents the array as `items`; earlier manifests use
+  // `contentItems`. Accept both rather than rejecting a manifest that follows
+  // the published contract.
+  const items = Array.isArray(parsed) ? parsed : (parsed?.contentItems ?? parsed?.items);
+  if (!Array.isArray(items) || items.length === 0) {
+    // "contentItems must contain at least one video task" reads as "the stage
+    // produced nothing", which sent us looking in the wrong place while the file
+    // held fifteen entries under another key.
+    const arrays = Object.entries(parsed ?? {})
+      .filter(([, value]) => Array.isArray(value) && value.length > 0)
+      .map(([key, value]) => `${key}(${value.length})`);
+    throw new Error(`${manifestPath} has no contentItems or items array`
+      + (arrays.length ? `; it holds ${arrays.join(", ")}` : "")
+      + ". Each entry needs stableId (or id) and title.");
+  }
+  runtime.setContentItems(instance.id, items);
   contentManifestHashes.set(instance.id, digest);
 }
 

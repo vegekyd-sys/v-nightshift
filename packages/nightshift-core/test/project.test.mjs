@@ -120,3 +120,17 @@ test("the card label budget is a knob, not a baked-in 40", () => {
   assert.throws(() => normalizeContentItems(item, { routes: ["SCENE_EDIT"], labelMax: 40 }), /within 40/);
   assert.equal(CARD_LABEL_MAX, 40, "the default still matches what the Gateway enforces today");
 });
+
+// The planning skill documents `stableId`, and the workflow's completion rule is
+// everyItemHasStableIdAndTitle. On 2026-09-17 two live projects followed that
+// contract exactly and were rejected here for having no `id`.
+test("stableId satisfies the documented item contract", () => {
+  const routes = ["SCENE_EDIT"];
+  const fromSkill = [{ stableId: "yt-dl-0917-09-01", title: "t", sourceSection: "s", route: "SCENE_EDIT" }];
+  assert.equal(normalizeContentItems(fromSkill, { routes })[0].id, "yt-dl-0917-09-01");
+  // An explicit id still wins when both are present.
+  const both = [{ id: "explicit", stableId: "stable", title: "t", route: "SCENE_EDIT" }];
+  assert.equal(normalizeContentItems(both, { routes })[0].id, "explicit");
+  // Neither is still a clear failure.
+  assert.throws(() => normalizeContentItems([{ title: "t", route: "SCENE_EDIT" }], { routes }), /Invalid content item id/);
+});
