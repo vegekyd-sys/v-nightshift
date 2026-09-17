@@ -29,8 +29,14 @@ export function classifyTerminalFailure({ message, session } = {}) {
   if (/gateway(?: rpc)?(?: request)? (?:timed out|timeout|unavailable)|openclaw gateway rpc failed/.test(normalized)) {
     return { kind: "gateway_unavailable", source: "gateway", rawError, retryable: true };
   }
-  if (/econnreset|connection reset|socket hang up|fetch failed|network error/.test(normalized)) {
+  // Real strings from V, 2026-09-10 to 09-17: every failure that landed in the
+  // agent_error bucket was transient. "Connection error." is what the provider
+  // client reports on its own, and an upstream 5xx arrives as an HTML body.
+  if (/econnreset|connection reset|connection error|socket hang up|fetch failed|network error|timed? out/.test(normalized)) {
     return { kind: "connection_reset", source: "provider", rawError, retryable: true };
+  }
+  if (/\b(50[0234])\b|bad gateway|service unavailable|gateway time-?out|internal server error/.test(normalized)) {
+    return { kind: "upstream_unavailable", source: "provider", rawError, retryable: true };
   }
   if (stopReason === "aborted" || /incomplete turn|interrupted/.test(normalized)) {
     return { kind: "agent_interrupted", source: "runtime", rawError, retryable: true };
@@ -53,6 +59,7 @@ export function infrastructureFailureSummary(failure) {
     worker_unavailable: "执行 Worker 未响应",
     gateway_unavailable: "Gateway 暂时不可用",
     connection_reset: "模型或网络连接中断",
+    upstream_unavailable: "上游服务返回 5xx",
     agent_interrupted: "Agent 运行被中断",
     agent_error: "Agent 运行失败",
   }[failure?.kind] ?? "Agent 运行失败";
