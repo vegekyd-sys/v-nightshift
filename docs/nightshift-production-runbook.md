@@ -45,6 +45,21 @@ Night Shift starts new native cards only while the Gateway host has headroom, an
 | `NIGHTSHIFT_SCHEDULER_RETRY_MIN_MS` / `_MAX_MS` | 10000 / 120000 | Backoff between retries after a failed scheduler pass. |
 | `NIGHTSHIFT_SCHEDULER_EVENT_MIN_INTERVAL_MS` | 5000 | Floor between event-driven scheduler passes. Raising it trades stage handoff latency for Gateway main-thread time; 15000 is a reasonable production setting. |
 
+## Timed release
+
+A stage that declares `releaseAt` gets its card immediately, carrying the release
+instant as the native Workboard `scheduledAt`. The board holds it in `scheduled`,
+refuses any early start, and promotes it to `ready` during the scoped dispatch
+Night Shift already makes. The service schedules its next wake for that instant,
+so the release does not wait for the five-minute repair pass; if that wake is
+lost, the repair pass is the backstop and the card goes out up to five minutes
+late. Held cards appear in the Live Board's own `Scheduled` column and never
+consume a dispatch slot while they wait.
+
+A recurring window is resolved in its IANA zone on the target date, so a nightly
+21:00 in New York survives the daylight-saving change. Authoring rules live in
+the `night-shift-operator` Skill, `references/workflow-authoring.md`.
+
 ## Board read cost
 
 A routine pass reads only the cards that can still change; the five-minute repair pass reads every card its projects own. Measured on V on 2026-09-17 before this split: 17.6 reads a minute of 319 cards each, about a tenth of the Gateway main thread. Of those 319, 240 had already reached a terminal state and 168 belonged to paused or archived projects held in by a single stale `running` record.
