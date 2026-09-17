@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { compileWorkflow, parseWorkflow, requiredSkillsByRole, validateProjectRequest } from "../src/index.mjs";
+import { compileWorkflow, normalizeContentItems, parseWorkflow, requiredSkillsByRole, validateProjectRequest } from "../src/index.mjs";
 
 const workflowPath = new URL("../../../examples/workflows/xingqing-content-delivery.workflow.md", import.meta.url);
 
@@ -94,4 +94,20 @@ test("rejects an unknown delivery mode", async () => {
     },
     agentBindings: { "content-operator": "main" },
   }), /deliveryMode must be one of: publish, download/);
+});
+
+// NS-VIG-0917-01 accepted a 28-character content item id on 2026-09-17 and was
+// then undispatchable: every card creation failed on the Workboard's 40-character
+// label limit, with an error that named neither the label nor the item.
+test("a content item id that would overflow its card label is refused at write time", () => {
+  const item = (id) => [{ id, title: "t", route: "SCENE_EDIT" }];
+  assert.deepEqual(
+    normalizeContentItems(item("a".repeat(27)), { routes: ["SCENE_EDIT"] })[0].id,
+    "a".repeat(27),
+  );
+  assert.throws(
+    () => normalizeContentItems(item("curiosity-character-vignette"), { routes: ["SCENE_EDIT"] }),
+    /27 characters or fewer.*curiosity-character-vignette \(28\)/,
+  );
+  assert.equal("content-item:".length + 27, 40);
 });

@@ -1,3 +1,10 @@
+// A card label is at most 40 characters and Night Shift writes
+// `content-item:<id>`, so an id has 27 to spend. Project ids are already capped
+// the same way. Without this a 28-character id is accepted here and then makes
+// every card creation fail, leaving the project silently undispatchable; that
+// happened to NS-VIG-0917-01 on 2026-09-17.
+const CONTENT_ITEM_LABEL_PREFIX = "content-item:";
+const CONTENT_ITEM_ID_MAX = 40 - CONTENT_ITEM_LABEL_PREFIX.length;
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/;
 const STATUS_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 
@@ -16,6 +23,9 @@ export function normalizeContentItems(items, { maxItems = 50, routes = [] } = {}
     }
     const id = String(item.id ?? "").trim();
     if (!ID_PATTERN.test(id)) throw new Error(`Invalid content item id: ${id || "<empty>"}`);
+    if (id.length > CONTENT_ITEM_ID_MAX) {
+      throw new Error(`Content item id must be ${CONTENT_ITEM_ID_MAX} characters or fewer so its Workboard label fits: ${id} (${id.length})`);
+    }
     if (ids.has(id)) throw new Error(`Duplicate content item id: ${id}`);
     ids.add(id);
     const title = String(item.title ?? "").trim();

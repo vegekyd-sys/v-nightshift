@@ -135,13 +135,7 @@ const changeScheduler = new WorkboardChangeScheduler({
   minRunIntervalMs: schedulerEventMinIntervalMs,
   onError: (error) => {
     console.error(`Night Shift event scheduler failed: ${error.message}`);
-    // Events stop arriving exactly when the Gateway is gone, so a failed pass
-    // must schedule its own retry. A Gateway restart spends over a minute in
-    // preflight refusing connections; without this the only recovery was the
-    // five-minute repair tick, and every live project carried a dispatch fault
-    // until it came round. Observed on V on 2026-09-17 at 10:50.
-    schedulerRetryMs = Math.min(schedulerRetryMs ? schedulerRetryMs * 2 : schedulerRetryMinMs, schedulerRetryMaxMs);
-    changeScheduler.enqueueAfter("scheduler.retry", schedulerRetryMs);
+    scheduleSchedulerRetry();
   },
   repairIntervalMs: schedulerRepairIntervalMs,
   run: runScheduler,
@@ -820,10 +814,20 @@ function runScheduler({ trigger = "manual" } = {}) {
     lastSchedulerError = error.message;
     schedulerCircuit.recordFailure(error.message);
     console.error(`Night Shift scheduler failed: ${error.message}`);
+    scheduleSchedulerRetry();
   }).finally(() => {
     schedulerPromise = null;
   });
   return schedulerPromise;
+}
+
+// Events stop arriving exactly when the Gateway is gone, so a failed pass must
+// schedule its own retry; the repair tick is five minutes away. This pass keeps
+// its own catch and never rejects, so the scheduler's onError alone was never
+// reached. Both paths call this now.
+function scheduleSchedulerRetry() {
+  schedulerRetryMs = Math.min(schedulerRetryMs ? schedulerRetryMs * 2 : schedulerRetryMinMs, schedulerRetryMaxMs);
+  changeScheduler.enqueueAfter("scheduler.retry", schedulerRetryMs);
 }
 
 function probeDispatchCapacity() {
