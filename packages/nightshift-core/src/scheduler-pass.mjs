@@ -4,6 +4,9 @@ export async function runSchedulerPass({
   dispatchMaxStarts = 36,
   dispatchEnabled = true,
   inspectSessions = true,
+  // The repair pass reads every card the projects own; a routine pass reads only
+  // what can still change.
+  fullSweep = inspectSessions,
   maxWorkboardActive = 36,
   store,
   runtime,
@@ -13,10 +16,11 @@ export async function runSchedulerPass({
 }) {
   const instances = store.listInstances().filter((instance) => instance.status === "active")
     .sort((a, b) => Number(store.getInstanceControl(b.id).automaticDispatch) - Number(store.getInstanceControl(a.id).automaticDispatch));
+  const nowMs = Date.now();
   const wasRunning = (id) => [...store.listStageRuns(id), ...store.listContentItemRuns(id)]
-    .some((run) => run.status === "running");
+    .some((run) => runIsLive(run, nowMs));
   let cards;
-  const cardIds = schedulerCardIds(store, instances);
+  const cardIds = schedulerCardIds(store, instances, { fullSweep, nowMs });
   try {
     cards = await refreshCards({ cardIds });
   } catch (error) {
@@ -75,7 +79,7 @@ export async function runSchedulerPass({
       warnings.push(`${instance.id}: ${error.message}`);
     }
   }
-  if (changed) await refreshCards({ cardIds: schedulerCardIds(store) });
+  if (changed) await refreshCards({ cardIds: schedulerCardIds(store, null, { fullSweep, nowMs }) });
   return {
     dispatchMaxStarts,
     dispatched,
@@ -87,15 +91,40 @@ export async function runSchedulerPass({
   };
 }
 
-export function schedulerCardIds(store, activeInstances = null) {
+// A run that says "running" but has not moved for this long is a leftover from a
+// crash, not work in flight. Without the bound, one such record kept a paused or
+// archived project in every scheduler read forever: on V, nine of them
+// contributed 168 of the 319 cards read every few seconds.
+const STALE_RUNNING_MS = 30 * 60 * 1000;
+const TERMINAL_RUN = new Set(["done", "blocked", "cancelled"]);
+
+function runIsLive(run, nowMs) {
+  if (run.status !== "running") return false;
+  const at = Date.parse(run.updatedAt ?? "");
+  return !Number.isFinite(at) || nowMs - at < STALE_RUNNING_MS;
+}
+
+/**
+ * Card IDs the scheduler needs this pass.
+ *
+ * `fullSweep` reads everything the projects own, which is what the periodic
+ * repair pass wants. A routine pass skips cards whose run already reached a
+ * terminal state: three quarters of what was being read could not change, and
+ * re-parsing them was the service's largest ongoing cost on the Gateway.
+ */
+export function schedulerCardIds(store, activeInstances = null, { fullSweep = true, nowMs = Date.now() } = {}) {
   const activeIds = new Set((activeInstances ?? store.listInstances().filter((instance) => instance.status === "active"))
     .map((instance) => instance.id));
   const ids = [];
   for (const instance of store.listInstances()) {
     const runs = [...store.listStageRuns(instance.id), ...store.listContentItemRuns(instance.id)];
-    const include = activeIds.has(instance.id) || runs.some((run) => run.status === "running");
+    const include = activeIds.has(instance.id) || runs.some((run) => runIsLive(run, nowMs));
     if (!include) continue;
-    for (const run of runs) if (typeof run.cardId === "string" && run.cardId) ids.push(run.cardId);
+    for (const run of runs) {
+      if (typeof run.cardId !== "string" || !run.cardId) continue;
+      if (!fullSweep && TERMINAL_RUN.has(run.status)) continue;
+      ids.push(run.cardId);
+    }
   }
   return [...new Set(ids)];
 }
