@@ -1561,3 +1561,16 @@ test("the release happens on the scoped dispatch Night Shift already makes", asy
   assert.equal(publish.status, "running");
   store.close();
 });
+
+test("a human stage cannot be given a release time it would never come back from", async () => {
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  workboard.clock = AFTERNOON;
+  const runtime = new NightShiftRuntime({ board: "nightshift-lab", store, workboard });
+  const source = (await readFile(timedReleasePath, "utf8")).replace("actor: agent\nscope: project\nskills: [background-worker-contract]\nneeds: [finish]", "actor: human\nscope: project\nneeds: [finish]");
+  // Only agent and system cards enter the dispatch scope, and the dispatch scope
+  // is the only thing that promotes a held card. A human stage with a release
+  // time would sit in scheduled forever, so refuse it at publish time.
+  assert.throws(() => runtime.publish(source), (error) => (error.issues ?? []).some((issue) => issue.code === "stage.releaseAt.actor"));
+  store.close();
+});

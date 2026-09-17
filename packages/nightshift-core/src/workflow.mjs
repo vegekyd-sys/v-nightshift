@@ -393,6 +393,15 @@ function validateReleaseAt(stage, path, issues) {
   const spec = stage.releaseAt ?? stage.waitUntil ?? null;
   if (spec === null || spec === undefined) return;
   const field = stage.releaseAt !== undefined ? "releaseAt" : "waitUntil";
+  // Only agent and system cards enter the dispatch scope, and that scope is the
+  // only thing that promotes a held card. A human stage with a release time
+  // would wait in `scheduled` forever, so refuse it here rather than ship a card
+  // nobody can release.
+  if (stage.actor === "human") {
+    issues.push(issue("stage.releaseAt.actor", `${path}.${field}`,
+      `${field} is only supported on agent and system stages`));
+    return;
+  }
   if (typeof spec === "string") {
     if (!spec.trim()) {
       issues.push(issue("stage.releaseAt.invalid", `${path}.${field}`, `${field} must not be empty`));
