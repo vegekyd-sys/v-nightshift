@@ -1174,7 +1174,20 @@ class FakeWorkboard {
           "nightshift:approval",
         ],
       };
-      const created = { id: `card-${this.cards.length + 1}`, ...card, labels: [...new Set([...(card.labels ?? []), marker])] };
+      // Mirrors the native board: a card whose release time has not arrived is
+      // created in "scheduled", not in the status the plan asked for, and the
+      // time lives under metadata.automation where the board keeps it.
+      const { scheduledAt, ...rest } = card;
+      const held = Number.isFinite(scheduledAt) && scheduledAt > this.now();
+      const created = {
+        id: `card-${this.cards.length + 1}`,
+        ...rest,
+        status: held ? "scheduled" : rest.status,
+        ...(Number.isFinite(scheduledAt)
+          ? { metadata: { ...(rest.metadata ?? {}), automation: { ...(rest.metadata?.automation ?? {}), scheduledAt } } }
+          : {}),
+        labels: [...new Set([...(card.labels ?? []), marker])],
+      };
       this.cards.push(created);
       known.push(created);
       return { action, card: created, status: "created" };
@@ -1183,6 +1196,12 @@ class FakeWorkboard {
 
   async moveCard(id, status) {
     const card = this.cards.find((entry) => entry.id === id);
+    // Mirrors the native board's hold: a card still waiting for its release
+    // time cannot be moved anywhere but "done".
+    const at = card.metadata?.automation?.scheduledAt;
+    if (status !== "done" && Number.isFinite(at) && at > this.now()) {
+      throw new Error("card is scheduled for later.");
+    }
     card.status = status;
     return card;
   }
@@ -1202,10 +1221,35 @@ class FakeWorkboard {
     return card;
   }
 
+  now() {
+    return this.clock ?? Date.now();
+  }
+
+  // Mirrors the native board: the scoped dispatch RPC first promotes cards whose
+  // release time has passed, then refuses to start any card still held.
   async dispatch(maxStarts, options) {
     this.dispatchCalls.push({ maxStarts, options });
-    return { started: [] };
+    const now = this.now();
+    const promoted = [];
+    for (const card of this.cards) {
+      if (card.status !== "scheduled") continue;
+      const at = card.metadata?.automation?.scheduledAt;
+      if (Number.isFinite(at) && at > now) continue;
+      card.status = "ready";
+      promoted.push(card);
+    }
+    const scoped = options?.cardIds ? new Set(options.cardIds) : null;
+    const startable = this.cards.filter((card) =>
+      card.status === "ready" && (!scoped || scoped.has(card.id)));
+    if (this.startOnDispatch !== true) return { promoted, started: [] };
+    const started = startable.slice(0, maxStarts ?? 1).map((card) => {
+      card.status = "running";
+      return { card };
+    });
+    return { promoted, started };
   }
+
+
 
   async getSession(sessionKey) {
     this.sessionCalls.push(sessionKey);
@@ -1413,5 +1457,107 @@ test("an approval card is reused when the board read is scoped to this project",
     1,
     "three further passes must not add approval cards",
   );
+  store.close();
+});
+
+const timedReleasePath = resolve(here, "./fixtures/timed-release.workflow.md");
+
+// End to end, through the board: a finished video whose publication must wait
+// for the evening window in New York. The card exists the whole time, the board
+// holds it, and the same scoped dispatch that Night Shift already makes is what
+// releases it.
+async function timedRelease(clock) {
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  workboard.clock = clock;
+  workboard.startOnDispatch = true;
+  const runtime = new NightShiftRuntime({ board: "nightshift-lab", store, workboard });
+  const release = runtime.publish(await readFile(timedReleasePath, "utf8"));
+  const id = "NS-TIMED";
+  runtime.startInstance({
+    id,
+    workflowSha256: release.workflowSha256,
+    agentBindings: { operator: "main" },
+    inputs: { timezone: "America/New_York" },
+  });
+  // The first stage is done; publication is the only thing left.
+  await runtime.tick(id, { dispatch: false, now: clock });
+  const finish = workboard.cards.find((card) => (card.labels ?? []).includes("stage:finish"));
+  finish.status = "done";
+  finish.execution = { status: "done" };
+  await runtime.reconcile(id, workboard.cards, { inspectSessions: false });
+  return { store, workboard, runtime, id };
+}
+
+const EVENING = Date.parse("2026-09-18T01:00:00Z"); // 21:00 in New York
+const AFTERNOON = Date.parse("2026-09-17T18:00:00Z");
+
+test("a publication card is held by the board until its release moment, not withheld from it", async () => {
+  const { store, workboard, runtime, id } = await timedRelease(AFTERNOON);
+  const result = await runtime.tick(id, { dispatch: true, inspectSessions: false, now: AFTERNOON });
+  const publish = workboard.cards.find((card) => (card.labels ?? []).includes("stage:publish"));
+
+  // The card is on the board, visible, carrying its moment.
+  assert.ok(publish, "the publication card must exist while it waits");
+  assert.equal(publish.status, "scheduled");
+  assert.equal(publish.metadata.automation.scheduledAt, EVENING);
+  // And nothing started it.
+  assert.deepEqual(result.dispatch?.started ?? [], []);
+  assert.equal(publish.status, "scheduled");
+  store.close();
+});
+
+test("the board refuses to start a held publication card early", async () => {
+  const { store, workboard, runtime, id } = await timedRelease(AFTERNOON);
+  await runtime.tick(id, { dispatch: true, inspectSessions: false, now: AFTERNOON });
+  const publish = workboard.cards.find((card) => (card.labels ?? []).includes("stage:publish"));
+  await assert.rejects(workboard.moveCard(publish.id, "running"), /scheduled for later/);
+  store.close();
+});
+
+test("a held publication card is not planned again on the next pass", async () => {
+  const { store, workboard, runtime, id } = await timedRelease(AFTERNOON);
+  await runtime.tick(id, { dispatch: true, inspectSessions: false, now: AFTERNOON });
+  const before = workboard.cards.length;
+  await runtime.tick(id, { dispatch: true, inspectSessions: false, now: AFTERNOON });
+  await runtime.tick(id, { dispatch: true, inspectSessions: false, now: AFTERNOON });
+  assert.equal(workboard.cards.length, before, "three passes must not leave three cards");
+  store.close();
+});
+
+test("the pass asks to be woken at the release moment", async () => {
+  const { store, runtime, id } = await timedRelease(AFTERNOON);
+  const result = await runtime.tick(id, { dispatch: true, inspectSessions: false, now: AFTERNOON });
+  // The scheduler turns this into its next wake, so the release lands on time
+  // instead of waiting for the five-minute repair pass.
+  const wakeAt = AFTERNOON + result.retryAfterMs;
+  assert.ok(Math.abs(wakeAt - EVENING) < 5_000, `expected a wake near the release moment, got ${new Date(wakeAt).toISOString()}`);
+  store.close();
+});
+
+test("the wake survives a restart, because it is read back off the held card", async () => {
+  const { store, workboard, runtime, id } = await timedRelease(AFTERNOON);
+  await runtime.tick(id, { dispatch: true, inspectSessions: false, now: AFTERNOON });
+  // A second runtime over the same store and board, as after a service restart:
+  // no planned action carries the moment any more, only the card does.
+  const restarted = new NightShiftRuntime({ board: "nightshift-lab", store, workboard });
+  const result = await restarted.tick(id, { dispatch: true, inspectSessions: false, now: AFTERNOON });
+  const wakeAt = AFTERNOON + result.retryAfterMs;
+  assert.ok(Math.abs(wakeAt - EVENING) < 5_000, `restart lost the release wake, got ${result.retryAfterMs}`);
+  store.close();
+});
+
+test("the release happens on the scoped dispatch Night Shift already makes", async () => {
+  const { store, workboard, runtime, id } = await timedRelease(AFTERNOON);
+  await runtime.tick(id, { dispatch: true, inspectSessions: false, now: AFTERNOON });
+  const publish = workboard.cards.find((card) => (card.labels ?? []).includes("stage:publish"));
+  assert.equal(publish.status, "scheduled");
+
+  // The evening arrives. No new RPC, no cron job: the same dispatch call.
+  workboard.clock = EVENING;
+  const result = await runtime.tick(id, { dispatch: true, inspectSessions: false, now: EVENING });
+  assert.deepEqual(result.dispatch.promoted.map((card) => card.id), [publish.id]);
+  assert.deepEqual(result.dispatch.started.map((entry) => entry.card.id), [publish.id]);
+  assert.equal(publish.status, "running");
   store.close();
 });

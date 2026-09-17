@@ -92,6 +92,7 @@ export function StatusIcon({ status }) {
   if (status === "blocked") return <AlertTriangle size={14} />;
   if (status === "running") return <Activity size={14} />;
   if (status === "review") return <ShieldCheck size={14} />;
+  if (status === "scheduled") return <Clock3 size={14} />;
   return <CircleDot size={14} />;
 }
 
@@ -105,7 +106,9 @@ export function WorkCard({ card, onClick }) {
       <h3>{card.title}</h3>
       <div className="work-card-meta">
         <span><Bot size={13} />{card.agentId ?? automation.agentRole ?? "unassigned"}</span>
-        <span><Clock3 size={13} />{formatAge(card.updatedAt)}</span>
+        <span><Clock3 size={13} />{card.status === "scheduled" && automation.scheduledAt
+          ? formatRelease(automation.scheduledAt)
+          : formatAge(card.updatedAt)}</span>
       </div>
       {automation.skills?.[0] && <div className="skill-line">{automation.skills[0]}</div>}
       <div className="work-card-foot"><span>{automation.instanceId ?? findLabel(card, "instance")}</span><ChevronRight size={14} /></div>
@@ -422,6 +425,18 @@ function finiteNumber(value) {
   if (Number.isFinite(number) && number > 0) return number;
   const parsed = typeof value === "string" ? Date.parse(value) : Number.NaN;
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+// A held card's useful fact is when it goes out, not how long ago it was
+// touched. Rendered in the viewer's own zone, since the release moment is an
+// absolute instant and the operator is rarely in the target market.
+function formatRelease(at) {
+  const when = new Date(at);
+  if (Number.isNaN(when.valueOf())) return "scheduled";
+  const sameDay = when.toDateString() === new Date().toDateString();
+  return when.toLocaleString(undefined, sameDay
+    ? { hour: "2-digit", minute: "2-digit" }
+    : { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 function formatAge(value) {

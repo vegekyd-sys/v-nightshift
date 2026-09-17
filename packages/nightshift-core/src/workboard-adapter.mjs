@@ -26,13 +26,6 @@ export class WorkboardCliAdapter {
   }
 
   async applyAction(action, { dryRun = false } = {}) {
-    if (action.type === "schedule_timer") {
-      return {
-        action,
-        status: "deferred",
-        reason: "timer_store_required",
-      };
-    }
     if (
       !["create_workboard_card", "create_review_card", "request_approval"].includes(
         action.type,

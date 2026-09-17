@@ -597,6 +597,7 @@ export class NightShiftRuntime {
     dispatchMaxStarts = this.dispatchMaxStarts,
     dryRun = false,
     inspectSessions = true,
+    now: nowMs = Date.now(),
   } = {}) {
     const currentCards = cards ?? await this.workboard.listCards({ cardIds: this.instanceCardIds(instanceId) });
     await this.reconcile(instanceId, currentCards, { inspectSessions });
@@ -613,11 +614,17 @@ export class NightShiftRuntime {
       runs,
       contentItems,
       contentItemRuns,
+      now: new Date(nowMs),
     });
+    // A card the board holds for a timed release must wake the scheduler at
+    // exactly that moment. Two sources, because the card can be planned in this
+    // pass or left over from before a restart, and only the second survives one.
     const dueTimes = [
-      ...actions.filter(action => action.type === "schedule_timer").map(action => Date.parse(action.waitUntil)),
+      ...actions.map(action => action.card?.scheduledAt),
+      ...currentCards.filter(card => card.status === "scheduled")
+        .map(card => card.metadata?.automation?.scheduledAt ?? card.scheduledAt),
       ...[...runs, ...contentItemRuns].filter(run => run.failure?.automaticRetry).map(run => Date.parse(run.failure.nextRetryAt)),
-    ].filter(at => Number.isFinite(at) && at > Date.now());
+    ].filter(at => Number.isFinite(at) && at > nowMs);
     let dispatchResult = null;
     const applied = await this.workboard.applyPlan(actions, { cards: currentCards, dryRun });
     if (!dryRun) {
@@ -680,7 +687,7 @@ export class NightShiftRuntime {
             instanceCards.set(result.card.id, result.card);
           }
         }
-        const now = Date.now();
+        const now = nowMs;
         // A human stage card is created in review with native dependencies.
         // Workboard holds it in todo until its upstream completes and then
         // promotes it to ready like any other card. Ready is an executable
@@ -704,7 +711,7 @@ export class NightShiftRuntime {
         const active = [...instanceCards.values()].filter(cardConsumesDispatchSlot);
         const activeAcrossBoard = currentCards.filter(cardConsumesDispatchSlot).length;
         const cardIds = [...instanceCards.values()].filter((card) =>
-          card.status === "ready" && ["agent", "system"].includes(stageActor(card)) && !active.includes(card) && !cardHasActiveClaim(card, now) && !(card.labels ?? []).includes("nightshift:approval"))
+          cardIsStartable(card, now) && ["agent", "system"].includes(stageActor(card)) && !active.includes(card) && !cardHasActiveClaim(card, now) && !(card.labels ?? []).includes("nightshift:approval"))
           .map((card) => card.id);
         const maxStarts = Math.min(
           this.dispatchMaxStarts,
@@ -726,7 +733,7 @@ export class NightShiftRuntime {
         this.store.appendEvent({ instanceId, type: "instance.completed", payload: { contentItemCount: contentItems.length } });
       }
     }
-    const now = Date.now();
+    const now = nowMs;
     const pendingTimes = [...dueTimes, this.nextReconcileAt].filter(at => Number.isFinite(at) && at > 0);
     return { actions, applied, dispatch: dispatchResult, instance: this.store.getInstance(instanceId),
       retryAfterMs: pendingTimes.length ? Math.max(1, Math.min(...pendingTimes) - now) : null };
@@ -832,6 +839,17 @@ export class NightShiftRuntime {
       : this.store.upsertStageRun({ ...run, status: "blocked" });
     return approval;
   }
+}
+
+// A card the board holds for a timed release is startable the moment its time
+// arrives: the scoped dispatch promotes it and starts it in the same call.
+// Leave it out of the scope and nothing ever makes that call, so the release
+// never happens and the card waits forever one tick short of going out.
+export function cardIsStartable(card, nowMs) {
+  if (card?.status === "ready") return true;
+  if (card?.status !== "scheduled") return false;
+  const at = card.metadata?.automation?.scheduledAt ?? card.scheduledAt;
+  return Number.isFinite(at) && at <= nowMs;
 }
 
 export function cardConsumesDispatchSlot(card) {

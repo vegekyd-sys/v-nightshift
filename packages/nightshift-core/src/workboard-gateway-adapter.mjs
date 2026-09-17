@@ -83,9 +83,6 @@ export class WorkboardGatewayAdapter {
   }
 
   async applyAction(action, { dryRun = false, cards = null } = {}) {
-    if (action.type === "schedule_timer") {
-      return { action, status: "deferred", reason: "timer_store_required" };
-    }
     const marker = gatewayIdempotencyLabel(action.idempotencyKey);
     const existing = (cards ?? await this.listCards()).find((card) =>
       (card.labels ?? []).includes(marker),

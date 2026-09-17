@@ -68,3 +68,59 @@ test("deployed Gateway exact-card start bypasses board maintenance and selects o
   assert.deepEqual(touched, ["selected"]);
   assert.equal(cards[1].status, "ready");
 });
+
+// Night Shift hands a timed release to the board instead of holding the card
+// back itself. That only works if the deployed Gateway really does three
+// things, so assert them against its own code rather than against a reading
+// of it: hold on create, refuse an early start, release on scoped dispatch.
+test("deployed Gateway holds a card until its scheduledAt and releases it on the next scoped dispatch", { skip: !bundle }, async () => {
+  const source = await readFile(bundle, "utf8");
+
+  // 1. Creating a card whose release is in the future overrides the requested
+  //    status with "scheduled".
+  assert.match(
+    source,
+    /const heldBySchedule = Boolean\(automation\?\.scheduledAt && automation\.scheduledAt > now\)[\s\S]{0,120}?heldBySchedule \? "scheduled"/,
+    "Current Gateway must put a future-dated card into scheduled on create",
+  );
+
+  // 2. Moving a held card anywhere but done is refused.
+  assert.match(
+    source,
+    /const scheduledAt = next\.metadata\?\.automation\?\.scheduledAt;\s*if \(scheduledAt && scheduledAt > now[\s\S]{0,120}?throw new Error\("card is scheduled for later\."\)/,
+    "Current Gateway must refuse to start a card before its release",
+  );
+  assert.match(
+    source,
+    /if \(guarded\.status === "scheduled"\) throw new Error\("card is scheduled for later\."\)/,
+    "Current Gateway dispatch must refuse a card still held",
+  );
+
+  // 3. The promotion rule itself, executed. This is the step Night Shift
+  //    depends on for the release actually happening: the scoped dispatch RPC
+  //    runs it over the cards Night Shift passes, so no extra timer is needed.
+  const body = section(source, "async dependencyTargetStatus(card, now) {", "async dependsOn(cardId, targetParentId)");
+  const promote = vm.runInNewContext(
+    `(function () { return ${body.replace("async dependencyTargetStatus(card, now) {", "async function dependencyTargetStatus(card, now) {")} })()`,
+    {
+      cardParentIds: (card) => card.parents ?? [],
+      isDependencyPromotableStatus: (status) =>
+        ["backlog", "triage", "todo", "scheduled", "ready"].includes(status),
+    },
+  );
+  const at = Date.parse("2026-09-18T01:00:00Z");
+  const held = { status: "scheduled", metadata: { automation: { scheduledAt: at } } };
+  assert.equal(await promote.call({}, held, at - 60_000), "scheduled");
+  assert.equal(await promote.call({}, held, at), "ready");
+  assert.equal(await promote.call({}, held, at + 60_000), "ready");
+  // A card with no release time is untouched by this rule.
+  assert.equal(await promote.call({}, { status: "ready", metadata: {} }, at), "ready");
+
+  // 4. The scoped dispatch runs that promotion before it selects what to start,
+  //    so a card whose moment arrived starts in the same call.
+  const dispatch = section(source, "async function runWorkboardDispatch(params)", "//#endregion");
+  assert.ok(
+    dispatch.indexOf("params.store.dispatch({") < dispatch.indexOf("selectStartableCards("),
+    "Current Gateway must promote scheduled cards before selecting startable ones",
+  );
+});

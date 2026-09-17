@@ -427,3 +427,142 @@ function doneThrough(contentItemId, lastStage) {
   const stages = ["route", "materials", "brief", "produce", "review"];
   return stages.slice(0, stages.indexOf(lastStage) + 1).map((stageId) => ({ contentItemId, stageId, status: "done" }));
 }
+
+// A finished video that must not go out until a wall-clock moment. The card is
+// planned and visible right away; the release time rides on it as scheduledAt,
+// which is what puts the native board's hold in charge instead of withholding
+// the card from the board.
+function publishAt(release, spec, { now, deliveryMode = "publish" } = {}) {
+  const timed = structuredClone(release);
+  const stage = timed.spec.stages.find((entry) => entry.id === "publish-feedback");
+  stage.releaseAt = spec;
+  const instance = activeInstance(timed);
+  instance.inputs.deliveryMode = deliveryMode;
+  instance.inputs.publicationTarget = publicationTarget();
+  const contentItems = [twoItems()[1]];
+  const contentItemRuns = doneThrough(contentItems[0].id, "review");
+  const plan = (extraRuns = []) => planNextActions({
+    release: timed,
+    instance,
+    runs: [{ stageId: "plan", status: "done" }],
+    contentItems,
+    contentItemRuns: [...contentItemRuns, ...extraRuns],
+    now: new Date(now),
+  });
+  const approvals = plan();
+  instance.approvals = approvals
+    .filter((action) => action.type === "request_approval")
+    .map((action) => ({ stageId: "publish-feedback", contentItemId: action.contentItemId, ...action.approval, status: "approved" }));
+  return { plan, instance, contentItems };
+}
+
+const NY = "America/New_York";
+
+test("a publication stage carries its release moment on the card instead of withholding it", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  // 14:00 in New York on 17 September, so tonight's window is still ahead.
+  const now = Date.parse("2026-09-17T18:00:00Z");
+  const { plan } = publishAt(release, { dailyAt: "21:00", timezone: NY }, { now });
+  const actions = plan();
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0].type, "create_workboard_card");
+  assert.equal(actions[0].stageId, "publish-feedback");
+  // 21:00 EDT is 01:00 UTC the next day.
+  assert.equal(actions[0].card.scheduledAt, Date.parse("2026-09-18T01:00:00Z"));
+});
+
+test("a video finished after tonight's window is held for the next one, not published late", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  // 22:30 in New York: tonight's 21:00 has passed.
+  const now = Date.parse("2026-09-18T02:30:00Z");
+  const { plan } = publishAt(release, { dailyAt: "21:00", timezone: NY }, { now });
+  assert.equal(plan()[0].card.scheduledAt, Date.parse("2026-09-19T01:00:00Z"));
+});
+
+test("a daily release window follows the zone across a daylight-saving change", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const summer = publishAt(release, { dailyAt: "21:00", timezone: NY }, { now: Date.parse("2026-10-30T18:00:00Z") });
+  const winter = publishAt(release, { dailyAt: "21:00", timezone: NY }, { now: Date.parse("2026-11-05T18:00:00Z") });
+  // Both are 21:00 in New York, but the UTC instants differ by an hour because
+  // the zone left daylight saving in between. A fixed offset would publish the
+  // second one an hour early.
+  assert.equal(summer.plan()[0].card.scheduledAt, Date.parse("2026-10-31T01:00:00Z"));
+  assert.equal(winter.plan()[0].card.scheduledAt, Date.parse("2026-11-06T02:00:00Z"));
+});
+
+test("the release window can follow the publication target's own timezone", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const now = Date.parse("2026-09-17T18:00:00Z");
+  const { plan } = publishAt(release, { dailyAt: "21:00", timezone: "${input.publicationTarget.timezone}" }, { now });
+  assert.equal(plan()[0].card.scheduledAt, Date.parse("2026-09-18T01:00:00Z"));
+});
+
+test("an exact release moment can be set per video", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const timed = structuredClone(release);
+  timed.spec.stages.find((entry) => entry.id === "publish-feedback").releaseAt = "${item.publishAt}";
+  const instance = activeInstance(timed);
+  instance.inputs.deliveryMode = "publish";
+  instance.inputs.publicationTarget = publicationTarget();
+  const contentItems = twoItems().map((item, index) => ({
+    ...item,
+    route: "SCENE_EDIT",
+    publishAt: index === 0 ? "2026-09-18T01:00:00Z" : "2026-09-19T01:00:00Z",
+  }));
+  const contentItemRuns = contentItems.flatMap((item) => doneThrough(item.id, "review"));
+  const args = { release: timed, instance, runs: [{ stageId: "plan", status: "done" }], contentItems, contentItemRuns };
+  instance.approvals = planNextActions(args)
+    .filter((action) => action.type === "request_approval")
+    .map((action) => ({ stageId: "publish-feedback", contentItemId: action.contentItemId, ...action.approval, status: "approved" }));
+  const actions = planNextActions(args);
+  // One device serializes the two, so only the first is planned; it carries its
+  // own moment rather than the project's.
+  assert.equal(actions[0].contentItemId, "video-ai-01");
+  assert.equal(actions[0].card.scheduledAt, Date.parse("2026-09-18T01:00:00Z"));
+});
+
+test("a stage the board is already holding is not planned a second time", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const now = Date.parse("2026-09-17T18:00:00Z");
+  const { plan, contentItems } = publishAt(release, { dailyAt: "21:00", timezone: NY }, { now });
+  const held = [{ contentItemId: contentItems[0].id, stageId: "publish-feedback", status: "scheduled" }];
+  // Without "scheduled" counting as present work, every pass re-plans the stage
+  // and asks the board for another card.
+  assert.deepEqual(plan(held), []);
+});
+
+test("a stage held for release does not consume the project's concurrency", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const now = Date.parse("2026-09-17T18:00:00Z");
+  const { plan, contentItems } = publishAt(release, { dailyAt: "21:00", timezone: NY }, { now });
+  const held = Array.from({ length: release.spec.concurrency.perInstance }, () => ({
+    contentItemId: contentItems[0].id, stageId: "publish-feedback", status: "scheduled",
+  }));
+  // Held cards are waiting on a clock, not on a worker, so they must not stand
+  // in the way of the rest of the project.
+  assert.equal(planNextActions({
+    release, instance: activeInstance(release), runs: [], contentItems: twoItems(), contentItemRuns: held,
+    now: new Date(now),
+  }).length > 0, true);
+});
+
+test("a release time that cannot be resolved fails validation instead of publishing now", async () => {
+  const workflow = await loadWorkflow(fixture);
+  const stage = workflow.spec.stages.find((entry) => entry.id === "publish-feedback");
+  for (const [label, spec] of [
+    ["a twelve-hour clock", { dailyAt: "9pm", timezone: NY }],
+    ["an unknown zone", { dailyAt: "21:00", timezone: "America/Nowhere" }],
+    ["a missing zone", { dailyAt: "21:00" }],
+    ["a non-timestamp", 42],
+  ]) {
+    stage.releaseAt = spec;
+    const issues = validateWorkflow(workflow);
+    assert.ok(
+      issues.some((entry) => entry.code === "stage.releaseAt.invalid"),
+      `${label} must be rejected at publish time`,
+    );
+  }
+  // An expression is only resolvable against a project, so it passes here.
+  stage.releaseAt = { dailyAt: "21:00", timezone: "${input.publicationTarget.timezone}" };
+  assert.deepEqual(validateWorkflow(workflow).filter((entry) => entry.code === "stage.releaseAt.invalid"), []);
+});

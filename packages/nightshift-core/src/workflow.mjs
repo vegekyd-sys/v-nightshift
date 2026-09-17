@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import YAML from "yaml";
+import { resolveReleaseAt } from "./release-schedule.mjs";
 
 const ACTORS = new Set(["agent", "human", "system", "timer"]);
 const STAGE_SCOPES = new Set(["project", "content-item"]);
@@ -180,6 +181,7 @@ export function validateWorkflow(document) {
         ),
       );
     }
+    validateReleaseAt(stage, path, issues);
     if (!ACTORS.has(stage.actor)) {
       issues.push(
         issue(
@@ -382,6 +384,39 @@ export function interpolate(template, values) {
     }
     return String(value);
   });
+}
+
+// A timed release that fails to parse must be a publish-time error, not a
+// stage that quietly runs immediately. Both spellings are checked; `waitUntil`
+// is the older name for the absolute form.
+function validateReleaseAt(stage, path, issues) {
+  const spec = stage.releaseAt ?? stage.waitUntil ?? null;
+  if (spec === null || spec === undefined) return;
+  const field = stage.releaseAt !== undefined ? "releaseAt" : "waitUntil";
+  if (typeof spec === "string") {
+    if (!spec.trim()) {
+      issues.push(issue("stage.releaseAt.invalid", `${path}.${field}`, `${field} must not be empty`));
+    }
+    return;
+  }
+  if (!isObject(spec)) {
+    issues.push(issue("stage.releaseAt.invalid", `${path}.${field}`,
+      `${field} must be a timestamp expression or an object with dailyAt and timezone`));
+    return;
+  }
+  // A literal recurring release can be checked now. One built from an
+  // expression can only be checked when a project supplies the value.
+  try {
+    resolveReleaseAt(spec, { instance: { inputs: {} }, contentItem: {}, now: Date.now() });
+  } catch (error) {
+    if (!containsExpression(spec)) {
+      issues.push(issue("stage.releaseAt.invalid", `${path}.${field}`, error.message));
+    }
+  }
+}
+
+function containsExpression(spec) {
+  return Object.values(spec).some((value) => typeof value === "string" && value.includes("${"));
 }
 
 function validateOutputContracts(stage, path, issues) {

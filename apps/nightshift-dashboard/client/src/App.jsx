@@ -18,6 +18,10 @@ import { api } from "./api.js";
 import { Drawer, EmptyColumn, Icons, Metric, Sidebar, WorkCard } from "./components.jsx";
 
 const columns = [
+  // Cards the board is holding for a timed release. Without a column of their
+  // own they vanish from the board, which is the one thing a scheduled release
+  // must not do: the whole point is that a queued publication stays visible.
+  ["scheduled", "Scheduled", ["scheduled"]],
   ["ready", "Ready", ["triage", "backlog", "todo", "planned", "ready"]],
   ["running", "Running", ["running"]],
   ["review", "Review", ["review"]],

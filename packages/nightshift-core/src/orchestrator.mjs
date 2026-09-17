@@ -1,10 +1,14 @@
 import { createHash } from "node:crypto";
 import { handoffManifestExample, stageHandoffContract, stageHandoffPath } from "./handoff.mjs";
 import { interpolate, stageEnabled, stageSkills } from "./workflow.mjs";
+import { resolveReleaseAt } from "./release-schedule.mjs";
 
 const ACTIVE_STATUSES = new Set(["ready", "running"]);
 export const WORKBOARD_NOTES_LIMIT = 12000;
+// A card the native board is holding for a timed release is present work, not
+// missing work. Leave "scheduled" out and every pass re-plans the same stage.
 const PRESENT_STATUSES = new Set([
+  "scheduled",
   "ready",
   "running",
   "review",
@@ -96,6 +100,7 @@ export function planNextActions({
             resourceKey,
             contentItems,
             dependencyCardIdsForContentItem(stage, stageById, latestRuns, latestItemRuns, contentItem.id),
+            now,
           ),
         });
         if (resourceKey) reservedResources.add(resourceKey);
@@ -119,16 +124,6 @@ export function planNextActions({
       continue;
     }
     if (!dependenciesDoneForProject(stage, stageById, latestRuns, latestItemRuns, contentItems, instance)) continue;
-
-    if (stage.waitUntil && !timerReady(stage.waitUntil, instance, now)) {
-      actions.push({
-        type: "schedule_timer",
-        instanceId: instance.id,
-        stageId: stage.id,
-        waitUntil: resolveExpression(stage.waitUntil, instance),
-      });
-      continue;
-    }
 
     const missingApproval = requiredApproval(stage, instance, now);
     if (missingApproval) {
@@ -157,6 +152,7 @@ export function planNextActions({
           null,
           contentItems,
           dependencyCardIdsForProject(stage, stageById, latestRuns, latestItemRuns, contentItems),
+          now,
         ),
       });
       continue;
@@ -179,6 +175,7 @@ export function planNextActions({
           resourceKey,
           contentItems,
           dependencyCardIdsForProject(stage, stageById, latestRuns, latestItemRuns, contentItems),
+          now,
         ),
       });
       if (resourceKey) reservedResources.add(resourceKey);
@@ -188,14 +185,23 @@ export function planNextActions({
   return actions;
 }
 
-function cardPayload(release, instance, stage, status, contentItem = null, resourceKey = null, contentItems = [], parents = []) {
+function cardPayload(release, instance, stage, status, contentItem = null, resourceKey = null, contentItems = [], parents = [], now = new Date()) {
   const inputHash = instance.inputHash ?? hashJson(instance.inputs ?? {});
   const agentRole = stage.agentRole ?? release.spec.ownerAgentRole;
   const assignedAgent = stage.actor === "agent" ? instance.agentBindings?.[agentRole] : null;
   if (stage.actor === "agent" && !assignedAgent) {
     throw new Error(`Missing agent binding for role ${agentRole}`);
   }
+  // A timed stage is held by the board, not by withholding the card: the card
+  // exists, is visible, can be approved and re-timed, and the board refuses to
+  // start it early. `waitUntil` is the older spelling of the same field.
+  const releaseAt = resolveReleaseAt(stage.releaseAt ?? stage.waitUntil ?? null, {
+    instance,
+    contentItem,
+    now: now instanceof Date ? now.getTime() : now,
+  });
   return {
+    ...(releaseAt === null ? {} : { scheduledAt: releaseAt }),
     title: contentItem
       ? `${instance.name ?? instance.id}｜${contentItem.title}｜${stage.title}`
       : `${instance.name ?? instance.id}｜${stage.title}`,
@@ -542,16 +548,6 @@ export function resolveApprovalBinding(stage, instance, contentItemId = null) {
 function resolvePath(root, path) {
   if (typeof path !== "string" || !path.trim()) return undefined;
   return path.split(".").reduce((value, key) => value?.[key], root);
-}
-
-function timerReady(expression, instance, now) {
-  const resolved = resolveExpression(expression, instance);
-  const timestamp = new Date(resolved);
-  return !Number.isNaN(timestamp.valueOf()) && timestamp <= now;
-}
-
-function resolveExpression(expression, instance) {
-  return interpolate(expression, { input: instance.inputs ?? {}, instance });
 }
 
 function dependenciesDoneForProject(stage, stageById, projectRuns, itemRuns, contentItems, instance) {

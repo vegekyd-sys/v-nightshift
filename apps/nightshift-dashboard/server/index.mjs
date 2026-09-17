@@ -18,6 +18,7 @@ import { loadPublicAuth, requiresPublicAuth, verifyPublicAuth, resolveOperatorId
 import { resolveCardDecisionContext } from "./decision-context.mjs";
 import {
   CARD_LABEL_MAX,
+  cardIsStartable,
   deliverableArtifactPaths,
   auditNightShiftGovernance,
   findNightShiftExternalOperation,
@@ -834,7 +835,7 @@ function scheduleSchedulerRetry() {
 
 function probeDispatchCapacity() {
   if (capacityProbePromise || shuttingDown) return capacityProbePromise;
-  if (dispatchPressureGuard.lastProbe && !cardCache.some(card => card.status === "ready")) return;
+  if (dispatchPressureGuard.lastProbe && !cardCache.some(card => cardIsStartable(card, Date.now()))) return;
   capacityProbePromise = (async () => {
     const running = activeCardCount(cardCache);
     let pressure;
@@ -845,7 +846,7 @@ function probeDispatchCapacity() {
     } catch (error) {
       pressure = dispatchPressureGuard.recordProbe({ error: error.message, running });
     }
-    if (pressure.dispatchAllowed && pressure.availableStarts > 0 && cardCache.some((card) => card.status === "ready")) {
+    if (pressure.dispatchAllowed && pressure.availableStarts > 0 && cardCache.some((card) => cardIsStartable(card, Date.now()))) {
       changeScheduler.enqueue("gateway.capacity");
     }
   })().finally(() => {
