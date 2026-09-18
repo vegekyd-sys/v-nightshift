@@ -221,3 +221,67 @@ test("a routine pass reads only what can change; the repair pass still reads eve
     "the repair sweep still sees every card of a project it schedules");
   assert.ok(!repair.includes("stale-running"), "a run that has not moved for hours is not work in flight");
 });
+
+// An approval card is not a run, so the run records never mention it. The
+// ledger is its only record, and the scheduler's card scope is what the
+// idempotency scan gets to look at. Leave the ledger out and every pass fails
+// to find the card it created last pass and asks the board for another one: on
+// V this produced 4,628 duplicate approval cards for one project in 15 hours.
+test("the scheduler reads the approval cards its projects own, not only their runs", () => {
+  const store = {
+    listInstances: () => [{ id: "NS-VIG", status: "active" }],
+    listStageRuns: () => [{ stageId: "produce", status: "done", cardId: "run-card" }],
+    listContentItemRuns: () => [],
+    listActionCardIds: (instanceId) => instanceId === "NS-VIG" ? ["approval-card"] : [],
+  };
+  assert.deepEqual(schedulerCardIds(store, null, { fullSweep: true }).sort(), ["approval-card", "run-card"]);
+  // A routine pass drops terminal runs but must still carry the approval card,
+  // which is exactly the card that keeps being duplicated.
+  assert.deepEqual(schedulerCardIds(store, null, { fullSweep: false }), ["approval-card"]);
+});
+
+test("a project with only an approval card outstanding is still in the scheduler scope", () => {
+  const store = {
+    listInstances: () => [{ id: "NS-VIG", status: "active" }],
+    listStageRuns: () => [],
+    listContentItemRuns: () => [],
+    listActionCardIds: () => ["approval-card"],
+  };
+  assert.deepEqual(schedulerCardIds(store, null, { fullSweep: false }), ["approval-card"]);
+});
+
+test("a store without the ledger still works", () => {
+  const store = {
+    listInstances: () => [{ id: "NS-VIG", status: "active" }],
+    listStageRuns: () => [{ stageId: "produce", status: "ready", cardId: "run-card" }],
+    listContentItemRuns: () => [],
+  };
+  assert.deepEqual(schedulerCardIds(store, null, { fullSweep: false }), ["run-card"]);
+});
+
+// The seam that actually failed on V: the scheduler hands one shared card list
+// to every project tick, and that list is what the idempotency scan sees. If
+// the approval card is missing from it, the tick cannot find the card it made
+// last pass, so it makes another one.
+test("the shared card list handed to each project tick contains its approval card", async () => {
+  const requested = [];
+  const cards = [{ id: "approval-card", status: "review", labels: ["instance:NS-VIG", "nightshift:approval"] }];
+  const seen = [];
+  await runSchedulerPass({
+    store: {
+      listInstances: () => [{ id: "NS-VIG", status: "active" }],
+      getInstanceControl: () => ({ automaticDispatch: true, fault: null }),
+      setInstanceControl() {},
+      listStageRuns: () => [],
+      listContentItemRuns: () => [],
+      listActionCardIds: () => ["approval-card"],
+      appendEvent() {},
+    },
+    workboard: { listCards() { throw new Error("Unexpected whole-board scan"); } },
+    refreshCards: async ({ cardIds }) => { requested.push(...cardIds); return cards; },
+    syncContentItemsManifest: async () => {},
+    runtime: { tick: async (id, options) => { seen.push(options.cards); return { applied: [], dispatch: null }; } },
+  });
+  assert.ok(requested.includes("approval-card"), "the pass must read the approval card");
+  assert.deepEqual(seen[0].map((card) => card.id), ["approval-card"]);
+});

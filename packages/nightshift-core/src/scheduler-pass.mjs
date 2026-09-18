@@ -118,12 +118,23 @@ export function schedulerCardIds(store, activeInstances = null, { fullSweep = tr
   const ids = [];
   for (const instance of store.listInstances()) {
     const runs = [...store.listStageRuns(instance.id), ...store.listContentItemRuns(instance.id)];
+    const ledger = store.listActionCardIds?.(instance.id) ?? [];
     const include = activeIds.has(instance.id) || runs.some((run) => runIsLive(run, nowMs));
     if (!include) continue;
     for (const run of runs) {
       if (typeof run.cardId !== "string" || !run.cardId) continue;
       if (!fullSweep && TERMINAL_RUN.has(run.status)) continue;
       ids.push(run.cardId);
+    }
+    // An approval card is not a run, so no run record names it and the terminal
+    // filter above can never reach it. The ledger is its only record, and this
+    // set is what the idempotency scan gets to look at. Leaving it out is how
+    // one project created 4,628 duplicate approval cards in 15 hours on V: each
+    // pass failed to find the card it had created on the previous pass. The
+    // ledger holds one row per action key, so this adds a bounded number of ids,
+    // not one per duplicate.
+    for (const cardId of ledger) {
+      if (typeof cardId === "string" && cardId) ids.push(cardId);
     }
   }
   return [...new Set(ids)];
