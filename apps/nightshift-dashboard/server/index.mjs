@@ -16,6 +16,7 @@ import { dirname, extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadPublicAuth, requiresPublicAuth, verifyPublicAuth, resolveOperatorIdentity } from "./public-auth.mjs";
 import { resolveCardDecisionContext } from "./decision-context.mjs";
+import { sendJson } from "./http-json.mjs";
 import {
   CARD_LABEL_MAX,
   cardIsStartable,
@@ -244,7 +245,7 @@ async function handleApi(request, response, url) {
       instances: instances.map(withInstanceLinks),
       links: dashboardLinks(),
       workflows: store.listReleases().map(withWorkflowLinks),
-    });
+    }, { revalidate: true });
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/workflows") {
@@ -1556,13 +1557,8 @@ async function serveStatic(response, pathname) {
   response.end(content);
 }
 
-function json(response, status, value) {
-  response.writeHead(status, {
-    "Cache-Control": "no-store",
-    "Content-Type": "application/json; charset=utf-8",
-    "X-Content-Type-Options": "nosniff",
-  });
-  response.end(JSON.stringify(value));
+function json(response, status, value, options) {
+  sendJson(response.req, response, status, value, options);
 }
 
 function contentType(path) {

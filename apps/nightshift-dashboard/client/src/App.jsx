@@ -63,8 +63,20 @@ export function App() {
 
   useEffect(() => {
     refresh(false).catch(() => undefined);
-    const timer = setInterval(() => refresh(false).catch(() => undefined), 10000);
-    return () => clearInterval(timer);
+    // A hidden tab keeps polling the whole board otherwise; several forgotten
+    // tabs were enough to pin the host's public egress at its cap.
+    const visible = () => typeof document === "undefined" || document.visibilityState === "visible";
+    const timer = setInterval(() => {
+      if (visible()) refresh(false).catch(() => undefined);
+    }, 10000);
+    const onVisibility = () => {
+      if (visible()) refresh(false).catch(() => undefined);
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, []);
 
   useEffect(() => {
