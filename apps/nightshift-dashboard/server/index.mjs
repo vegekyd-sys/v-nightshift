@@ -70,6 +70,8 @@ const dispatchInitialMaxActive = positiveInteger(process.env.NIGHTSHIFT_DISPATCH
 // Elastic admission knobs. Interactive slots are Worker sessions never handed to
 // Night Shift; the memory reserve is host RAM kept free before a new job starts.
 const reservedInteractiveSlots = positiveInteger(process.env.NIGHTSHIFT_RESERVED_INTERACTIVE_SLOTS, 9, 128);
+// Workers, not Session slots, are what an interactive turn actually needs.
+const reservedInteractiveWorkers = positiveInteger(process.env.NIGHTSHIFT_RESERVED_INTERACTIVE_WORKERS, 3, 64);
 const hostMemoryReserveMiB = positiveInteger(process.env.NIGHTSHIFT_HOST_MEMORY_RESERVE_MIB, 4096, 262_144);
 const hostMemoryReservePercent = positiveInteger(process.env.NIGHTSHIFT_HOST_MEMORY_RESERVE_PERCENT, 40, 90);
 // How soon to retry after a scheduler pass fails, doubling up to the ceiling.
@@ -117,6 +119,7 @@ const dispatchPressureGuard = new DispatchPressureGuard({
   maxActive: schedulerMaxWorkboardActive,
   redLatencyMs: gatewayRedLatencyMs,
   reservedInteractiveSlots,
+  reservedInteractiveWorkers,
 });
 const probeHostPressure = createHostPressureProbe({
   gatewayUrl: workboard.gatewayUrl,
@@ -207,6 +210,7 @@ async function handleApi(request, response, url) {
       dispatchPressure: dispatchPressureGuard.snapshot(activeCardCount(cardCache)),
       gatewayCapacityProbeIntervalMs,
       reservedInteractiveSlots,
+      reservedInteractiveWorkers,
       hostMemoryReserveMiB,
       hostMemoryReservePercent,
       cardRefreshMinIntervalMs,

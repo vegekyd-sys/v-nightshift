@@ -204,3 +204,41 @@ test("periodic red pauses permit bounded progress with healthy intervals while s
     assert.equal(guard.recordProbe({ latencyMs: 1_500, running: 0, workerPool: { capacity: 45, active: 0, queued: 0 } }).availableStarts, 0);
   }
 });
+
+// The pool hands a whole Worker to each Session before it packs a second one
+// into any process, so N running cards hold N Workers, not N/sessionsPerWorker.
+// Reserving interactive room in Session slots therefore protects a resource
+// that is not the bottleneck: on V, 7 cards held 7 of 11 live Workers and left
+// exactly one free, while this guard still computed 45 - 9 - 7 = 29 spare.
+test("interactive headroom is counted in Workers, not Session slots", () => {
+  const guard = new DispatchPressureGuard({ initialMaxActive: 30, maxActive: 30, reservedInteractiveWorkers: 3 });
+  // A pool of 15 Workers with 11 alive and 10 owned: one Worker is free, but
+  // the Session arithmetic says 45 - 9 - 7 = 29.
+  guard.recordProbe({
+    latencyMs: 80,
+    running: 7,
+    workerPool: { capacity: 45, active: 10, queued: 0, workerCapacity: 15, workersBusy: 10 },
+  });
+  const snapshot = guard.snapshot(7);
+  // 15 Workers - 3 reserved - 10 busy = 2 left. The Session arithmetic would
+  // have said 29, so assert the Worker number itself, not availableStarts,
+  // which the start-credit budget clamps to a small value either way.
+  assert.equal(snapshot.workerHeadroom, 2);
+});
+
+test("a pool with no free Workers admits nothing even when Session slots look free", () => {
+  const guard = new DispatchPressureGuard({ initialMaxActive: 30, maxActive: 30, reservedInteractiveWorkers: 3 });
+  guard.recordProbe({
+    latencyMs: 80,
+    running: 12,
+    workerPool: { capacity: 45, active: 15, queued: 0, workerCapacity: 15, workersBusy: 15 },
+  });
+  assert.equal(guard.snapshot(12).availableStarts, 0);
+});
+
+test("a pool that does not report Worker occupancy keeps the Session arithmetic", () => {
+  const guard = new DispatchPressureGuard({ initialMaxActive: 30, maxActive: 30 });
+  guard.recordProbe({ latencyMs: 80, running: 3, workerPool: { capacity: 45, active: 3, queued: 0 } });
+  assert.equal(guard.snapshot(3).workerHeadroom, null);
+  assert.equal(guard.snapshot(3).availableStarts > 0, true);
+});

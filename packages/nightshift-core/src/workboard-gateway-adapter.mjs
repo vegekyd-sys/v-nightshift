@@ -217,10 +217,17 @@ export class WorkboardGatewayAdapter {
       if (!Number.isSafeInteger(value) || value < 0) throw new Error("Worker pool occupancy is unavailable");
       return value;
     };
+    // Session slots are not the binding resource. The pool gives each Session a
+    // whole Worker before it packs a second one into any process, so report the
+    // Worker numbers too and let the guard reserve interactive room in the unit
+    // the pool actually allocates.
+    const workerCapacity = Number.isSafeInteger(status.maxWorkers) ? status.maxWorkers : undefined;
+    const workersBusy = status.workers.filter((worker) => count(worker.assignedSessions ?? 0) > 0).length;
     return {latencyMs, workerPool: {
       capacity,
       active: status.workers.reduce((sum, worker) => sum + count(worker.activeCount), 0),
       queued: count(status.pending) + status.workers.reduce((sum, worker) => sum + count(worker.queued), 0),
+      ...(workerCapacity === undefined ? {} : { workerCapacity, workersBusy }),
     }};
   }
 
