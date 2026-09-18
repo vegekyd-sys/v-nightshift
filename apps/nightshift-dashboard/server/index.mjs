@@ -1006,6 +1006,8 @@ async function refreshVisibleCards({ includeArchived = false } = {}) {
   return cardCache;
 }
 
+let cardCacheDigest = null;
+
 async function refreshCards({ cardIds = null } = {}) {
   const scoped = Array.isArray(cardIds);
   const normalizedCardIds = scoped ? [...new Set(cardIds)].sort() : null;
@@ -1025,7 +1027,14 @@ async function refreshCards({ cardIds = null } = {}) {
     } else {
       cardCache = cards;
     }
-    cardsUpdatedAt = new Date().toISOString();
+    // Only move the timestamp when the board actually changed: it is part of
+    // the bootstrap body, so bumping it every refresh would change the ETag
+    // and turn every poll into a full download even on a quiet board.
+    const digest = createHash("sha1").update(JSON.stringify(cardCache)).digest("base64url");
+    if (digest !== cardCacheDigest) {
+      cardCacheDigest = digest;
+      cardsUpdatedAt = new Date().toISOString();
+    }
     return cards;
   }).finally(() => {
     cardRefreshPromise = null;
