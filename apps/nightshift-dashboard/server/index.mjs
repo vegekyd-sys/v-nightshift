@@ -16,6 +16,7 @@ import { dirname, extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadPublicAuth, requiresPublicAuth, verifyPublicAuth, resolveOperatorIdentity } from "./public-auth.mjs";
 import { resolveCardDecisionContext } from "./decision-context.mjs";
+import { sendJson } from "./http-json.mjs";
 import {
   CARD_LABEL_MAX,
   cardIsStartable,
@@ -244,7 +245,7 @@ async function handleApi(request, response, url) {
       instances: instances.map(withInstanceLinks),
       links: dashboardLinks(),
       workflows: store.listReleases().map(withWorkflowLinks),
-    });
+    }, { revalidate: true });
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/workflows") {
@@ -1005,6 +1006,8 @@ async function refreshVisibleCards({ includeArchived = false } = {}) {
   return cardCache;
 }
 
+let cardCacheDigest = null;
+
 async function refreshCards({ cardIds = null } = {}) {
   const scoped = Array.isArray(cardIds);
   const normalizedCardIds = scoped ? [...new Set(cardIds)].sort() : null;
@@ -1024,7 +1027,14 @@ async function refreshCards({ cardIds = null } = {}) {
     } else {
       cardCache = cards;
     }
-    cardsUpdatedAt = new Date().toISOString();
+    // Only move the timestamp when the board actually changed: it is part of
+    // the bootstrap body, so bumping it every refresh would change the ETag
+    // and turn every poll into a full download even on a quiet board.
+    const digest = createHash("sha1").update(JSON.stringify(cardCache)).digest("base64url");
+    if (digest !== cardCacheDigest) {
+      cardCacheDigest = digest;
+      cardsUpdatedAt = new Date().toISOString();
+    }
     return cards;
   }).finally(() => {
     cardRefreshPromise = null;
@@ -1556,13 +1566,8 @@ async function serveStatic(response, pathname) {
   response.end(content);
 }
 
-function json(response, status, value) {
-  response.writeHead(status, {
-    "Cache-Control": "no-store",
-    "Content-Type": "application/json; charset=utf-8",
-    "X-Content-Type-Options": "nosniff",
-  });
-  response.end(JSON.stringify(value));
+function json(response, status, value, options) {
+  sendJson(response.req, response, status, value, options);
 }
 
 function contentType(path) {
