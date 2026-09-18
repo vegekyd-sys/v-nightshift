@@ -566,3 +566,16 @@ test("a release time that cannot be resolved fails validation instead of publish
   stage.releaseAt = { dailyAt: "21:00", timezone: "${input.publicationTarget.timezone}" };
   assert.deepEqual(validateWorkflow(workflow).filter((entry) => entry.code === "stage.releaseAt.invalid"), []);
 });
+
+test("accepts bare executable names in requiredCommands and rejects paths or shell fragments", async () => {
+  const declared = structuredClone(await loadWorkflow(fixture));
+  declared.spec.requiredCommands = ["scene", "makaron-cli", "lark-cli"];
+  declared.spec.stages[0].requiredCommands = ["lark-cli"];
+  assert.deepEqual(validateWorkflow(declared).filter((entry) => entry.code === "requiredCommands.invalid"), []);
+
+  const invalid = structuredClone(await loadWorkflow(fixture));
+  invalid.spec.requiredCommands = ["/usr/bin/scene"];
+  invalid.spec.stages[0].requiredCommands = [];
+  const paths = validateWorkflow(invalid).filter((entry) => entry.code === "requiredCommands.invalid").map((entry) => entry.path);
+  assert.deepEqual(paths, ["spec.requiredCommands", "spec.stages[0].requiredCommands"]);
+});

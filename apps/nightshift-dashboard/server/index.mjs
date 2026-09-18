@@ -31,6 +31,8 @@ import {
   normalizeStageHandoff,
   presentStageHandoff,
   redactSensitiveInputs,
+  missingCommands,
+  requiredCommands,
   requiredSkillsByRole,
   resolveNightShiftCardContext,
   resolveNightShiftOperationKeys,
@@ -504,7 +506,7 @@ async function handleApi(request, response, url) {
     try {
       validateProjectRequest(release?.manifest, body);
       const preflight = await preflightProjectSkills(release.manifest, body);
-      json(response, preflight.ok ? 200 : 422, preflight.ok ? preflight : { ...preflight, error: "Required Night Shift Skills are unavailable" });
+      json(response, preflight.ok ? 200 : 422, preflight.ok ? preflight : { ...preflight, error: preflightError(preflight) });
     } catch (error) {
       json(response, 422, { error: error.message, ok: false });
     }
@@ -516,7 +518,7 @@ async function handleApi(request, response, url) {
     validateProjectRequest(release?.manifest, body);
     const preflight = await preflightProjectSkills(release.manifest, body);
     if (!preflight.ok) {
-      json(response, 422, { ...preflight, error: "Required Night Shift Skills are unavailable" });
+      json(response, 422, { ...preflight, error: preflightError(preflight) });
       return;
     }
     if (body.automaticDispatch !== undefined && typeof body.automaticDispatch !== "boolean") throw new Error("automaticDispatch must be a boolean");
@@ -907,6 +909,14 @@ async function writeProjectInputsSnapshot(instance) {
   await rename(temporaryPath, snapshotPath);
 }
 
+function preflightError(preflight) {
+  const missingSkills = preflight.agents.some((entry) => entry.missingSkills.length > 0);
+  const missingCommands = preflight.commands?.missing?.length > 0;
+  if (missingSkills && missingCommands) return "Required Night Shift Skills and commands are unavailable";
+  if (missingCommands) return `Required commands are not on PATH for the worker host: ${preflight.commands.missing.join(", ")}`;
+  return "Required Night Shift Skills are unavailable";
+}
+
 async function preflightProjectSkills(release, project) {
   const agents = [];
   for (const [role, requiredSkills] of Object.entries(requiredSkillsByRole(release, project.inputs ?? {}))) {
@@ -924,9 +934,12 @@ async function preflightProjectSkills(release, project) {
       role,
     });
   }
+  const commands = requiredCommands(release, project.inputs ?? {});
+  const missing = missingCommands(commands);
   return {
     agents,
-    ok: agents.every((entry) => entry.missingSkills.length === 0),
+    commands: { missing, required: commands },
+    ok: agents.every((entry) => entry.missingSkills.length === 0) && missing.length === 0,
     workflowSha256: release.metadata.workflowSha256,
   };
 }
