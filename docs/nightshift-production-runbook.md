@@ -36,6 +36,7 @@ Night Shift starts new native cards only while the Gateway host has headroom, an
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `NIGHTSHIFT_RESERVED_INTERACTIVE_SLOTS` | 9 | Worker sessions never handed to Night Shift; foreground load above this shrinks Night Shift capacity further. |
+| `NIGHTSHIFT_RESERVED_INTERACTIVE_WORKERS` | 3 | Whole Workers never handed to Night Shift. The pool gives each Session its own Worker before packing a second into any process, so N running cards hold N Workers. Reserving only Session slots left one free Worker on V while the Session arithmetic still reported 29 spare. |
 | `NIGHTSHIFT_HOST_MEMORY_RESERVE_PERCENT` | 40 | Percent of host RAM that must stay available before a new job is admitted. |
 | `NIGHTSHIFT_HOST_MEMORY_RESERVE_MIB` | 4096 | Absolute floor for the same reserve. The larger of the two applies. |
 | `NIGHTSHIFT_DISPATCH_INITIAL_MAX_ACTIVE` | 3 | Concurrency the ramp starts from after a restart or a red probe. |

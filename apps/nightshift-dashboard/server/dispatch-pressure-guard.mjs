@@ -12,6 +12,7 @@ export class DispatchPressureGuard {
     samplesToGrow = 2,
     probeMaxAgeMs = 10_000,
     reservedInteractiveSlots = 9,
+    reservedInteractiveWorkers = 3,
   } = {}) {
     this.baselineGreenMultiplier = positiveNumber(baselineGreenMultiplier, "baselineGreenMultiplier");
     this.baselineRedMultiplier = positiveNumber(baselineRedMultiplier, "baselineRedMultiplier");
@@ -38,6 +39,7 @@ export class DispatchPressureGuard {
     this.startCredits = 0;
     this.probeMaxAgeMs = positiveInteger(probeMaxAgeMs, "probeMaxAgeMs");
     this.reservedInteractiveSlots = positiveInteger(reservedInteractiveSlots, "reservedInteractiveSlots");
+    this.reservedInteractiveWorkers = positiveInteger(reservedInteractiveWorkers, "reservedInteractiveWorkers");
     this.workerPool = null;
     this.hostPressure = null;
   }
@@ -140,9 +142,20 @@ export class DispatchPressureGuard {
     const hold = this.now() < this.holdUntilMs;
     const thresholds = this.effectiveThresholds();
     const foreground = Math.max(0, (this.workerPool?.active ?? running) - running);
-    const capacity = this.workerPool
+    const sessionCapacity = this.workerPool
       ? Math.max(0, this.workerPool.capacity - Math.max(this.reservedInteractiveSlots, foreground) - running)
       : Infinity;
+    // The pool gives each Session a whole Worker before it packs a second one
+    // into any process, so N running cards hold N Workers, not N divided by
+    // sessionsPerWorker. Counting interactive headroom in Session slots
+    // therefore protects a resource that is not the bottleneck: on V, 7 cards
+    // held 7 of 11 live Workers and left one free, while the Session
+    // arithmetic still reported 45 - 9 - 7 = 29 spare and kept dispatching.
+    const workerHeadroom = Number.isSafeInteger(this.workerPool?.workerCapacity)
+        && Number.isSafeInteger(this.workerPool?.workersBusy)
+      ? Math.max(0, this.workerPool.workerCapacity - this.reservedInteractiveWorkers - this.workerPool.workersBusy)
+      : Infinity;
+    const capacity = Math.min(sessionCapacity, workerHeadroom);
     const poolBusy = (this.workerPool?.queued ?? 0) > 0;
     const availableStarts = !probed || hold || this.recoveringPressure || poolBusy ? 0
       : Math.min(this.startCredits, Math.max(0, this.targetMaxActive - Math.max(0, running)), capacity);
@@ -150,6 +163,8 @@ export class DispatchPressureGuard {
       workerPool: this.workerPool,
       hostPressure: this.hostPressure,
       reservedInteractiveSlots: this.reservedInteractiveSlots,
+      reservedInteractiveWorkers: this.reservedInteractiveWorkers,
+      workerHeadroom: Number.isFinite(workerHeadroom) ? workerHeadroom : null,
       recoveringPressure: this.recoveringPressure,
       availableStarts: availableStarts,
       baselineLatencyMs: thresholds.baselineLatencyMs,
