@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { handoffManifestExample, stageHandoffContract, stageHandoffPath } from "./handoff.mjs";
 import { interpolate, stageEnabled, stageSkills } from "./workflow.mjs";
@@ -297,6 +298,10 @@ export function stageTimeoutSeconds(value) {
   return Number(match[1]) * unitSeconds[match[2].toLowerCase()];
 }
 
+// Absolute, so a Worker whose cwd is the agent workspace can still run it.
+const DUPLICATE_CHECK_SCRIPT = fileURLToPath(new URL("../../../scripts/check-video-duplicates.mjs", import.meta.url));
+const NIGHTSHIFTCTL_SCRIPT = fileURLToPath(new URL("../../../scripts/nightshiftctl.mjs", import.meta.url));
+
 export function buildAgentBrief(release, instance, stage, contentItem = null, contentItems = []) {
   const safeInputs = redactSensitiveInputs(instance.inputs ?? {});
   const projectInputsPath = instance.inputs?.nightshift?.projectInputsPath;
@@ -337,13 +342,12 @@ export function buildAgentBrief(release, instance, stage, contentItem = null, co
     `Stage: ${stage.id} — ${stage.title}`,
     ...(contentItem ? [`Content item: ${JSON.stringify(summarizeContentItem(contentItem))}`] : []),
     `Objective: ${strategy?.description ?? stage.description ?? "Complete the declared stage."}`,
-    `Required skills (load in order): ${stageSkills(stage, contentItem?.route).join(", ") || "none"}`,
-    "Skill evidence gate: Workboard injects the declared Skill set into this attempt. Use the runtime's normal Skill-loading mechanism before acting and do not open undeclared Skill files. Explicit Skill read tool calls are retained as audit telemetry, but missing tool-call telemetry alone does not override verified outputs and completion checks.",
-    "Atomic attempt scope: this attempt owns only the current Workboard card and stage. Do not claim, heartbeat, block, complete, repair, or advance another card/stage. Completion is rejected if the Session transcript mutates a different card.",
+    // A Night Shift card runs as the same agent, with the same Skills, as a
+    // chat turn. The stage's Skills are a hint and an install-time dependency
+    // (checked by project preflight), not something to load before acting.
+    ...(stageSkills(stage, contentItem?.route).length ? [`Skills likely useful here: ${stageSkills(stage, contentItem?.route).join(", ")}`] : []),
     `Input summary: ${JSON.stringify(inlineInputs)}`,
-    ...(projectInputsPath
-      ? [`Authoritative project inputs: read ${projectInputsPath} before acting. The snapshot contains the complete redacted project brief and constraints; do not replace it with this summary.`]
-      : []),
+    ...(projectInputsPath ? [`Project inputs: ${projectInputsPath}`] : []),
     ...(stage.id === "plan" && instance.inputs?.nightshift?.contentItemsManifestPath
       ? [`Content backlog contract: write {"contentItems":[{"id":"stable-id","title":"...","route":"AI_GENERATE|SCENE_EDIT|null","status":"planned|routing"}]} to ${instance.inputs.nightshift.contentItemsManifestPath}. The control plane imports this file and fans out Workboard tasks.`]
       : []),
@@ -352,14 +356,13 @@ export function buildAgentBrief(release, instance, stage, contentItem = null, co
       : []),
     ...(itemDir ? [`Content item artifact directory: ${itemDir}`] : []),
     ...(handoffEnabled ? [
-      `Stage handoff inputs: ${upstreamHandoffPaths.length > 0 ? `read ${upstreamHandoffPaths.join(", ")} and every artifact they reference before acting` : "use the declared project inputs as the authoritative source"}.`,
+      ...(upstreamHandoffPaths.length > 0 ? [`Previous stage output: ${upstreamHandoffPaths.join(", ")}`] : []),
       `Stage handoff output: after finishing the declared outputs, write ${handoffPath} using exactly this v1 shape: ${JSON.stringify(handoffManifestExample({ instanceId: instance.id, contentItemId: contentItem?.id ?? null, release, stageId: stage.id }))}`,
-      "The handoff summary is for people; the referenced artifacts are authoritative. Do not silently drop, rewrite, or replace an upstream requirement.",
     ] : []),
     ...(stage.outputs?.includes("deliveryManifest") && itemDir
       ? [
           `Delivery contract: write exactly this v1 shape to ${itemDir}/deliverables.json (paths are relative to ${itemDir}): ${JSON.stringify(deliveryManifestExample(instance.id, contentItem))}`,
-          ...(contentItem.route === "SCENE_EDIT" ? [`Temporal duplicate gate: run node scripts/check-video-duplicates.mjs ${itemDir}/produce/final.mp4 --out ${itemDir}/produce/duplicate-check.json. A failed or missing report blocks completion.`] : []),
+          ...(contentItem.route === "SCENE_EDIT" ? [`Temporal duplicate gate: run node ${DUPLICATE_CHECK_SCRIPT} ${itemDir}/produce/final.mp4 --out ${itemDir}/produce/duplicate-check.json. A failed or missing report blocks completion.`] : []),
         ]
       : []),
     `Required outputs: ${(stage.outputs ?? []).join(", ") || "none"}`,
@@ -369,13 +372,9 @@ export function buildAgentBrief(release, instance, stage, contentItem = null, co
         ? [`Immutable approval bindings: ${JSON.stringify(redactSensitiveInputs(approvalBinding.values))}. Use this exact target; never guess or substitute another account or device.`]
         : []),
     ] : []),
-    ...(release.spec?.completion?.mode === "strict-v1" ? [
-      "Strict completion: the control plane will load every declared output artifact and evaluate every completeWhen rule from this Workflow. A summary, internal substitute, or claimed success cannot complete the card. JSON facts must be booleans or concrete values; URL outputs must put the real HTTPS URL directly in the handoff artifact field.",
-      ...Object.entries(stage.outputContracts ?? {}).map(([name, contract]) => `Output contract ${name}: ${JSON.stringify(contract)}`),
-    ] : []),
-    ...(stage.id === "brief" && itemDir ? [
-      `Brief output contract: read ${itemDir}/routeDecision.json and ${itemDir}/frozenInputManifest.json, then write ${itemDir}/finishedVideoBrief.md. It must explicitly record routeMatchesContentItem, inputsFrozen, and productionReady; include target duration, narrative structure, a shot table bound to exact frozen source_url/start_sec/end_sec values, TTS or no-TTS behavior, subtitle/audio rules, missing-footage handling, and final QC acceptance. Do not inspect Night Shift source code to infer this contract.`,
-    ] : []),
+    ...(release.spec?.completion?.mode === "strict-v1"
+      ? Object.entries(stage.outputContracts ?? {}).map(([name, contract]) => `Output contract ${name}: ${JSON.stringify(contract)}`)
+      : []),
     ...(stage.id === "deliver-download" && instanceDir ? [
       `Download delivery contract: aggregate every validated ContentItem deliverables.json and produce handoff into ${instanceDir}/deliver-download/delivery-package.zip; upload that exact package once under a stable instance-bound OSS object key; upsert one Base delivery row keyed by instance ${instance.id}; write ${instanceDir}/deliver-download/oss-delivery.json with uploaded=true and ${instanceDir}/deliver-download/base-delivery-receipt.json with recorded=true; and reference those concrete artifacts from the stage handoff.`,
       "This branch must not create human review work, request external-publication approval, publish content, call GeeLark, or invoke geelark-cloud-phone.",
@@ -383,9 +382,9 @@ export function buildAgentBrief(release, instance, stage, contentItem = null, co
     `Completion checks: ${(stage.completeWhen ?? []).join("; ") || "human decision"}`,
     `Safety: ${(stage.sideEffects ?? []).length ? `declared external side effects: ${stage.sideEffects.join(", ")}; ${stage.approval?.before ? `requires ${stage.approval.before} approval` : "no separate human approval gate"}` : "no declared external side effect"}`,
     ...((stage.sideEffects ?? []).length ? [
-      "External-operation gate: before the first paid/public/external call, compute a stable SHA-256 of the exact external request and run `node scripts/nightshiftctl.mjs operations reserve <Card id from Worker protocol> --request-hash <sha256>`. If the response is reused+succeeded, reuse its result and do not call the provider again. If it is reused+executing with an externalTaskId, resume by reading that external task and never submit a replacement. If it is reused+reserved without an externalTaskId, treat the outcome as ambiguous and block for readback instead of resubmitting. After provider submission run `operations checkpoint ... --status executing --external-task-id <id>`; after verified success run `operations checkpoint ... --status succeeded --result-json '<json>'`. The ledger is the only external side-effect checkpoint.",
+      `External-operation gate: before the first paid/public/external call, compute a stable SHA-256 of the exact external request and run \`node ${NIGHTSHIFTCTL_SCRIPT} operations reserve <Card id from Worker protocol> --request-hash <sha256>\`. If the response is reused+succeeded, reuse its result and do not call the provider again. If it is reused+executing with an externalTaskId, resume by reading that external task and never submit a replacement. If it is reused+reserved without an externalTaskId, treat the outcome as ambiguous and block for readback instead of resubmitting. After provider submission run \`operations checkpoint ... --status executing --external-task-id <id>\`; after verified success run \`operations checkpoint ... --status succeeded --result-json '<json>'\`. The ledger is the only external side-effect checkpoint.`,
     ] : []),
-    "Workboard completion safety: workboard heartbeat/complete/block and the equivalent Gateway RPCs mutate this real card. Never probe, test, or enumerate completion RPCs, and never use placeholder input such as summary=test. First finish every required output and verify every completion check. Only then call workboard_complete exactly once; if unavailable in an isolated Worker, call `openclaw gateway call workboard.cards.complete` exactly once with the real card id, claim token, and evidence summary. Block exactly once only for a genuine blocker. Do not search source code or inspect plugin internals. Never print the claim token.",
+    "Workboard completion safety: this attempt owns only this card. When the outputs are written, call workboard_complete exactly once (in an isolated Worker without that tool, `openclaw gateway call workboard.cards.complete` once with the real card id and claim token), or block once for a real blocker. Never probe, test, or enumerate completion RPCs, never use placeholder input such as summary=test, never touch another card, do not search source code or inspect plugin internals, and never print the claim token.",
     "Return a concise result with evidence links or an explicit blocker. Do not invent missing evidence.",
   ];
   const brief = lines.join("\n");
