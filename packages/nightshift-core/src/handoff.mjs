@@ -41,15 +41,13 @@ export function normalizeStageHandoff(input, { contentItemId = null, instanceId,
   const contract = stageHandoffContract(release, stageId);
   const inputs = normalizeEntries(input.inputs, "input");
   const outputs = normalizeEntries(input.outputs, "output");
-  assertSameKeys(inputs, contract.inputs, "input");
-  assertSameKeys(outputs, contract.outputs, "output");
   return {
     version: 1,
     instanceId,
     contentItemId: contentItemId ?? null,
     stageId,
-    inputs,
-    outputs,
+    inputs: declaredEntries(inputs, contract.inputs, "input"),
+    outputs: declaredEntries(outputs, contract.outputs, "output"),
   };
 }
 
@@ -155,12 +153,16 @@ function safeExternalUrl(value) {
   }
 }
 
-function assertSameKeys(actual, expected, kind) {
-  const left = actual.map(entryKey).sort();
-  const right = expected.map(entryKey).sort();
-  if (JSON.stringify(left) !== JSON.stringify(right)) {
-    throw new Error(`Stage handoff ${kind}s do not match the workflow contract`);
+// Every declared entry must be recorded; anything extra the agent chose to
+// hand over is dropped rather than failing the card, so a Stage is judged on
+// what the Workflow asks for, not on matching its list word for word.
+function declaredEntries(actual, expected, kind) {
+  const recorded = new Map(actual.map((entry) => [entryKey(entry), entry]));
+  const missing = expected.filter((entry) => !recorded.has(entryKey(entry))).map(entryKey);
+  if (missing.length > 0) {
+    throw new Error(`Stage handoff ${kind}s do not match the workflow contract: missing ${missing.join(", ")}`);
   }
+  return expected.map((entry) => recorded.get(entryKey(entry)));
 }
 
 function entryKey(entry) {
