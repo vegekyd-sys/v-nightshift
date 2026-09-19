@@ -187,8 +187,8 @@ test("brief cards declare the executable artifact contract", async () => {
   assert.equal(actions[0].stageId, "brief");
   // The brief's content belongs to the route's Skill; the card only carries
   // the declared outputs and completion rules from the Workflow.
-  assert.match(actions[0].card.notes, /Required outputs: .*finishedVideoBrief/);
-  assert.match(actions[0].card.notes, /Completion checks: .*routeMatchesContentItem/);
+  assert.match(actions[0].card.notes, /- finishedVideoBrief: .*routeMatchesContentItem must be true/);
+  assert.match(actions[0].card.notes, /listed by name|list it by name in the stage handoff outputs\[\]\.artifact/);
   assert.doesNotMatch(actions[0].card.notes, /source_url\/start_sec\/end_sec|shot table/);
 });
 
@@ -579,4 +579,21 @@ test("accepts bare executable names in requiredCommands and rejects paths or she
   invalid.spec.stages[0].requiredCommands = [];
   const paths = validateWorkflow(invalid).filter((entry) => entry.code === "requiredCommands.invalid").map((entry) => entry.path);
   assert.deepEqual(paths, ["spec.requiredCommands", "spec.stages[0].requiredCommands"]);
+});
+
+test("spells each declared output as a file with the facts completion reads, including derived ones", () => {
+  const release = { metadata: { name: "W", version: "1", workflowSha256: "x".repeat(64), id: "w" }, spec: { stages: [] } };
+  const stage = {
+    id: "produce",
+    title: "Produce",
+    actor: "agent",
+    outputs: ["finishedAsset", "machineQc", "deliveryManifest", "notes"],
+    completeWhen: ["output.finishedAsset.newForThisRun", "output.machineQc.terminal", "output.deliveryManifest.accessible", "output.deliveryManifest.approvedByLegal"],
+  };
+  const notes = buildAgentBrief(release, { id: "I", inputs: {} }, stage);
+  assert.match(notes, /- finishedAsset: newForThisRun \(automatic: the file was written during this project run\)/);
+  assert.match(notes, /- machineQc: terminal \(automatic: its JSON status is passed/);
+  assert.match(notes, /- deliveryManifest: accessible \(automatic: the referenced file exists\); approvedByLegal must be true/);
+  assert.match(notes, /- notes: no fact is checked beyond the handoff entry/);
+  assert.doesNotMatch(notes, /Completion checks: output\./);
 });

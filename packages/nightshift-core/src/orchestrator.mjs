@@ -365,7 +365,7 @@ export function buildAgentBrief(release, instance, stage, contentItem = null, co
           ...(contentItem.route === "SCENE_EDIT" ? [`Temporal duplicate gate: run node ${DUPLICATE_CHECK_SCRIPT} ${itemDir}/produce/final.mp4 --out ${itemDir}/produce/duplicate-check.json. A failed or missing report blocks completion.`] : []),
         ]
       : []),
-    `Required outputs: ${(stage.outputs ?? []).join(", ") || "none"}`,
+    ...outputChecklist(stage),
     ...(exactApprovalRecorded ? [
       `Execution authorization: a later, exact Workboard approval is recorded for ${stage.approval.before} with scope ${stage.approval.scope ?? "stage"}${contentItem ? ` on content item ${contentItem.id}` : ""}. It intentionally opens only this approved action after the project's default-deny baseline; do not treat that earlier baseline as a conflict and do not edit the project inputs.`,
       ...(approvalBinding && Object.keys(approvalBinding.values).length > 0
@@ -379,7 +379,7 @@ export function buildAgentBrief(release, instance, stage, contentItem = null, co
       `Download delivery contract: aggregate every validated ContentItem deliverables.json and produce handoff into ${instanceDir}/deliver-download/delivery-package.zip; upload that exact package once under a stable instance-bound OSS object key; upsert one Base delivery row keyed by instance ${instance.id}; write ${instanceDir}/deliver-download/oss-delivery.json with uploaded=true and ${instanceDir}/deliver-download/base-delivery-receipt.json with recorded=true; and reference those concrete artifacts from the stage handoff.`,
       "This branch must not create human review work, request external-publication approval, publish content, call GeeLark, or invoke geelark-cloud-phone.",
     ] : []),
-    `Completion checks: ${(stage.completeWhen ?? []).join("; ") || "human decision"}`,
+    ...((stage.completeWhen ?? []).length ? [] : ["Completion checks: human decision"]),
     `Safety: ${(stage.sideEffects ?? []).length ? `declared external side effects: ${stage.sideEffects.join(", ")}; ${stage.approval?.before ? `requires ${stage.approval.before} approval` : "no separate human approval gate"}` : "no declared external side effect"}`,
     ...((stage.sideEffects ?? []).length ? [
       `External-operation gate: before the first paid/public/external call, compute a stable SHA-256 of the exact external request and run \`node ${NIGHTSHIFTCTL_SCRIPT} operations reserve <Card id from Worker protocol> --request-hash <sha256>\`. If the response is reused+succeeded, reuse its result and do not call the provider again. If it is reused+executing with an externalTaskId, resume by reading that external task and never submit a replacement. If it is reused+reserved without an externalTaskId, treat the outcome as ambiguous and block for readback instead of resubmitting. After provider submission run \`operations checkpoint ... --status executing --external-task-id <id>\`; after verified success run \`operations checkpoint ... --status succeeded --result-json '<json>'\`. The ledger is the only external side-effect checkpoint.`,
@@ -392,6 +392,40 @@ export function buildAgentBrief(release, instance, stage, contentItem = null, co
     throw new Error(`Night Shift card brief exceeds the native Workboard ${WORKBOARD_NOTES_LIMIT} character limit (${brief.length})`);
   }
   return brief;
+}
+
+// What the completion validator derives by itself, so the agent never has to
+// read the validator to learn what a fact name means.
+const DERIVED_FACTS = {
+  accessible: "the referenced file exists",
+  exists: "the referenced file exists",
+  newForThisRun: "the file was written during this project run",
+  hasAtLeastOneItem: "its items[] (or contentItems[]) is non-empty",
+  everyItemHasStableIdAndTitle: "every entry in items[] has a non-empty id and title",
+  terminal: "its JSON status is passed, warning, failed, done, complete or completed",
+  reachable: "the HTTPS URL answers",
+  hostAllowed: "the HTTPS URL's host is allowed by the Workflow",
+  valid: "the HTTPS URL is reachable on an allowed host",
+};
+
+// One line per declared output: which file to write, how the stage handoff
+// points at it, and exactly which facts the Workflow's completeWhen reads.
+function outputChecklist(stage) {
+  const outputs = stage.outputs ?? [];
+  if (outputs.length === 0) return ["Required outputs: none"];
+  const checks = new Map(outputs.map((name) => [name, []]));
+  for (const rule of stage.completeWhen ?? []) {
+    const [, name, ...path] = String(rule).split(".");
+    if (checks.has(name) && path.length) checks.get(name).push(path.join("."));
+  }
+  return [
+    "Required outputs — write each as a file (or put the HTTPS URL) and list it by name in the stage handoff outputs[].artifact; completion reads the facts below from that artifact (top-level JSON fields, or `name: true` lines in a text file):",
+    ...outputs.map((name) => {
+      const facts = checks.get(name);
+      if (facts.length === 0) return `- ${name}: no fact is checked beyond the handoff entry`;
+      return `- ${name}: ${facts.map((fact) => DERIVED_FACTS[fact] ? `${fact} (automatic: ${DERIVED_FACTS[fact]})` : `${fact} must be true`).join("; ")}`;
+    }),
+  ];
 }
 
 function deliveryManifestExample(instanceId, contentItem) {
