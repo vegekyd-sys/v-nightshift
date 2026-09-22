@@ -526,6 +526,12 @@ export function nativeActionKey(logicalKey) {
 
 export function requiredApproval(stage, instance, now, contentItemId = null) {
   if (!stage.approval?.before) return null;
+  // The project inputs already carry the operator's decision. When they authorize
+  // paid production for this project, an approval card per item adds no decision
+  // — it only pushed workflows into leaving the side effect undeclared to avoid
+  // the cards, which then hid the spending from the ledger. Publication stays
+  // per-target: it binds an account and a device.
+  if (stage.approval.before === "paid-production" && instance.inputs?.authorizationScope?.paidProduction === true) return null;
   const approvals = Array.isArray(instance.approvals) ? instance.approvals : [];
   const requiredScope = stage.approval.scope ?? "stage";
   const binding = resolveApprovalBinding(stage, instance, contentItemId);

@@ -597,3 +597,29 @@ test("spells each declared output as a file with the facts completion reads, inc
   assert.match(notes, /- notes: no fact is checked beyond the handoff entry/);
   assert.doesNotMatch(notes, /Completion checks: output\./);
 });
+
+test("a project that authorized paid production does not also need an approval card per item", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const instance = activeInstance(release);
+  instance.inputs.nightshift = { instanceDir: "/srv/nightshift/NS-LAB-001" };
+  const runs = [{ stageId: "plan", status: "done" }];
+  const contentItems = [twoItems()[0]];
+  const contentItemRuns = doneThrough("video-ai-01", "brief");
+
+  instance.inputs.authorizationScope = { paidProduction: false, externalPublication: false };
+  assert.equal(planNextActions({ release, instance, runs, contentItems, contentItemRuns })[0].type, "request_approval");
+
+  instance.inputs.authorizationScope = { paidProduction: true, externalPublication: false };
+  const [action] = planNextActions({ release, instance, runs, contentItems, contentItemRuns });
+  assert.equal(action.type, "create_workboard_card");
+  assert.equal(action.stageId, "produce");
+
+  // Publication binds an account and a device, so it keeps its own approval.
+  const publishItems = [twoItems()[1]];
+  const publishRuns = doneThrough("video-scene-01", "review");
+  instance.inputs.authorizationScope = { paidProduction: true, externalPublication: true };
+  instance.inputs.publicationTarget = publicationTarget();
+  const publish = planNextActions({ release, instance, runs, contentItems: publishItems, contentItemRuns: publishRuns })[0];
+  assert.equal(publish.type, "request_approval");
+  assert.equal(publish.approval.effect, "external-publication");
+});
