@@ -131,6 +131,7 @@ export function validateWorkflow(document) {
     return issues;
   }
   validateIdentifier(spec.ownerAgentRole, "spec.ownerAgentRole", issues);
+  validateCommandList(spec.requiredCommands, "spec.requiredCommands", issues);
   const contentRoutes = validateContentItemContract(spec.contentItems, issues);
   validateInputContracts(spec.inputs, issues);
   if (spec.completion !== undefined && (!isObject(spec.completion) || spec.completion.mode !== "strict-v1")) {
@@ -221,6 +222,10 @@ export function validateWorkflow(document) {
           }
         }
       }
+    }
+    validateCommandList(stage.requiredCommands, `${path}.requiredCommands`, issues);
+    for (const [route, strategy] of Object.entries(isObject(stage.routeStrategies) ? stage.routeStrategies : {})) {
+      if (isObject(strategy)) validateCommandList(strategy.requiredCommands, `${path}.routeStrategies.${route}.requiredCommands`, issues);
     }
     if (
       stage.skills !== undefined &&
@@ -615,6 +620,18 @@ function sha256(value) {
 
 function issue(code, path, message) {
   return { code, path, message };
+}
+
+const COMMAND_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+// A required command is a bare executable name resolved through PATH on the
+// worker host; paths and shell fragments are rejected so the preflight cannot
+// be pointed at arbitrary files.
+function validateCommandList(value, path, issues) {
+  if (value === undefined) return;
+  if (!Array.isArray(value) || value.length === 0 || value.some((entry) => typeof entry !== "string" || !COMMAND_PATTERN.test(entry))) {
+    issues.push(issue("requiredCommands.invalid", path, "requiredCommands must be a non-empty array of bare executable names"));
+  }
 }
 
 function validateIdentifier(value, path, issues) {

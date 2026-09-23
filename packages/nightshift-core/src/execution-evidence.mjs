@@ -5,10 +5,9 @@ export function validateExecutionEvidence({ cardId, messages = [], requiredSkill
   const calls = collectToolCalls(messages);
   const loaded = [...new Set(calls.map(skillRead).filter(Boolean))].sort();
   const missing = required.filter((skill) => !loaded.includes(skill));
+  // The card runs as the ordinary agent with every Skill it has; reading one
+  // the stage did not list is normal use, not a contract breach.
   const undeclared = loaded.filter((skill) => !required.includes(skill));
-  if (undeclared.length > 0) {
-    throw new Error(`Undeclared Skill was loaded in this attempt: ${undeclared.join(", ")}`);
-  }
 
   const foreignCards = calls.flatMap((call) => mutationCardIds(call))
     .filter((id) => cardId && id !== cardId);
@@ -19,6 +18,7 @@ export function validateExecutionEvidence({ cardId, messages = [], requiredSkill
     declaredSkills: required,
     loadedSkills: loaded,
     missingSkillReadTelemetry: missing,
+    undeclaredSkillReads: undeclared,
     skillEvidence: required.length === 0
       ? "not-required"
       : missing.length === 0

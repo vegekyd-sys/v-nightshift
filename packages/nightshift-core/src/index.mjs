@@ -30,6 +30,7 @@ export {
   normalizeContentItems,
 } from "./content-items.mjs";
 export { requiredSkillsByRole, validateProjectRequest } from "./project.mjs";
+export { missingCommands, requiredCommands } from "./command-preflight.mjs";
 export {
   handoffManifestExample,
   humanStageHandoff,
