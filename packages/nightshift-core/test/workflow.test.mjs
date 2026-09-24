@@ -68,7 +68,7 @@ test("plans the project stage and redacts secrets", async () => {
   assert.match(actions[0].card.notes, /workboard\.cards\.complete/);
   assert.match(actions[0].card.notes, /Never probe, test, or enumerate completion RPCs/);
   assert.match(actions[0].card.notes, /never use placeholder input such as summary=test/);
-  assert.match(actions[0].card.notes, /verify every completion check/);
+  assert.match(actions[0].card.notes, /When the outputs are written, call workboard_complete exactly once/);
   assert.match(actions[0].card.notes, /exactly once/);
   assert.match(actions[0].card.notes, /"apiKey":"\[REDACTED\]"/);
   assert.doesNotMatch(actions[0].card.notes, /must-not-appear/);
@@ -90,7 +90,7 @@ test("keeps large project blueprints in an authoritative snapshot instead of ove
   };
   const [action] = planNextActions({ release, instance });
   assert.ok(action.card.notes.length <= WORKBOARD_NOTES_LIMIT);
-  assert.match(action.card.notes, /Authoritative project inputs: read \/srv\/nightshift\/NS-LARGE\/project-inputs\.json/);
+  assert.match(action.card.notes, /Project inputs: \/srv\/nightshift\/NS-LARGE\/project-inputs\.json/);
   assert.match(action.card.notes, /Workboard completion safety/);
   assert.doesNotMatch(action.card.notes, /A detailed creative direction/);
 });
@@ -157,7 +157,7 @@ test("selects route-specific material skills without creating a second workflow"
   assert.deepEqual(actions[1].card.automation.skills, ["shooting-checklist-v3", "scene-cli", "material-verification"]);
 });
 
-test("AI brief requires finished-video-brief and declares the Skill evidence contract", async () => {
+test("AI brief lists its Skills as a hint, not a load-before-acting ritual", async () => {
   const release = compileWorkflow(await loadWorkflow(fixture));
   const actions = planNextActions({
     release,
@@ -167,8 +167,9 @@ test("AI brief requires finished-video-brief and declares the Skill evidence con
     contentItemRuns: doneThrough("video-ai-01", "materials"),
   });
   assert.deepEqual(actions[0].card.automation.skills, ["finished-video-brief", "lark-doc", "makaron"]);
-  assert.match(actions[0].card.notes, /Skill evidence gate/);
-  assert.match(actions[0].card.notes, /Atomic attempt scope/);
+  assert.match(actions[0].card.notes, /Skills likely useful here: finished-video-brief, lark-doc, makaron/);
+  assert.match(actions[0].card.notes, /this attempt owns only this card/);
+  assert.doesNotMatch(actions[0].card.notes, /load in order|before acting|every artifact they reference/);
 });
 
 test("brief cards declare the executable artifact contract", async () => {
@@ -184,10 +185,11 @@ test("brief cards declare the executable artifact contract", async () => {
     contentItemRuns: doneThrough("video-scene-01", "materials"),
   });
   assert.equal(actions[0].stageId, "brief");
-  assert.match(actions[0].card.notes, /finishedVideoBrief\.md/);
-  assert.match(actions[0].card.notes, /routeMatchesContentItem/);
-  assert.match(actions[0].card.notes, /source_url\/start_sec\/end_sec/);
-  assert.match(actions[0].card.notes, /Do not inspect Night Shift source code/);
+  // The brief's content belongs to the route's Skill; the card only carries
+  // the declared outputs and completion rules from the Workflow.
+  assert.match(actions[0].card.notes, /- finishedVideoBrief: .*routeMatchesContentItem must be true/);
+  assert.match(actions[0].card.notes, /listed by name|list it by name in the stage handoff outputs\[\]\.artifact/);
+  assert.doesNotMatch(actions[0].card.notes, /source_url\/start_sec\/end_sec|shot table/);
 });
 
 test("paid production approval is isolated per content item", async () => {
@@ -245,7 +247,6 @@ test("human review and publication remain per-video and idempotent", async () =>
   const publish = planNextActions({ release, instance, runs: [{ stageId: "plan", status: "done" }], contentItems, contentItemRuns })[0];
   assert.match(publish.idempotencyKey, /video-scene-01:publish-feedback/);
   assert.match(publish.card.notes, /exact Workboard approval is recorded for external-publication/);
-  assert.match(publish.card.notes, /control plane will load every declared output artifact/);
   assert.match(publish.card.notes, /Output contract publicUrl/);
   assert.match(publish.card.notes, /tiktok\.com/);
 });
@@ -565,4 +566,60 @@ test("a release time that cannot be resolved fails validation instead of publish
   // An expression is only resolvable against a project, so it passes here.
   stage.releaseAt = { dailyAt: "21:00", timezone: "${input.publicationTarget.timezone}" };
   assert.deepEqual(validateWorkflow(workflow).filter((entry) => entry.code === "stage.releaseAt.invalid"), []);
+});
+
+test("accepts bare executable names in requiredCommands and rejects paths or shell fragments", async () => {
+  const declared = structuredClone(await loadWorkflow(fixture));
+  declared.spec.requiredCommands = ["scene", "makaron-cli", "lark-cli"];
+  declared.spec.stages[0].requiredCommands = ["lark-cli"];
+  assert.deepEqual(validateWorkflow(declared).filter((entry) => entry.code === "requiredCommands.invalid"), []);
+
+  const invalid = structuredClone(await loadWorkflow(fixture));
+  invalid.spec.requiredCommands = ["/usr/bin/scene"];
+  invalid.spec.stages[0].requiredCommands = [];
+  const paths = validateWorkflow(invalid).filter((entry) => entry.code === "requiredCommands.invalid").map((entry) => entry.path);
+  assert.deepEqual(paths, ["spec.requiredCommands", "spec.stages[0].requiredCommands"]);
+});
+
+test("spells each declared output as a file with the facts completion reads, including derived ones", () => {
+  const release = { metadata: { name: "W", version: "1", workflowSha256: "x".repeat(64), id: "w" }, spec: { stages: [] } };
+  const stage = {
+    id: "produce",
+    title: "Produce",
+    actor: "agent",
+    outputs: ["finishedAsset", "machineQc", "deliveryManifest", "notes"],
+    completeWhen: ["output.finishedAsset.newForThisRun", "output.machineQc.terminal", "output.deliveryManifest.accessible", "output.deliveryManifest.approvedByLegal"],
+  };
+  const notes = buildAgentBrief(release, { id: "I", inputs: {} }, stage);
+  assert.match(notes, /- finishedAsset: newForThisRun \(automatic: the file was written during this project run\)/);
+  assert.match(notes, /- machineQc: terminal \(automatic: its JSON status is passed/);
+  assert.match(notes, /- deliveryManifest: accessible \(automatic: the referenced file exists\); approvedByLegal must be true/);
+  assert.match(notes, /- notes: no fact is checked beyond the handoff entry/);
+  assert.doesNotMatch(notes, /Completion checks: output\./);
+});
+
+test("a project that authorized paid production does not also need an approval card per item", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const instance = activeInstance(release);
+  instance.inputs.nightshift = { instanceDir: "/srv/nightshift/NS-LAB-001" };
+  const runs = [{ stageId: "plan", status: "done" }];
+  const contentItems = [twoItems()[0]];
+  const contentItemRuns = doneThrough("video-ai-01", "brief");
+
+  instance.inputs.authorizationScope = { paidProduction: false, externalPublication: false };
+  assert.equal(planNextActions({ release, instance, runs, contentItems, contentItemRuns })[0].type, "request_approval");
+
+  instance.inputs.authorizationScope = { paidProduction: true, externalPublication: false };
+  const [action] = planNextActions({ release, instance, runs, contentItems, contentItemRuns });
+  assert.equal(action.type, "create_workboard_card");
+  assert.equal(action.stageId, "produce");
+
+  // Publication binds an account and a device, so it keeps its own approval.
+  const publishItems = [twoItems()[1]];
+  const publishRuns = doneThrough("video-scene-01", "review");
+  instance.inputs.authorizationScope = { paidProduction: true, externalPublication: true };
+  instance.inputs.publicationTarget = publicationTarget();
+  const publish = planNextActions({ release, instance, runs, contentItems: publishItems, contentItemRuns: publishRuns })[0];
+  assert.equal(publish.type, "request_approval");
+  assert.equal(publish.approval.effect, "external-publication");
 });

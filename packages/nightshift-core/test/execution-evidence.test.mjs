@@ -26,12 +26,14 @@ test("records missing Skill read telemetry without rejecting verified work", () 
   assert.equal(evidence.skillEvidence, "workboard-declaration");
 });
 
-test("rejects undeclared Skill reads", () => {
-  assert.throws(() => validateExecutionEvidence({
+test("records a Skill the stage did not list without rejecting the attempt", () => {
+  const evidence = validateExecutionEvidence({
     cardId: "card-1",
     messages: [readSkill("makaron"), readSkill("unrelated-ops")],
     requiredSkills: ["makaron"],
-  }), /Undeclared Skill.*unrelated-ops/i);
+  });
+  assert.deepEqual(evidence.undeclaredSkillReads, ["unrelated-ops"]);
+  assert.deepEqual(evidence.loadedSkills, ["makaron", "unrelated-ops"]);
 });
 
 test("rejects an attempt that mutates another Workboard card", () => {

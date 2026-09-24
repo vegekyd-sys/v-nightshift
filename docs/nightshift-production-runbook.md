@@ -94,6 +94,16 @@ Use an explicit reviewed project-id manifest for batch cleanup. Back up first, a
 
 Preview an exact manifest with `nightshiftctl governance archive <manifest.json>`. Apply the same validated manifest with `--apply --actor <name> --reason <reason>`. Every entry pins the expected project status and card count so a changed project stops the batch before mutation.
 
+## Required commands
+
+A workflow may declare the CLIs its agent stages call — `spec.requiredCommands`, `stage.requiredCommands`, or `routeStrategies.<route>.requiredCommands`, bare executable names only. `POST /api/instances/preflight` and project creation resolve each name through the Night Shift service's PATH and refuse the project (422, `commands.missing`) when one is not executable. Declare `scene`, `makaron-cli`, and `lark-cli` on every Xingqing workflow: when a CLI is missing the agent does not stop, it searches the filesystem and greps for keys, which is the recursive-grep incident from 2026-09-17. The check runs on the service host, so it only proves anything when the service and the worker share a host and PATH, as they do on V.
+
+## Instance storage
+
+`nightshift/instances` is the main disk growth on V (8–11 GB/day). Since 2026-09-18 it is a bind mount onto the data disk (`/srv/openclaw-data/disk1/openclaw/nightshift-instances`); the path under `~/.openclaw/nightshift/instances` is unchanged. Check the mount with `sudo findmnt /home/openclaw/.openclaw/nightshift/instances` — a plain `df` without sudo returns nothing for that mount point.
+
+Open item: `openclaw-storage-lifecycle.service` (04:53 daily) has `source_root` pointing at `/srv/openclaw-data/disk/openclaw-storage/cold-migrated-2/openclaw/backups/nightshift-workboard` (188 KB on the data disk), so it reports `storage_level=critical` every day while freeing nothing on the root disk. Repoint it at the real instance store once the bind mount is verified; do not run it against the root disk while a project is active.
+
 ## Rollback
 
 Use the command printed by deploy. Rollback restores the previous release pointer, service definition, and Night Shift state snapshot, then verifies loopback health. It does not roll back OpenClaw Gateway, Session Store, Memory, or Feishu configuration because Night Shift does not mutate them.

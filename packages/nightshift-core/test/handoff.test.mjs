@@ -63,8 +63,12 @@ test("validates a recorded handoff against workflow input and output names", asy
   assert.equal(normalized.outputs[0].name, "routeDecision");
   assert.throws(
     () => normalizeStageHandoff({ ...example, outputs: [] }, { instanceId: "NS-1", contentItemId: "video-1", release, stageId: "route" }),
-    /do not match/,
+    /do not match the workflow contract: missing route:routeDecision/,
   );
+  // An extra entry the Workflow did not ask for is dropped, not fatal.
+  const extra = { name: "machineQc", sourceStage: "route", summary: "extra evidence", artifact: "qc.json" };
+  const withExtra = normalizeStageHandoff({ ...example, outputs: [...example.outputs, extra] }, { instanceId: "NS-1", contentItemId: "video-1", release, stageId: "route" });
+  assert.deepEqual(withExtra.outputs.map((entry) => entry.name), ["routeDecision"]);
   assert.match(stageHandoffPath({ instanceDir: "/srv/nightshift/NS-1", contentItemId: "video-1", release, stageId: "route" }), /content-items\/video-1\/handoffs\/route\.json$/);
   assert.match(stageHandoffPath({ instanceDir: "/srv/nightshift/NS-1", release, stageId: "plan" }), /NS-1\/handoffs\/plan\.json$/);
 });
