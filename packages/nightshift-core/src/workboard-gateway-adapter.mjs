@@ -126,6 +126,19 @@ export class WorkboardGatewayAdapter {
     return result.card;
   }
 
+  // The native board refuses to dispatch a card whose failureCount exceeds its
+  // maxRetries, and releasing it does not clear the count. A retried card that
+  // had already failed past that budget sat in ready, never started, and went
+  // back to blocked on the next repair pass. Reassign is the board's own reset.
+  async resetCardFailures(id, reason) {
+    const result = await this.call("workboard.cards.reassign", {
+      id,
+      resetFailures: true,
+      ...(reason ? { reason } : {}),
+    });
+    return result.card;
+  }
+
   async releaseCard(id, status) {
     const result = await this.call("workboard.cards.release", { id, status });
     return result.card;
@@ -370,7 +383,7 @@ function dispatchBurst(value) {
   return parsed;
 }
 
-const MUTATION_METHOD = /^workboard\.cards\.(create|dispatchWithOptions|complete|block|release|move|update)$/;
+const MUTATION_METHOD = /^workboard\.cards\.(create|dispatchWithOptions|complete|block|release|move|update|reassign)$/;
 
 function positiveTimeout(value) {
   const parsed = Number(value);

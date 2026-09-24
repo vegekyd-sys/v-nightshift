@@ -192,6 +192,29 @@ test("reopens retry cards by releasing the stale claim in one native mutation", 
   }]);
 });
 
+test("resets a retried card's native failure budget through reassign", async () => {
+  const calls = [];
+  const adapter = new WorkboardGatewayAdapter();
+  adapter.invoke = async (method, params) => {
+    calls.push({ method, params });
+    return { card: { id: params.id, status: "blocked", metadata: {} } };
+  };
+
+  const card = await adapter.resetCardFailures("card-1", "Night Shift retry by operator");
+
+  assert.equal(card.id, "card-1");
+  // No agentId or status: reassign keeps both and only zeroes failureCount.
+  assert.deepEqual(calls, [{
+    method: "workboard.cards.reassign",
+    params: { id: "card-1", resetFailures: true, reason: "Night Shift retry by operator" },
+  }]);
+
+  adapter.invoke = async () => { throw new Error("gateway closed"); };
+  adapter.needsFullSnapshot = false;
+  await assert.rejects(() => adapter.resetCardFailures("card-1"), /gateway closed/);
+  assert.equal(adapter.needsFullSnapshot, true, "a failed reassign is a mutation and must trigger recovery");
+});
+
 test("one scoped dispatch failure is not retried ambiguously", async () => {
   const adapter = new WorkboardGatewayAdapter({ startIntervalMs: 0 });
   const calls = [];
