@@ -3,6 +3,7 @@ import { runSchedulerPass, instanceCardIds, visibleCardIds } from "../../../pack
 import { tickWithFaultProjection } from "../../../packages/nightshift-core/src/scheduler-state.mjs";
 import { createCompletionUrlChecker } from "./completion-url.mjs";
 import { SchedulerCircuit } from "./scheduler-circuit.mjs";
+import { createAgentDbPressureProbe } from "./agent-db-pressure-probe.mjs";
 import { createHostPressureProbe } from "./host-pressure-probe.mjs";
 import { DispatchPressureGuard } from "./dispatch-pressure-guard.mjs";
 import { WorkboardChangeScheduler } from "./workboard-change-scheduler.mjs";
@@ -77,6 +78,12 @@ const reservedInteractiveSlots = positiveInteger(process.env.NIGHTSHIFT_RESERVED
 const reservedInteractiveWorkers = positiveInteger(process.env.NIGHTSHIFT_RESERVED_INTERACTIVE_WORKERS, 3, 64);
 const hostMemoryReserveMiB = positiveInteger(process.env.NIGHTSHIFT_HOST_MEMORY_RESERVE_MIB, 4096, 262_144);
 const hostMemoryReservePercent = positiveInteger(process.env.NIGHTSHIFT_HOST_MEMORY_RESERVE_PERCENT, 40, 90);
+// The Agent DB write lease, read from the Gateway journal (see agent-db-pressure-probe.mjs).
+const agentDbPressureEnabled = process.env.NIGHTSHIFT_AGENT_DB_PRESSURE !== "0";
+const agentDbPressureUnit = process.env.NIGHTSHIFT_GATEWAY_UNIT || "openclaw-gateway";
+const agentDbPressureWindowSeconds = positiveInteger(process.env.NIGHTSHIFT_AGENT_DB_PRESSURE_WINDOW_SECONDS, 120, 900);
+const agentDbSlowAdmissionYellow = positiveInteger(process.env.NIGHTSHIFT_AGENT_DB_SLOW_ADMISSION_YELLOW, 3, 1_000);
+const userHarmCooldownMs = positiveInteger(process.env.NIGHTSHIFT_USER_HARM_COOLDOWN_MS, 900_000, 7_200_000);
 // How soon to retry after a scheduler pass fails, doubling up to the ceiling.
 const schedulerRetryMinMs = positiveInteger(process.env.NIGHTSHIFT_SCHEDULER_RETRY_MIN_MS, 10_000, 600_000);
 const schedulerRetryMaxMs = positiveInteger(process.env.NIGHTSHIFT_SCHEDULER_RETRY_MAX_MS, 120_000, 600_000);
@@ -123,6 +130,14 @@ const dispatchPressureGuard = new DispatchPressureGuard({
   redLatencyMs: gatewayRedLatencyMs,
   reservedInteractiveSlots,
   reservedInteractiveWorkers,
+  userHarmCooldownMs,
+});
+const probeAgentDbPressure = createAgentDbPressureProbe({
+  enabled: agentDbPressureEnabled,
+  gatewayUrl: workboard.gatewayUrl,
+  slowAdmissionYellow: agentDbSlowAdmissionYellow,
+  unit: agentDbPressureUnit,
+  windowSeconds: agentDbPressureWindowSeconds,
 });
 const probeHostPressure = createHostPressureProbe({
   gatewayUrl: workboard.gatewayUrl,
@@ -847,9 +862,9 @@ function probeDispatchCapacity() {
     const running = activeCardCount(cardCache);
     let pressure;
     try {
-      const hostPressure = await probeHostPressure();
+      const [hostPressure, agentDbPressure] = await Promise.all([probeHostPressure(), probeAgentDbPressure()]);
       const probe = hostPressure.blocked ? {} : await workboard.probeGatewayCapacity();
-      pressure = dispatchPressureGuard.recordProbe({ ...probe, hostPressure, running });
+      pressure = dispatchPressureGuard.recordProbe({ ...probe, hostPressure, agentDbPressure, running });
     } catch (error) {
       pressure = dispatchPressureGuard.recordProbe({ error: error.message, running });
     }

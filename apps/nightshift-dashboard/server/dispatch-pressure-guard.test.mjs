@@ -242,3 +242,65 @@ test("a pool that does not report Worker occupancy keeps the Session arithmetic"
   assert.equal(guard.snapshot(3).workerHeadroom, null);
   assert.equal(guard.snapshot(3).availableStarts > 0, true);
 });
+
+// The Agent DB write lease saturated on V (2026-09-24 10:21) while Worker
+// headroom and Gateway latency both read green; these cases are that morning.
+const RED_LEASE = { level: "red", blocked: true, reason: "2 Agent DB lease timeout(s) in 120s", userHarm: false };
+const HARMED = { ...RED_LEASE, userHarm: true, reason: "2 Agent DB lease timeout(s) in 120s, 2 in a person's conversation" };
+
+test("a lease timeout halts starts even when latency and Workers look healthy", () => {
+  const guard = new DispatchPressureGuard({ initialMaxActive: 8 });
+  const pool = { capacity: 45, active: 8, queued: 0, workerCapacity: 15, workersBusy: 8 };
+  const pressure = guard.recordProbe({ latencyMs: 40, running: 8, workerPool: pool, agentDbPressure: RED_LEASE });
+  assert.equal(pressure.lastProbe.level, "red");
+  assert.match(pressure.lastProbe.error, /lease timeout/);
+  assert.equal(pressure.targetMaxActive, 4);
+  assert.equal(pressure.dispatchAllowed, false);
+  assert.equal(pressure.agentDbPressure, RED_LEASE);
+});
+
+test("slow lease admission stops new starts but keeps the running cards", () => {
+  const guard = new DispatchPressureGuard({ initialMaxActive: 8 });
+  const pressure = guard.recordProbe({
+    latencyMs: 40, running: 5, agentDbPressure: { level: "yellow", reason: "4 slow Agent DB writer admissions in 120s" },
+  });
+  assert.equal(pressure.lastProbe.level, "yellow");
+  assert.match(pressure.lastProbe.error, /slow Agent DB writer/);
+  assert.equal(pressure.targetMaxActive, 5);
+  assert.equal(pressure.availableStarts, 0);
+});
+
+test("a person's cut reply holds dispatch for the full harm cooldown", () => {
+  let now = 0;
+  const guard = new DispatchPressureGuard({ initialMaxActive: 12, now: () => now, userHarmCooldownMs: 900_000 });
+  const pool = { capacity: 45, active: 12, queued: 0 };
+  guard.recordProbe({ latencyMs: 40, running: 12, workerPool: pool, agentDbPressure: HARMED });
+  // The same run of quiet probes that ends an ordinary red early (see above).
+  for (now = 5_000; now <= 60_000; now += 5_000) {
+    assert.equal(guard.recordProbe({ latencyMs: 80, running: 12, workerPool: pool }).availableStarts, 0, `at ${now}`);
+  }
+  now = 899_000;
+  assert.equal(guard.recordProbe({ latencyMs: 80, running: 12, workerPool: pool }).availableStarts, 0);
+  now = 905_000;
+  guard.recordProbe({ latencyMs: 80, running: 12, workerPool: pool });
+  now = 910_000;
+  assert.equal(guard.recordProbe({ latencyMs: 80, running: 12, workerPool: pool }).availableStarts, 1);
+});
+
+test("an ordinary lease timeout keeps the ordinary red cooldown", () => {
+  let now = 0;
+  const guard = new DispatchPressureGuard({ initialMaxActive: 12, now: () => now, userHarmCooldownMs: 900_000 });
+  const pool = { capacity: 45, active: 12, queued: 0 };
+  guard.recordProbe({ latencyMs: 40, running: 12, workerPool: pool, agentDbPressure: RED_LEASE });
+  for (now = 5_000; now <= 15_000; now += 5_000) guard.recordProbe({ latencyMs: 80, running: 12, workerPool: pool });
+  assert.equal(guard.recordProbe({ latencyMs: 80, running: 12, workerPool: pool }).availableStarts, 1);
+});
+
+test("an unobserved lease never blocks dispatch by itself", () => {
+  const guard = new DispatchPressureGuard({ initialMaxActive: 3 });
+  const pressure = guard.recordProbe({
+    latencyMs: 40, running: 0, agentDbPressure: { enabled: true, level: "unknown", blocked: false, reason: "probe failed" },
+  });
+  assert.equal(pressure.lastProbe.level, "green");
+  assert.equal(pressure.dispatchAllowed, true);
+});

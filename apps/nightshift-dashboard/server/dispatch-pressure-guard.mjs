@@ -13,6 +13,9 @@ export class DispatchPressureGuard {
     probeMaxAgeMs = 10_000,
     reservedInteractiveSlots = 9,
     reservedInteractiveWorkers = 3,
+    // After a card's writes cut a person's reply, back off long enough for the
+    // conversation to finish rather than returning at the next quiet probe.
+    userHarmCooldownMs = 900_000,
   } = {}) {
     this.baselineGreenMultiplier = positiveNumber(baselineGreenMultiplier, "baselineGreenMultiplier");
     this.baselineRedMultiplier = positiveNumber(baselineRedMultiplier, "baselineRedMultiplier");
@@ -40,15 +43,28 @@ export class DispatchPressureGuard {
     this.probeMaxAgeMs = positiveInteger(probeMaxAgeMs, "probeMaxAgeMs");
     this.reservedInteractiveSlots = positiveInteger(reservedInteractiveSlots, "reservedInteractiveSlots");
     this.reservedInteractiveWorkers = positiveInteger(reservedInteractiveWorkers, "reservedInteractiveWorkers");
+    this.userHarmCooldownMs = positiveInteger(userHarmCooldownMs, "userHarmCooldownMs");
+    this.userHarmHoldUntilMs = 0;
     this.workerPool = null;
     this.hostPressure = null;
+    this.agentDbPressure = null;
   }
 
-  recordProbe({ error = null, latencyMs = null, running = 0, workerPool = null, hostPressure = null } = {}) {
+  recordProbe({
+    error = null, latencyMs = null, running = 0, workerPool = null, hostPressure = null, agentDbPressure = null,
+  } = {}) {
     const at = this.now();
     this.workerPool = workerPool;
     this.hostPressure = hostPressure;
+    this.agentDbPressure = agentDbPressure;
     if (hostPressure?.blocked) error = hostPressure.reason || "host under resource pressure";
+    // Lease timeouts are red: cards are already killing runs. Slow admissions are
+    // yellow: the lease is contended and one more writer is what tips it over.
+    if (!error && agentDbPressure?.level === "red") error = agentDbPressure.reason || "Agent DB lease timeouts";
+    const lockContended = agentDbPressure?.level === "yellow";
+    const redCooldownMs = agentDbPressure?.userHarm
+      ? Math.max(this.redCooldownMs, this.userHarmCooldownMs)
+      : this.redCooldownMs;
     const normalizedRunning = Math.max(0, Number(running) || 0);
     const normalizedLatency = Number.isFinite(latencyMs) ? Math.max(0, latencyMs) : null;
     if (!error && normalizedLatency !== null && normalizedRunning === 0 && (!workerPool || workerPool.active === 0) && normalizedLatency < this.redLatencyMs) {
@@ -61,7 +77,9 @@ export class DispatchPressureGuard {
       this.greenStreak = 0;
       this.recoveryGreenStartedAt = null;
       this.recoveryGreenSamples = 0;
-      this.holdUntilMs = at + this.redCooldownMs;
+      // A repeated red extends the hold from now; it never shortens a longer one.
+      this.holdUntilMs = Math.max(this.holdUntilMs, at + redCooldownMs);
+      if (agentDbPressure?.userHarm) this.userHarmHoldUntilMs = this.holdUntilMs;
       this.recoveringPressure = true;
       this.startCredits = 0;
       this.lastProbe = {
@@ -72,7 +90,7 @@ export class DispatchPressureGuard {
       };
       return this.snapshot(normalizedRunning);
     }
-    if (normalizedLatency > thresholds.greenLatencyMs) {
+    if (lockContended || normalizedLatency > thresholds.greenLatencyMs) {
       this.targetMaxActive = Math.max(this.minActive, Math.min(this.targetMaxActive, Math.max(this.minActive, normalizedRunning)));
       this.greenStreak = 0;
       this.recoveryGreenStartedAt = null;
@@ -83,7 +101,10 @@ export class DispatchPressureGuard {
       this.recoveringPressure = true;
       this.startCredits = 0;
       this.lastProbe = {
-        at: new Date(at).toISOString(), error: null, latencyMs: normalizedLatency, level: "yellow",
+        at: new Date(at).toISOString(),
+        error: lockContended ? agentDbPressure.reason ?? "Agent DB lease contended" : null,
+        latencyMs: normalizedLatency,
+        level: "yellow",
       };
       return this.snapshot(normalizedRunning);
     }
@@ -100,7 +121,10 @@ export class DispatchPressureGuard {
         this.recoveryGreenSamples = 0;
       }
       this.recoveryGreenSamples += 1;
-      if (this.recoveryGreenSamples >= 4 && at - this.recoveryGreenStartedAt >= 15_000) {
+      // Quiet probes may end an ordinary red early, but not the hold that
+      // follows a person's reply being cut: a quiet lease a few seconds later
+      // says nothing about the conversation still in progress.
+      if (this.recoveryGreenSamples >= 4 && at - this.recoveryGreenStartedAt >= 15_000 && at >= this.userHarmHoldUntilMs) {
         this.holdUntilMs = 0;
         this.greenStreak = this.samplesToGrow - 1;
       }
@@ -162,6 +186,7 @@ export class DispatchPressureGuard {
     return {
       workerPool: this.workerPool,
       hostPressure: this.hostPressure,
+      agentDbPressure: this.agentDbPressure,
       reservedInteractiveSlots: this.reservedInteractiveSlots,
       reservedInteractiveWorkers: this.reservedInteractiveWorkers,
       workerHeadroom: Number.isFinite(workerHeadroom) ? workerHeadroom : null,
