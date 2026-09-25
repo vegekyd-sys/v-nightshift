@@ -132,6 +132,7 @@ export function validateWorkflow(document) {
   }
   validateIdentifier(spec.ownerAgentRole, "spec.ownerAgentRole", issues);
   validateCommandList(spec.requiredCommands, "spec.requiredCommands", issues);
+  validateNotificationContract(spec.notifications, issues);
   const contentRoutes = validateContentItemContract(spec.contentItems, issues);
   validateInputContracts(spec.inputs, issues);
   if (spec.completion !== undefined && (!isObject(spec.completion) || spec.completion.mode !== "strict-v1")) {
@@ -616,6 +617,37 @@ function sortValue(value) {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+// Who hears when a project needs review or finishes. `to` is the Feishu target
+// used when the project itself records no creator chat: a group (oc_…) or a
+// person's own chat (user:ou_…). Projects created by a schedule rather than a
+// person rely on it.
+const NOTIFICATION_EVENTS = new Set(["instanceCompleted"]);
+const FEISHU_NOTIFY_TARGET = /^(oc_[A-Za-z0-9_-]+|user:ou_[A-Za-z0-9_-]+)$/;
+
+function validateNotificationContract(notifications, issues) {
+  if (notifications === undefined) return;
+  if (!isObject(notifications)) {
+    issues.push(issue("notifications.invalid", "spec.notifications", "notifications must be an object"));
+    return;
+  }
+  for (const [name, value] of Object.entries(notifications)) {
+    const path = `spec.notifications.${name}`;
+    // reviewRequested was declared by earlier workflows; it is accepted and
+    // ignored until review cards are carried over.
+    if (!NOTIFICATION_EVENTS.has(name) && name !== "reviewRequested") {
+      issues.push(issue("notifications.event.invalid", path, `Unsupported notification event ${name}`));
+      continue;
+    }
+    if (!isObject(value) || typeof value.enabled !== "boolean") {
+      issues.push(issue("notifications.event.config.invalid", path, "Notification config requires enabled: true|false"));
+      continue;
+    }
+    if (value.to !== undefined && (typeof value.to !== "string" || !FEISHU_NOTIFY_TARGET.test(value.to))) {
+      issues.push(issue("notifications.to.invalid", `${path}.to`, "to must be a Feishu group (oc_…) or a person (user:ou_…)"));
+    }
+  }
 }
 
 function issue(code, path, message) {

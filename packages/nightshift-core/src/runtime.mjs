@@ -7,6 +7,7 @@ import {
 } from "./workflow.mjs";
 import { actionKey, buildAgentBrief, nativeActionKey, planNextActions, requiredApproval, resolveApprovalBinding, stageTimeoutSeconds } from "./orchestrator.mjs";
 import { classifyTerminalFailure, infrastructureFailureSummary, scheduleAutomaticRetry } from "./failure-policy.mjs";
+import { normalizeProjectCollaboration } from "./project.mjs";
 
 export class NightShiftRuntime {
   constructor({
@@ -71,6 +72,12 @@ export class NightShiftRuntime {
     const maxItems = release?.manifest?.spec?.contentItems?.maxItems ?? 50;
     const routes = release?.manifest?.spec?.contentItems?.routes ?? [];
     return this.store.replaceContentItems(instanceId, items, new Date(), maxItems, routes);
+  }
+
+  // Set who hears about a project that was created without it, such as a
+  // project already running when notifications were switched on.
+  updateInstanceCollaboration(instanceId, collaboration) {
+    return this.store.updateInstanceCollaboration(instanceId, normalizeProjectCollaboration(collaboration));
   }
 
   updateInstanceInputs(instanceId, patch) {
@@ -568,6 +575,11 @@ export class NightShiftRuntime {
       maxRetries: stage.retry?.maxAttempts ?? 1,
       maxRuntimeSeconds: stageTimeoutSeconds(stage.timeout),
     });
+    // A retry is a fresh budget. Without the reset, a card that had already
+    // failed more than maxRetries times went to ready, the board declined to
+    // start it, and the next repair pass judged its old session and blocked it
+    // again, so the retry never ran (three cards on V, 2026-09-23 to 09-24).
+    await this.workboard.resetCardFailures(cardId, `Night Shift retry by ${actor}`);
     // Retry must clear the prior Attempt's claim atomically with reopening the
     // card. A blocked card can retain a long-lived claim after an interrupted
     // Worker; moving it to ready without releasing that claim makes it look

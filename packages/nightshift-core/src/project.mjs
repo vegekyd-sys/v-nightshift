@@ -40,7 +40,37 @@ export function validateProjectRequest(release, project) {
       throw new Error(`Agent binding is required for role ${role}`);
     }
   }
+  project.collaboration = normalizeProjectCollaboration(project.collaboration);
   return project;
+}
+
+// Where Night Shift tells a person about their project. sourceChatId is the
+// Feishu delivery target: a group (oc_…) or the person's own chat (user:ou_…).
+// createdByOpenId records who asked for the project.
+export const FEISHU_TARGET = /^(oc_[A-Za-z0-9_-]+|user:ou_[A-Za-z0-9_-]+)$/;
+
+export function normalizeProjectCollaboration(value = {}) {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== "object" || Array.isArray(value)) throw new Error("Project collaboration must be an object");
+  const createdByOpenId = optionalId(value.createdByOpenId, "createdByOpenId", /^ou_[A-Za-z0-9_-]+$/);
+  // In a group, V's conversation metadata carries the chat as `chat:oc_…`;
+  // accept it as written and store the bare group id.
+  const chat = typeof value.sourceChatId === "string" ? value.sourceChatId.replace(/^chat:(?=oc_)/, "") : value.sourceChatId;
+  const sourceChatId = optionalId(chat, "sourceChatId", FEISHU_TARGET);
+  const feishuAccountId = optionalId(value.feishuAccountId, "feishuAccountId", /^[A-Za-z0-9._-]+$/);
+  return {
+    ...(createdByOpenId ? { createdByOpenId } : {}),
+    ...(sourceChatId ? { sourceChatId } : {}),
+    ...(feishuAccountId ? { feishuAccountId } : {}),
+  };
+}
+
+function optionalId(value, name, pattern) {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string" || value.length > 200 || !pattern.test(value)) {
+    throw new Error(`Project collaboration ${name} is invalid`);
+  }
+  return value;
 }
 
 function missingValue(value) {
