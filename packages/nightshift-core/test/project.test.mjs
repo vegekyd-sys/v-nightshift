@@ -148,7 +148,11 @@ test("a project records where its owner hears about it: their own chat or a grou
     sourceChatId: "user:ou_cb133fd4414f0607e8b46a3195c7b9d8",
   });
   assert.deepEqual(normalizeProjectCollaboration(undefined), {});
-  for (const bad of [{ sourceChatId: "chat:oc_1" }, { sourceChatId: "ou_123" }, { createdByOpenId: "oc_1" }, []]) {
+  // A group chat as V sees it in its conversation metadata.
+  assert.deepEqual(normalizeProjectCollaboration({ sourceChatId: "chat:oc_88d96b7e42cbdfd33e6d096477a8cac8" }), {
+    sourceChatId: "oc_88d96b7e42cbdfd33e6d096477a8cac8",
+  });
+  for (const bad of [{ sourceChatId: "chat:ou_1" }, { sourceChatId: "user:oc_1" }, { sourceChatId: "ou_123" }, { createdByOpenId: "oc_1" }, []]) {
     assert.throws(() => normalizeProjectCollaboration(bad), /collaboration/);
   }
 });

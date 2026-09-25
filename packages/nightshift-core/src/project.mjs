@@ -53,7 +53,10 @@ export function normalizeProjectCollaboration(value = {}) {
   if (value === undefined || value === null) return {};
   if (typeof value !== "object" || Array.isArray(value)) throw new Error("Project collaboration must be an object");
   const createdByOpenId = optionalId(value.createdByOpenId, "createdByOpenId", /^ou_[A-Za-z0-9_-]+$/);
-  const sourceChatId = optionalId(value.sourceChatId, "sourceChatId", FEISHU_TARGET);
+  // In a group, V's conversation metadata carries the chat as `chat:oc_…`;
+  // accept it as written and store the bare group id.
+  const chat = typeof value.sourceChatId === "string" ? value.sourceChatId.replace(/^chat:(?=oc_)/, "") : value.sourceChatId;
+  const sourceChatId = optionalId(chat, "sourceChatId", FEISHU_TARGET);
   const feishuAccountId = optionalId(value.feishuAccountId, "feishuAccountId", /^[A-Za-z0-9._-]+$/);
   return {
     ...(createdByOpenId ? { createdByOpenId } : {}),
