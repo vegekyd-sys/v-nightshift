@@ -324,3 +324,48 @@ test("recovery after a failed mutation re-reads visible projects, not the whole 
   await bare.listCards({ cardIds: ["scoped-1"] });
   assert.equal(listParams.at(-1), null, "no recovery scope still falls back to the whole board");
 });
+
+test("a large scoped read goes out in bounded requests, never one oversized frame", async () => {
+  // V, 2026-09-24: the startup scope was 1,890 cards and its single response
+  // outgrew the Gateway client's 25 MiB frame; every pass failed with 1006.
+  const requested = [];
+  let failAt = null;
+  const adapter = new WorkboardGatewayAdapter({
+    recoveryCardIds: () => Array.from({ length: 1_890 }, (_, index) => `visible-${index}`),
+    readChunkSize: 200,
+  });
+  adapter.call = async (method, params) => {
+    assert.equal(method, "workboard.cards.list");
+    assert.ok(params.cardIds.length <= 200, `request of ${params.cardIds.length} cards`);
+    requested.push(params.cardIds);
+    if (failAt !== null && requested.length === failAt) throw new Error("gateway closed (1006)");
+    return { cards: params.cardIds.map((id) => ({ id })) };
+  };
+
+  adapter.needsFullSnapshot = true;
+  const cards = await adapter.listCards({ cardIds: ["scoped-1"] });
+  assert.equal(requested.length, 10);
+  assert.equal(cards.length, 1_891);
+  assert.deepEqual(cards.slice(0, 2).map((card) => card.id), ["scoped-1", "visible-0"]);
+  assert.equal(cards.at(-1).id, "visible-1889");
+  assert.equal(adapter.needsFullSnapshot, false);
+
+  // A read that fails partway leaves recovery pending for the next pass.
+  requested.length = 0;
+  failAt = 3;
+  adapter.needsFullSnapshot = true;
+  await assert.rejects(adapter.listCards(), /1006/);
+  assert.equal(adapter.needsFullSnapshot, true);
+
+  // A small scope is still exactly one request.
+  requested.length = 0;
+  failAt = null;
+  adapter.needsFullSnapshot = false;
+  await adapter.listCards({ cardIds: ["a", "b"] });
+  assert.deepEqual(requested, [["a", "b"]]);
+});
+
+test("rejects a read chunk size that would reintroduce oversized frames", () => {
+  assert.throws(() => new WorkboardGatewayAdapter({ readChunkSize: 0 }), /readChunkSize/);
+  assert.throws(() => new WorkboardGatewayAdapter({ readChunkSize: 5_000 }), /readChunkSize/);
+});
