@@ -66,6 +66,21 @@ Night Shift therefore reads the Gateway journal (`journalctl -u $NIGHTSHIFT_GATE
 
 Running cards are never stopped by this guard. A retried card also gets its native failure budget reset (`workboard.cards.reassign`), because the board refuses to start a card whose failure count exceeds `maxRetries`.
 
+## Feishu completion notices
+
+When a project reaches `done`, Night Shift sends a Feishu card ("项目已完成", with done/blocked counts and a link to the project) to the person it belongs to. Enabled by `NIGHTSHIFT_FEISHU_NOTIFICATIONS=1` in the unit file; sent through `openclaw message send --channel feishu --presentation`.
+
+A project is announced only if its Workflow declares `spec.notifications.instanceCompleted.enabled: true` **and** a target resolves:
+
+1. the project's own `collaboration.sourceChatId`: the requester's own chat (`user:ou_…`) or a group (`oc_…`), recorded when V creates the project from a Feishu conversation;
+2. otherwise the Workflow's `spec.notifications.instanceCompleted.to`, for projects a schedule creates.
+
+Set or change a running project's target with `nightshiftctl projects collaboration <id> --to <oc_…|user:ou_…> [--by <ou_…>]`.
+
+Each transition to `done` is sent once. A failed send is retried on later passes, up to five attempts. Failures appear as `notifications.lastError` in `/api/health` and never as a scheduler error. The first pass after an upgrade records every project's current state and sends nothing, so projects finished before the upgrade are not announced.
+
+This feature first shipped on 2026-08-25 from a side branch (`5cb239f`), never reached dev, and was replaced by the next release built from dev. Review cards (approve/reject from Feishu) from that build are not carried over.
+
 ## Timed release
 
 A stage that declares `releaseAt` gets its card immediately, carrying the release

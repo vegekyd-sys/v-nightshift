@@ -623,3 +623,15 @@ test("a project that authorized paid production does not also need an approval c
   assert.equal(publish.type, "request_approval");
   assert.equal(publish.approval.effect, "external-publication");
 });
+
+test("a Workflow may name who hears when its projects finish", async () => {
+  const base = await loadWorkflow(resolve(dirname(fileURLToPath(import.meta.url)), "../../../examples/workflows/xingqing-content-delivery.workflow.md"));
+  const codes = (notifications) => validateWorkflow({ ...base, spec: { ...base.spec, notifications } })
+    .filter((entry) => entry.code.startsWith("notifications")).map((entry) => `${entry.code} ${entry.path}`);
+  assert.deepEqual(codes({ instanceCompleted: { enabled: true, to: "oc_88d96b7e42cbdfd33e6d096477a8cac8" } }), []);
+  assert.deepEqual(codes({ instanceCompleted: { enabled: true, to: "user:ou_cb133fd4414f0607e8b46a3195c7b9d8" } }), []);
+  assert.deepEqual(codes({ reviewRequested: { enabled: true }, instanceCompleted: { enabled: false } }), []);
+  assert.deepEqual(codes({ instanceCompleted: { enabled: true, to: "Tianyi" } }), ["notifications.to.invalid spec.notifications.instanceCompleted.to"]);
+  assert.deepEqual(codes({ instanceCompleted: { to: "oc_1" } }), ["notifications.event.config.invalid spec.notifications.instanceCompleted"]);
+  assert.deepEqual(codes({ onFailure: { enabled: true } }), ["notifications.event.invalid spec.notifications.onFailure"]);
+});

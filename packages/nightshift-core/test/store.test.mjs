@@ -212,3 +212,25 @@ test("restoring an archived active project is fail-safe paused", async () => {
   assert.equal(store.restoreInstance("NS-ARCHIVE-ACTIVE").status, "paused");
   store.close();
 });
+
+test("an older database gains the collaboration column without losing projects", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "nightshift-store-collaboration-"));
+  const databasePath = join(directory, "nightshift.sqlite");
+  const first = new NightShiftStore(databasePath);
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  first.saveRelease(release, "workflow");
+  first.createInstance({ id: "OLD", name: "old", workflowSha256: release.metadata.workflowSha256 });
+  first.close();
+  // Simulate a database from before the column existed.
+  const raw = new DatabaseSync(databasePath);
+  raw.exec("ALTER TABLE instances DROP COLUMN collaboration_json");
+  raw.close();
+
+  const store = new NightShiftStore(databasePath);
+  assert.deepEqual(store.getInstance("OLD").collaboration, {});
+  store.updateInstanceCollaboration("OLD", { sourceChatId: "oc_88d96b7e42cbdfd33e6d096477a8cac8" });
+  assert.equal(store.getInstance("OLD").collaboration.sourceChatId, "oc_88d96b7e42cbdfd33e6d096477a8cac8");
+  assert.ok(store.listEvents("OLD").some((event) => event.type === "instance.collaboration.updated"));
+  store.close();
+  await rm(directory, { recursive: true, force: true });
+});

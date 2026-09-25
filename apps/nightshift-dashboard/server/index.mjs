@@ -25,8 +25,10 @@ import {
   auditNightShiftGovernance,
   findNightShiftExternalOperation,
   humanStageHandoff,
+  NightShiftNotificationCoordinator,
   NightShiftRuntime,
   NightShiftStore,
+  OpenClawFeishuNotificationSender,
   normalizeArtifactPath,
   normalizeProjectGovernance,
   normalizeDeliverablesManifest,
@@ -58,6 +60,8 @@ const workflowPath = resolve(
 const board = process.env.NIGHTSHIFT_BOARD ?? "nightshift-lab";
 const publicHost = process.env.NIGHTSHIFT_PUBLIC_HOST ?? "";
 const publicBaseUrl = process.env.NIGHTSHIFT_PUBLIC_BASE_URL ?? "";
+// Feishu cards to the person a project belongs to (see packages/nightshift-core/src/notifications.mjs).
+const notificationsEnabled = process.env.NIGHTSHIFT_FEISHU_NOTIFICATIONS === "1";
 const schedulerDispatchMaxStarts = positiveInteger(process.env.NIGHTSHIFT_DISPATCH_MAX_STARTS_PER_PASS, 36, 36);
 const dispatchMaxStartsPerInstance = positiveInteger(process.env.NIGHTSHIFT_DISPATCH_MAX_STARTS_PER_INSTANCE, 8, 8);
 const dispatchStartBurst = positiveInteger(process.env.NIGHTSHIFT_DISPATCH_START_BURST, 3, 8);
@@ -120,8 +124,17 @@ let lastSchedulerAt = null;
 let schedulerStartedAt = null;
 let lastSchedulerDurationMs = null;
 let lastSchedulerError = null;
+let lastNotificationError = null;
+let lastNotificationAt = null;
 let lastSchedulerTrigger = null;
 let schedulerPromise = null;
+const notificationCoordinator = notificationsEnabled
+  ? new NightShiftNotificationCoordinator({
+      baseUrl: publicBaseUrl || `http://${host}:${port}`,
+      sender: new OpenClawFeishuNotificationSender(),
+      store,
+    })
+  : null;
 const schedulerCircuit = new SchedulerCircuit({ cooldownMs: schedulerFailureCooldownMs, startWithProbe: true });
 const dispatchPressureGuard = new DispatchPressureGuard({
   greenLatencyMs: gatewayGreenLatencyMs,
@@ -212,6 +225,7 @@ async function handleApi(request, response, url) {
       cardsUpdatedAt,
       lastSchedulerAt,
       lastSchedulerError,
+      notifications: { enabled: notificationsEnabled, lastAt: lastNotificationAt, lastError: lastNotificationError },
       schedulerStartedAt,
       schedulerRunning: Boolean(schedulerPromise),
       lastSchedulerDurationMs,
@@ -586,6 +600,16 @@ async function handleApi(request, response, url) {
     });
     return;
   }
+  const instanceCollaborationMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/collaboration$/);
+  if (request.method === "PATCH" && instanceCollaborationMatch) {
+    const body = await bodyJson(request);
+    const updated = runtime.updateInstanceCollaboration(
+      decodeURIComponent(instanceCollaborationMatch[1]),
+      body.collaboration ?? {},
+    );
+    json(response, 200, updated);
+    return;
+  }
   if (request.method === "PATCH" && instanceInputMatch) {
     const body = await bodyJson(request);
     const updated = runtime.updateInstanceInputs(
@@ -833,6 +857,7 @@ function runScheduler({ trigger = "manual" } = {}) {
     lastSchedulerDurationMs = Date.now() - started;
     lastSchedulerError = result.warnings.length ? result.warnings.join("; ") : null;
     schedulerCircuit.recordPass(result.warnings, { probe: circuitDecision.probe });
+    await announceTransitions();
     if (result.retryAfterMs > 0) changeScheduler.enqueueAfter("dispatch.window", result.retryAfterMs);
   })().catch((error) => {
     lastSchedulerAt = new Date().toISOString();
@@ -850,6 +875,27 @@ function runScheduler({ trigger = "manual" } = {}) {
 // schedule its own retry; the repair tick is five minutes away. This pass keeps
 // its own catch and never rejects, so the scheduler's onError alone was never
 // reached. Both paths call this now.
+// A Feishu send that fails is recorded here and retried on the next pass (up to
+// five attempts). It never becomes a scheduler warning: a notification outage
+// must not trip the scheduler circuit or mark Night Shift unhealthy.
+async function announceTransitions() {
+  if (!notificationCoordinator) return;
+  try {
+    const outcome = await notificationCoordinator.reconcile({
+      cards: cardCache,
+      instances: store.listInstances(),
+      releases: store.listReleases(),
+    });
+    const failed = outcome.delivered.filter((entry) => !entry.ok);
+    if (outcome.delivered.length > 0) lastNotificationAt = new Date().toISOString();
+    lastNotificationError = failed.length ? failed.map((entry) => entry.error).join("; ").slice(0, 500) : null;
+    for (const entry of failed) console.error(`Night Shift notification ${entry.id} failed: ${entry.error}`);
+  } catch (error) {
+    lastNotificationError = error.message;
+    console.error(`Night Shift notifications failed: ${error.message}`);
+  }
+}
+
 function scheduleSchedulerRetry() {
   schedulerRetryMs = Math.min(schedulerRetryMs ? schedulerRetryMs * 2 : schedulerRetryMinMs, schedulerRetryMaxMs);
   changeScheduler.enqueueAfter("scheduler.retry", schedulerRetryMs);

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { CARD_LABEL_MAX, compileWorkflow, normalizeContentItems, parseWorkflow, requiredSkillsByRole, validateProjectRequest } from "../src/index.mjs";
+import { CARD_LABEL_MAX, compileWorkflow, normalizeContentItems, normalizeProjectCollaboration, parseWorkflow, requiredSkillsByRole, validateProjectRequest } from "../src/index.mjs";
 
 const workflowPath = new URL("../../../examples/workflows/xingqing-content-delivery.workflow.md", import.meta.url);
 
@@ -133,4 +133,22 @@ test("stableId satisfies the documented item contract", () => {
   assert.equal(normalizeContentItems(both, { routes })[0].id, "explicit");
   // Neither is still a clear failure.
   assert.throws(() => normalizeContentItems([{ title: "t", route: "SCENE_EDIT" }], { routes }), /Invalid content item id/);
+});
+
+test("a project records where its owner hears about it: their own chat or a group", () => {
+  assert.deepEqual(normalizeProjectCollaboration({ sourceChatId: "oc_88d96b7e42cbdfd33e6d096477a8cac8" }), {
+    sourceChatId: "oc_88d96b7e42cbdfd33e6d096477a8cac8",
+  });
+  assert.deepEqual(normalizeProjectCollaboration({
+    createdByOpenId: "ou_cb133fd4414f0607e8b46a3195c7b9d8",
+    sourceChatId: "user:ou_cb133fd4414f0607e8b46a3195c7b9d8",
+    ignored: "x",
+  }), {
+    createdByOpenId: "ou_cb133fd4414f0607e8b46a3195c7b9d8",
+    sourceChatId: "user:ou_cb133fd4414f0607e8b46a3195c7b9d8",
+  });
+  assert.deepEqual(normalizeProjectCollaboration(undefined), {});
+  for (const bad of [{ sourceChatId: "chat:oc_1" }, { sourceChatId: "ou_123" }, { createdByOpenId: "oc_1" }, []]) {
+    assert.throws(() => normalizeProjectCollaboration(bad), /collaboration/);
+  }
 });
