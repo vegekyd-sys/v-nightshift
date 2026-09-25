@@ -134,7 +134,42 @@ export class NightShiftStore {
         payload_json TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS notification_subject_state (
+        subject_key TEXT PRIMARY KEY,
+        state TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS notification_deliveries (
+        id TEXT PRIMARY KEY,
+        notification_key TEXT NOT NULL UNIQUE,
+        instance_id TEXT NOT NULL REFERENCES instances(id),
+        card_id TEXT,
+        kind TEXT NOT NULL,
+        target_chat_id TEXT NOT NULL,
+        allowed_open_ids_json TEXT NOT NULL,
+        presentation_json TEXT NOT NULL,
+        fallback_text TEXT NOT NULL,
+        status TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        message_id TEXT,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        delivered_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS notification_metadata (
+        key TEXT PRIMARY KEY,
+        value_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
     `);
+    // Production databases created by the 2026-08-25 notification build already
+    // carry this column and these tables; newer ones gain them here.
+    const instanceColumns = this.db.prepare("PRAGMA table_info(instances)").all();
+    if (!instanceColumns.some((column) => column.name === "collaboration_json")) {
+      this.db.exec("ALTER TABLE instances ADD COLUMN collaboration_json TEXT NOT NULL DEFAULT '{}'");
+    }
     const approvalColumns = this.db.prepare("PRAGMA table_info(approvals)").all();
     if (!approvalColumns.some((column) => column.name === "content_item_id")) {
       this.db.exec("ALTER TABLE approvals ADD COLUMN content_item_id TEXT");
@@ -236,8 +271,8 @@ export class NightShiftStore {
     this.db
       .prepare(`
         INSERT INTO instances(
-          id, name, workflow_sha, status, inputs_json, agent_bindings_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          id, name, workflow_sha, status, inputs_json, agent_bindings_json, collaboration_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         instance.id,
@@ -246,6 +281,7 @@ export class NightShiftStore {
         instance.status ?? "active",
         JSON.stringify(instance.inputs ?? {}),
         JSON.stringify(instance.agentBindings ?? {}),
+        JSON.stringify(instance.collaboration ?? {}),
         timestamp,
         timestamp,
       );
@@ -321,6 +357,113 @@ export class NightShiftStore {
       now,
     });
     return restored;
+  }
+
+  updateInstanceCollaboration(id, collaboration, now = new Date()) {
+    if (!this.getInstance(id)) throw new Error(`Unknown instance ${id}`);
+    this.db
+      .prepare("UPDATE instances SET collaboration_json = ?, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify(collaboration ?? {}), now.toISOString(), id);
+    this.appendEvent({
+      instanceId: id,
+      type: "instance.collaboration.updated",
+      payload: {
+        hasCreator: Boolean(collaboration?.createdByOpenId),
+        hasSourceChat: Boolean(collaboration?.sourceChatId),
+      },
+      now,
+    });
+    return this.getInstance(id);
+  }
+
+  // A subject's generation advances only when its state changes, so a
+  // notification key built from it is sent once per real transition.
+  transitionNotificationSubject(subjectKey, state, now = new Date()) {
+    const current = this.db
+      .prepare("SELECT state, generation, updated_at AS updatedAt FROM notification_subject_state WHERE subject_key = ?")
+      .get(subjectKey);
+    if (current?.state === state) return { changed: false, ...current, subjectKey };
+    const generation = (current?.generation ?? 0) + 1;
+    const updatedAt = now.toISOString();
+    this.db.prepare(`
+      INSERT INTO notification_subject_state(subject_key, state, generation, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(subject_key) DO UPDATE SET
+        state=excluded.state, generation=excluded.generation, updated_at=excluded.updated_at
+    `).run(subjectKey, state, generation, updatedAt);
+    return { changed: true, generation, state, subjectKey, updatedAt };
+  }
+
+  enqueueNotification(delivery, now = new Date()) {
+    const existing = this.db
+      .prepare("SELECT * FROM notification_deliveries WHERE notification_key = ?")
+      .get(delivery.notificationKey);
+    if (existing) return notificationDeliveryRow(existing);
+    const id = delivery.id ?? randomUUID();
+    const timestamp = now.toISOString();
+    this.db.prepare(`
+      INSERT INTO notification_deliveries(
+        id, notification_key, instance_id, card_id, kind, target_chat_id,
+        allowed_open_ids_json, presentation_json, fallback_text, status,
+        attempts, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+    `).run(
+      id,
+      delivery.notificationKey,
+      delivery.instanceId,
+      delivery.cardId ?? null,
+      delivery.kind,
+      delivery.targetChatId,
+      JSON.stringify(delivery.allowedOpenIds ?? []),
+      JSON.stringify(delivery.presentation),
+      delivery.fallbackText,
+      timestamp,
+      timestamp,
+    );
+    return this.getNotification(id);
+  }
+
+  getNotification(id) {
+    const row = this.db.prepare("SELECT * FROM notification_deliveries WHERE id = ?").get(id);
+    return row ? notificationDeliveryRow(row) : null;
+  }
+
+  listPendingNotifications(limit = 20) {
+    return this.db.prepare(`
+      SELECT * FROM notification_deliveries
+      WHERE status IN ('pending', 'failed') AND attempts < 5
+      ORDER BY created_at ASC LIMIT ?
+    `).all(limit).map(notificationDeliveryRow);
+  }
+
+  markNotificationDelivered(id, messageId, now = new Date()) {
+    const timestamp = now.toISOString();
+    this.db.prepare(`
+      UPDATE notification_deliveries
+      SET status='delivered', attempts=attempts+1, message_id=?, last_error=NULL, delivered_at=?, updated_at=?
+      WHERE id=?
+    `).run(messageId ?? null, timestamp, timestamp, id);
+    return this.getNotification(id);
+  }
+
+  markNotificationFailed(id, error, now = new Date()) {
+    this.db.prepare(`
+      UPDATE notification_deliveries SET status='failed', attempts=attempts+1, last_error=?, updated_at=? WHERE id=?
+    `).run(String(error).slice(0, 2000), now.toISOString(), id);
+    return this.getNotification(id);
+  }
+
+  getNotificationMetadata(key) {
+    const row = this.db.prepare("SELECT value_json AS valueJson FROM notification_metadata WHERE key = ?").get(key);
+    return row ? JSON.parse(row.valueJson) : null;
+  }
+
+  setNotificationMetadata(key, value, now = new Date()) {
+    this.db.prepare(`
+      INSERT INTO notification_metadata(key, value_json, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at
+    `).run(key, JSON.stringify(value), now.toISOString());
+    return value;
   }
 
   updateInstanceInputs(id, patch, now = new Date()) {
@@ -636,9 +779,31 @@ function instanceRow(row, approvals) {
     status: row.status,
     inputs: JSON.parse(row.inputs_json),
     agentBindings: JSON.parse(row.agent_bindings_json),
+    collaboration: row.collaboration_json ? JSON.parse(row.collaboration_json) : {},
     approvals,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function notificationDeliveryRow(row) {
+  return {
+    id: row.id,
+    notificationKey: row.notification_key,
+    instanceId: row.instance_id,
+    cardId: row.card_id,
+    kind: row.kind,
+    targetChatId: row.target_chat_id,
+    allowedOpenIds: JSON.parse(row.allowed_open_ids_json),
+    presentation: JSON.parse(row.presentation_json),
+    fallbackText: row.fallback_text,
+    status: row.status,
+    attempts: row.attempts,
+    messageId: row.message_id,
+    lastError: row.last_error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    deliveredAt: row.delivered_at,
   };
 }
 

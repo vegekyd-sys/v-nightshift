@@ -118,6 +118,24 @@ async function run(input) {
       method: "PATCH",
     });
   }
+  // Who hears when the project finishes: --to is a Feishu group (oc_…) or a
+  // person's own chat (user:ou_…); --by is the requester's open_id (ou_…).
+  if (resource === "projects" && action === "collaboration" && subject) {
+    const file = option(input, "--file");
+    const collaboration = file
+      ? await readJson(file)
+      : Object.fromEntries(Object.entries({
+          sourceChatId: option(input, "--to"),
+          createdByOpenId: option(input, "--by"),
+        }).filter(([, value]) => value));
+    if (Object.keys(collaboration).length === 0) {
+      throw new Error("projects collaboration requires --to <oc_…|user:ou_…> [--by <ou_…>] or --file <json>");
+    }
+    return api(`/api/instances/${encodeURIComponent(subject)}/collaboration`, {
+      body: JSON.stringify({ collaboration }),
+      method: "PATCH",
+    });
+  }
   if (resource === "operations" && ["reserve", "checkpoint"].includes(action) && subject) {
     if (action === "reserve") {
       const requestHash = option(input, "--request-hash");
@@ -163,7 +181,7 @@ async function run(input) {
       method: "POST",
     });
   }
-  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|monitor|preflight|create|start|pause|archive|restore | projects inputs <id> --file <json> | governance audit [--refresh] | governance archive|restore <manifest.json> [--apply] | operations reserve|checkpoint <card-id> | cards list|session|approve|changes|reject|retry");
+  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|monitor|preflight|create|start|pause|archive|restore | projects inputs <id> --file <json> | projects collaboration <id> --to <oc_…|user:ou_…> [--by <ou_…>] | governance audit [--refresh] | governance archive|restore <manifest.json> [--apply] | operations reserve|checkpoint <card-id> | cards list|session|approve|changes|reject|retry");
 }
 
 async function resolveWorkflow(project) {

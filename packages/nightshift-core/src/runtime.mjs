@@ -7,6 +7,7 @@ import {
 } from "./workflow.mjs";
 import { actionKey, buildAgentBrief, nativeActionKey, planNextActions, requiredApproval, resolveApprovalBinding, stageTimeoutSeconds } from "./orchestrator.mjs";
 import { classifyTerminalFailure, infrastructureFailureSummary, scheduleAutomaticRetry } from "./failure-policy.mjs";
+import { normalizeProjectCollaboration } from "./project.mjs";
 
 export class NightShiftRuntime {
   constructor({
@@ -71,6 +72,12 @@ export class NightShiftRuntime {
     const maxItems = release?.manifest?.spec?.contentItems?.maxItems ?? 50;
     const routes = release?.manifest?.spec?.contentItems?.routes ?? [];
     return this.store.replaceContentItems(instanceId, items, new Date(), maxItems, routes);
+  }
+
+  // Set who hears about a project that was created without it, such as a
+  // project already running when notifications were switched on.
+  updateInstanceCollaboration(instanceId, collaboration) {
+    return this.store.updateInstanceCollaboration(instanceId, normalizeProjectCollaboration(collaboration));
   }
 
   updateInstanceInputs(instanceId, patch) {
