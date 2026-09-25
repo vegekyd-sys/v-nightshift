@@ -39,12 +39,31 @@ Night Shift starts new native cards only while the Gateway host has headroom, an
 | `NIGHTSHIFT_RESERVED_INTERACTIVE_WORKERS` | 3 | Whole Workers never handed to Night Shift. The pool gives each Session its own Worker before packing a second into any process, so N running cards hold N Workers. Reserving only Session slots left one free Worker on V while the Session arithmetic still reported 29 spare. |
 | `NIGHTSHIFT_HOST_MEMORY_RESERVE_PERCENT` | 40 | Percent of host RAM that must stay available before a new job is admitted. |
 | `NIGHTSHIFT_HOST_MEMORY_RESERVE_MIB` | 4096 | Absolute floor for the same reserve. The larger of the two applies. |
+| `NIGHTSHIFT_AGENT_DB_PRESSURE` | on | Set `0` to stop reading Agent DB lease pressure (below). |
+| `NIGHTSHIFT_GATEWAY_UNIT` | `openclaw-gateway` | systemd unit whose journal carries the lease signals. Set it on hosts where the Gateway runs under another unit name. |
+| `NIGHTSHIFT_AGENT_DB_PRESSURE_WINDOW_SECONDS` | 120 | How far back each reading looks. |
+| `NIGHTSHIFT_AGENT_DB_SLOW_ADMISSION_YELLOW` | 3 | Slow lease admissions in the window that stop new starts. |
+| `NIGHTSHIFT_USER_HARM_COOLDOWN_MS` | 900000 | Hold after a lease timeout cut a person's reply. Quiet probes cannot end it early. |
 | `NIGHTSHIFT_DISPATCH_INITIAL_MAX_ACTIVE` | 3 | Concurrency the ramp starts from after a restart or a red probe. |
 | `NIGHTSHIFT_GATEWAY_GREEN_LATENCY_MS` / `_RED_LATENCY_MS` | 250 / 1000 | Worker status RPC latency that pauses growth or halves the target. |
 | `NIGHTSHIFT_CARD_REFRESH_MIN_INTERVAL_MS` | 30000 | An explicit `refresh=1` read younger than this is served from the cache. |
 | `NIGHTSHIFT_CARD_LABEL_MAX` | 40 | Longest card label the Gateway accepts. A content item id gets this minus `content-item:`. Raise it here once the Gateway's own limit is raised. |
 | `NIGHTSHIFT_SCHEDULER_RETRY_MIN_MS` / `_MAX_MS` | 10000 / 120000 | Backoff between retries after a failed scheduler pass. |
 | `NIGHTSHIFT_SCHEDULER_EVENT_MIN_INTERVAL_MS` | 5000 | Floor between event-driven scheduler passes. Raising it trades stage handoff latency for Gateway main-thread time; 15000 is a reasonable production setting. |
+
+### Agent DB lease pressure
+
+Every Agent run writes through one process-global lease on the agent database, and a writer that waits 5 s is killed. Night Shift cards write far more than chat turns, so under load the lease saturates while Workers still have room and the Gateway probe stays green. On V at 10:21 on 2026-09-24 that cut two people's replies with every other signal healthy.
+
+Night Shift therefore reads the Gateway journal (`journalctl -u $NIGHTSHIFT_GATEWAY_UNIT --grep`, as the service user) and reports the result as `dispatchPressure.agentDbPressure` in `/api/health`:
+
+| Level | Condition | Effect |
+| --- | --- | --- |
+| red | a run ended with `coordinator wait exceeded` in the window | Target halves, no starts for the red cooldown. If the run was a person's (not `workboard:`), the hold is `NIGHTSHIFT_USER_HARM_COOLDOWN_MS` and cannot end early. |
+| yellow | slow admissions ≥ threshold | No new starts; running cards continue. |
+| unknown | journal unreadable, empty for the unit, or failing | Recorded with a reason; does not block. The other probes still gate. |
+
+Running cards are never stopped by this guard. A retried card also gets its native failure budget reset (`workboard.cards.reassign`), because the board refuses to start a card whose failure count exceeds `maxRetries`.
 
 ## Timed release
 

@@ -568,6 +568,11 @@ export class NightShiftRuntime {
       maxRetries: stage.retry?.maxAttempts ?? 1,
       maxRuntimeSeconds: stageTimeoutSeconds(stage.timeout),
     });
+    // A retry is a fresh budget. Without the reset, a card that had already
+    // failed more than maxRetries times went to ready, the board declined to
+    // start it, and the next repair pass judged its old session and blocked it
+    // again, so the retry never ran (three cards on V, 2026-09-23 to 09-24).
+    await this.workboard.resetCardFailures(cardId, `Night Shift retry by ${actor}`);
     // Retry must clear the prior Attempt's claim atomically with reopening the
     // card. A blocked card can retain a long-lived claim after an interrupted
     // Worker; moving it to ready without releasing that claim makes it look
