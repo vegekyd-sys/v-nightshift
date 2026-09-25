@@ -1023,7 +1023,11 @@ test("rejects a done card when its declared delivery fails validation", async ()
     id: "card-produce-done",
     labels: ["instance:NS-RUNTIME-INVALID-DELIVERY", "content-item:video-1", "stage:produce"],
     status: "done",
-    metadata: { claim: { ownerId: "main", token: "stale-token", expiresAt: Date.now() + 60_000 } },
+    metadata: {
+      claim: { ownerId: "main", token: "stale-token", expiresAt: Date.now() + 60_000 },
+      // Past the stage's retry budget: the native board would never start it.
+      failureCount: 3,
+    },
   });
   workboard.cards.push({
     id: "card-review-stale",
@@ -1055,6 +1059,10 @@ test("rejects a done card when its declared delivery fails validation", async ()
   });
   assert.equal(workboard.cards[0].status, "ready");
   assert.equal(workboard.cards[0].metadata.claim, undefined);
+  assert.equal(workboard.cards[0].metadata.failureCount, 0);
+  assert.deepEqual(workboard.resetCalls.map(({ id, beforeRelease }) => ({ id, beforeRelease })), [
+    { id: "card-produce-done", beforeRelease: workboard.releaseCalls.length - 1 },
+  ]);
   assert.deepEqual(workboard.releaseCalls.at(-1), { id: "card-produce-done", status: "ready" });
   assert.match(workboard.updateCalls.at(-1).patch.idempotencyKey, /^nightshift:[a-f0-9]{64}$/);
   assert.ok(workboard.updateCalls.at(-1).patch.idempotencyKey.length <= 160);
@@ -1143,6 +1151,7 @@ class FakeWorkboard {
     this.cards = [];
     this.blockCalls = [];
     this.releaseCalls = [];
+    this.resetCalls = [];
     this.completeCalls = [];
     this.completeFailures = 0;
     this.dispatchCalls = [];
@@ -1210,6 +1219,14 @@ class FakeWorkboard {
     this.updateCalls.push({ id, patch });
     const card = this.cards.find((entry) => entry.id === id);
     Object.assign(card, patch);
+    return card;
+  }
+
+  // Mirrors the native board's reassign reset: failureCount goes to zero.
+  async resetCardFailures(id, reason) {
+    this.resetCalls.push({ id, reason, beforeRelease: this.releaseCalls.length });
+    const card = this.cards.find((entry) => entry.id === id);
+    card.metadata = { ...(card.metadata ?? {}), failureCount: 0 };
     return card;
   }
 
