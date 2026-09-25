@@ -18,6 +18,9 @@ export class WorkboardGatewayAdapter {
     // Card IDs to re-read after a failed Gateway mutation. Without it, recovery
     // falls back to listing the whole board.
     recoveryCardIds = null,
+    // Cards per scoped cards.list request. Production cards average ~13 KB and
+    // reach ~36 KB serialized, so 200 stays near 7 MiB at worst.
+    readChunkSize = process.env.NIGHTSHIFT_BOARD_READ_CHUNK ?? 200,
     runner,
     startBurst = process.env.NIGHTSHIFT_DISPATCH_START_BURST ?? 3,
     startIntervalMs = process.env.NIGHTSHIFT_DISPATCH_START_INTERVAL_MS ?? 15_000,
@@ -33,6 +36,7 @@ export class WorkboardGatewayAdapter {
     this.rpcTimeoutMs = positiveTimeout(rpcTimeoutMs);
     this.logBoardReads = Boolean(logBoardReads);
     this.recoveryCardIds = typeof recoveryCardIds === "function" ? recoveryCardIds : null;
+    this.readChunkSize = readChunk(readChunkSize);
     this.runner = runner;
     this.startBurst = dispatchBurst(startBurst);
     this.startIntervalMs = dispatchInterval(startIntervalMs);
@@ -60,13 +64,23 @@ export class WorkboardGatewayAdapter {
     }
     if (ids?.length === 0) return [];
     const started = this.now();
-    const result = await this.call("workboard.cards.list", { boardId: this.board, ...(ids ? { cardIds: ids } : {}) });
+    // A scoped read is still one response. The startup and recovery scope is
+    // every card of every unarchived project, and on V on 2026-09-24 that one
+    // response outgrew the Gateway client's 25 MiB frame limit: every pass
+    // closed the socket with 1006 and the scheduler stood still for six hours.
+    // Reading the scope in bounded requests keeps each frame small however many
+    // projects a mature board holds.
+    const chunks = ids ? chunk(ids, this.readChunkSize) : [null];
+    const cards = [];
+    for (const cardIds of chunks) {
+      const result = await this.call("workboard.cards.list", { boardId: this.board, ...(cardIds ? { cardIds } : {}) });
+      cards.push(...(result.cards ?? []));
+    }
     if (recovering) this.needsFullSnapshot = false;
-    const cards = result.cards ?? [];
     // Every board read is an observable event so acceptance can prove that
     // no hot path lists the whole board.
     if (this.logBoardReads) {
-      console.error(JSON.stringify({ event: "board.read", scope: ids ? "ids" : "board", requested: ids?.length ?? null, returned: cards.length, ms: Math.round(this.now() - started), recovering }));
+      console.error(JSON.stringify({ event: "board.read", scope: ids ? "ids" : "board", requested: ids?.length ?? null, returned: cards.length, requests: chunks.length, ms: Math.round(this.now() - started), recovering }));
     }
     return cards;
   }
@@ -384,6 +398,20 @@ function dispatchBurst(value) {
 }
 
 const MUTATION_METHOD = /^workboard\.cards\.(create|dispatchWithOptions|complete|block|release|move|update|reassign)$/;
+
+function readChunk(value) {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 2_000) {
+    throw new Error("readChunkSize must be an integer between 1 and 2000");
+  }
+  return parsed;
+}
+
+function chunk(values, size) {
+  const chunks = [];
+  for (let index = 0; index < values.length; index += size) chunks.push(values.slice(index, index + size));
+  return chunks;
+}
 
 function positiveTimeout(value) {
   const parsed = Number(value);

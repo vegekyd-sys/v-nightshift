@@ -47,6 +47,7 @@ Night Shift starts new native cards only while the Gateway host has headroom, an
 | `NIGHTSHIFT_DISPATCH_INITIAL_MAX_ACTIVE` | 3 | Concurrency the ramp starts from after a restart or a red probe. |
 | `NIGHTSHIFT_GATEWAY_GREEN_LATENCY_MS` / `_RED_LATENCY_MS` | 250 / 1000 | Worker status RPC latency that pauses growth or halves the target. |
 | `NIGHTSHIFT_CARD_REFRESH_MIN_INTERVAL_MS` | 30000 | An explicit `refresh=1` read younger than this is served from the cache. |
+| `NIGHTSHIFT_BOARD_READ_CHUNK` | 200 | Cards per scoped `workboard.cards.list` request. The Gateway client drops any frame over 25 MiB with close code 1006; at ~13 KB per card (≤36 KB) 200 cards stay near 7 MiB. |
 | `NIGHTSHIFT_CARD_LABEL_MAX` | 40 | Longest card label the Gateway accepts. A content item id gets this minus `content-item:`. Raise it here once the Gateway's own limit is raised. |
 | `NIGHTSHIFT_SCHEDULER_RETRY_MIN_MS` / `_MAX_MS` | 10000 / 120000 | Backoff between retries after a failed scheduler pass. |
 | `NIGHTSHIFT_SCHEDULER_EVENT_MIN_INTERVAL_MS` | 5000 | Floor between event-driven scheduler passes. Raising it trades stage handoff latency for Gateway main-thread time; 15000 is a reasonable production setting. |
