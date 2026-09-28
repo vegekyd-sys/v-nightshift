@@ -64,6 +64,8 @@ Night Shift therefore reads the Gateway journal (`journalctl -u $NIGHTSHIFT_GATE
 | yellow | slow admissions ≥ threshold | No new starts; running cards continue. |
 | unknown | journal unreadable, empty for the unit, or failing | Recorded with a reason; does not block. The other probes still gate. |
 
+A cut reply also sets a ceiling, `dispatchPressure.harmCeiling` in `/api/health`, at 70% of the Night Shift cards running when it happened. Recovery is capped there, including the rule that admits one card beyond those still running, so it cannot jump straight back to the level that caused the harm. The ceiling starts rising when the hold ends: one card per 5 quiet minutes. It lowers again at the next separate cut reply and disappears once it climbs back to `maxActive`. It is held in memory, so a service restart forgets it. On 2026-09-28, without it, recovery at 15:10 returned to the ten cards that had cut a reply at 14:55, and two more replies were cut at 15:22.
+
 Running cards are never stopped by this guard. A retried card also gets its native failure budget reset (`workboard.cards.reassign`), because the board refuses to start a card whose failure count exceeds `maxRetries`.
 
 ## Feishu completion notices
