@@ -547,8 +547,8 @@ body { background:radial-gradient(circle at 72% -20%,rgba(128,92,214,.14),transp
 /* Titles show up to three lines; the full title is on hover. */
 .factory-studio .stage-task strong,.factory-studio .stage-task.state-running strong,.factory-card strong { display:-webkit-box; overflow:hidden; white-space:normal; text-overflow:clip; -webkit-box-orient:vertical; -webkit-line-clamp:3; line-clamp:3; }
 .factory-studio .stage-task small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.factory-studio .stage-task.state-running { min-height:124px; }
-.factory-studio .stage-task.state-running { padding-top:28px; }.factory-studio .stage-task.state-running::after { top:10px; right:12px; }
+/* A running task says 「Agent 在做」 under its title; no second label on top. */
+.factory-studio .stage-task.state-running { min-height:78px; padding-top:13px; }.factory-studio .stage-task.state-running::after { content:none; }
 /* Side navigation: the selected item is a tinted block, like the workflow
    picker and scope tabs, instead of a bar on its left edge. */
 .sidebar nav button { border-radius:12px; }
