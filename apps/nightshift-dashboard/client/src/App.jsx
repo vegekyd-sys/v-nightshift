@@ -31,6 +31,8 @@ const columns = [
   ["done", "Done", ["done"]],
 ];
 
+const NAVIGATION_KEY = "nightshift.navigation.v2";
+
 export function App() {
   const initialLocation = useRef(readDashboardLocation()).current;
   const deepLinkApplied = useRef(false);
@@ -48,7 +50,9 @@ export function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [projectReleaseSha, setProjectReleaseSha] = useState(null);
   const [workflowProjectId, setWorkflowProjectId] = useState(initialLocation.project);
-  const [navigationCollapsed, setNavigationCollapsed] = useState(() => typeof window !== "undefined" && window.localStorage.getItem("nightshift.navigationCollapsed") === "true");
+  // Collapsed unless the viewer opened it. A new key, because the old one was
+  // written as "false" on every visit and would keep everyone expanded.
+  const [navigationCollapsed, setNavigationCollapsed] = useState(() => typeof window === "undefined" || window.localStorage.getItem(NAVIGATION_KEY) !== "expanded");
   const refreshInFlight = useRef(null);
   const selectedForDecision = useMemo(() => withDecisionContext(selected, data), [selected, data]);
 
@@ -88,7 +92,7 @@ export function App() {
   }, [active]);
 
   useEffect(() => {
-    window.localStorage.setItem("nightshift.navigationCollapsed", String(navigationCollapsed));
+    window.localStorage.setItem(NAVIGATION_KEY, navigationCollapsed ? "collapsed" : "expanded");
   }, [navigationCollapsed]);
 
   useEffect(() => {
@@ -323,8 +327,11 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
       <div className="workflow-title">
         <span className="workflow-v-avatar"><img src="/v-avatar.jpg" alt="V" /><i /></span>
         <div className="workflow-title-copy">
-          <span className="section-label">V · Workflow control room</span>
-          <button className="factory-switcher" aria-haspopup="listbox" aria-expanded={switcherOpen} onClick={() => setSwitcherOpen((value) => !value)}><h1>{group.name}</h1><ChevronDown size={18} /></button>
+          <button className="factory-switcher" aria-haspopup="listbox" aria-expanded={switcherOpen} aria-label={`当前 Workflow：${group.name}，点击切换`} onClick={() => setSwitcherOpen((value) => !value)}>
+            <span className="factory-switcher-label">Workflow</span>
+            <h1>{group.name}</h1>
+            <span className="factory-switcher-hint">切换<ChevronDown size={16} /></span>
+          </button>
           <p className={`topbar-copy workflow-live-line ${factory.running ? "is-live" : ""}`}><span />{factory["needs-you"] ? `${factory["needs-you"]} 件事等你处理` : "工厂自己在跑，没有要你决定的事"}<small>{pinnedRelease?.version} · {runwayStages.length === stages.length ? `${stages.length} 个阶段` : `${runwayStages.length}/${stages.length} 个阶段`}</small></p>
         </div>
         {switcherOpen && <>
@@ -365,7 +372,7 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
           <div className="factory-scope" role="tablist" aria-label="项目范围">{[["live", "在产"], ["delivered", "已交付"], ["shelved", "搁置"], ["all", "全部"]].map(([id, title]) => <button role="tab" aria-selected={scope === id && !focusedProject} className={scope === id && !focusedProject ? "selected" : ""} key={id} onClick={() => { setScope(id); setProjectId("all"); }}>{title}<span>{scopeCounts[id]}</span></button>)}</div>
           {focusedProject && <button className="factory-focus" onClick={() => setProjectId("all")}><span>只看</span><strong>{focusedProject.name}</strong><X size={13} /></button>}
         </div>
-        <FactoryOverview scope={scope} projects={projectId === "all" ? visibleProjects : []} taskIndex={taskIndex} releaseBySha={releaseBySha} needsYou={needsYou} onSelect={setSelected} onOpenProject={setProjectId} />
+        <FactoryOverview scope={scope} stages={runwayStages} projects={projectId === "all" ? visibleProjects : []} taskIndex={taskIndex} releaseBySha={releaseBySha} needsYou={needsYou} onSelect={setSelected} onOpenProject={setProjectId} />
         <nav className="mobile-stage-nav" aria-label="Workflow 阶段">
           {runwayStages.map((stage, index) => {
             const tasks = taskIndex.get(stage.id) ?? [];
@@ -427,11 +434,16 @@ function finishedAt(task) {
 
 const ATTENTION_KINDS = [["needs-you", "需要你"], ["running", "进行中"], ["healing", "自愈中"], ["queued", "排队"], ["stale", "已搁置"], ["done", "已完成"]];
 
+// "备料 + Brief 编译" -> "备料"; stage titles are written for the lane header.
+function shortStageTitle(title = "") {
+  return title.split(/\s*[+＋（(|｜]\s*/)[0].trim() || title;
+}
+
 function scopeTitle(scope) {
   return ({ live: "在产", delivered: "已交付", shelved: "搁置", all: "" })[scope] ?? "";
 }
 
-function FactoryOverview({ scope, projects, taskIndex, releaseBySha, needsYou, onSelect, onOpenProject }) {
+function FactoryOverview({ scope, stages, projects, taskIndex, releaseBySha, needsYou, onSelect, onOpenProject }) {
   const tasksByProject = useMemo(() => {
     const result = new Map();
     for (const tasks of taskIndex.values()) {
@@ -468,6 +480,17 @@ function FactoryOverview({ scope, projects, taskIndex, releaseBySha, needsYou, o
             <span className="bar-running" style={{ width: share(counts.running) }} />
             <span className="bar-healing" style={{ width: share(counts.healing) }} />
             <span className="bar-needs-you" style={{ width: share(counts["needs-you"]) }} />
+          </div>
+          <div className="factory-project-stages">
+            {stages.map((stage) => {
+              const planned = stageExpected(stage, [project]);
+              if (!planned) return null;
+              const stageTasks = tasks.filter((task) => task.stageId === stage.id);
+              const finished = stageTasks.filter((task) => task.attention.kind === "done").length;
+              const moving = stageTasks.some((task) => task.attention.kind === "running" || task.attention.kind === "healing");
+              return <span key={stage.id} className={finished >= planned ? "is-done" : moving ? "is-moving" : ""}>{shortStageTitle(stage.title)} <b>{finished}/{planned}</b></span>;
+            })}
+            {(counts.running + counts.healing) > 0 && <em>{counts.running + counts.healing} 个在做</em>}
           </div>
         </button>;
       })}
