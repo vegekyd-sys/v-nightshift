@@ -492,6 +492,7 @@ function WorkflowStudio({ onScopeChange, data, refresh, initialProjectId, initia
         {switcherOpen && <>
           <div className="factory-scrim" onClick={() => setSwitcherOpen(false)} />
           <div className="factory-switcher-menu" role="listbox" aria-label="切换 Workflow">
+            <header className="factory-sheet-title">切换 Workflow</header>
             {groups.map((entry) => ({ entry, live: liveCountFor(entry) })).sort((left, right) => (right.live > 0) - (left.live > 0)).map(({ entry, live }) => {
               return <button role="option" aria-selected={entry.id === group.id} className={entry.id === group.id ? "selected" : ""} key={entry.id} onClick={() => { setWorkflowId(entry.id); setProjectId("all"); setSwitcherOpen(false); }}>
                 <span className={`factory-switcher-dot ${live ? "is-live" : ""}`} /><strong>{entry.name}</strong><small>{live ? `在产 ${live}` : entry.releases[0].version}</small>
@@ -508,6 +509,7 @@ function WorkflowStudio({ onScopeChange, data, refresh, initialProjectId, initia
         {mobileActionsOpen && <>
           <div className="factory-scrim" onClick={() => setMobileActionsOpen(false)} />
           <div className="factory-more-menu">
+            <header className="factory-sheet-title">{group.name}</header>
             <button onClick={async () => { setMobileActionsOpen(false); try { const source = await api(`/api/workflows/${group.releases[0].workflowSha256}/source`); setEditor({ mode: "edit", source: source.sourceMarkdown ?? source.sourceYaml ?? "" }); } catch (reason) { setEditor(null); } }}><FilePenLine size={15} />编辑这个 Workflow</button>
             <button onClick={() => { setMobileActionsOpen(false); setEditor({ mode: "import", source: "" }); }}><Upload size={15} />导入 Workflow</button>
             <button onClick={() => { setMobileActionsOpen(false); setEditor({ mode: "create", source: newWorkflowSource() }); }}><Plus size={15} />新建 Workflow</button>
