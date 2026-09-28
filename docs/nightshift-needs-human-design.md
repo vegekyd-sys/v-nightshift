@@ -19,10 +19,15 @@ Each of these was found by an operator reading logs. The error was different eac
 
 ## Principle
 
-"Needs a person" is one state that the engine owns. It is not a per-error rule.
+"Needs a person" is the board's **需要你**. It is one queue, and the engine owns it. It is not a per-error rule and not a second concept next to 需要你.
+
+The queue holds everything only a person can move:
+
+- **Approvals.** Execution confirmation, output review and publication authorization. They already have their choices: approve, request changes, reject. Today their `reviewRequested` notice is accepted and ignored. Here they reach people through the same notice as everything else.
+- **Stops.** A card that stopped and will not recover by itself. This design adds these.
 
 - Anything that stops and will not recover by itself becomes a **decision request**. That covers a problem an Agent files, a block the Agent leaves without a filed problem, a failed completion contract, a failed external operation, and an infrastructure fault that has used up its retries.
-- The engine keeps one truth. The board's 需要你, the Feishu notice and `nightshiftctl` all read the same records. A board that decides on its own drifts: today it shows DL-0928-07 item 1 as "paid task still running, will recover" because the ledger still says `executing`, although the Agent gave up and Makaron failed twice.
+- The engine keeps one truth. The board's 需要你, the Feishu notice and `nightshiftctl` all read the same records, both approvals and decision requests. A board that decides on its own drifts: today it shows DL-0928-07 item 1 as "paid task still running, will recover" because the ledger still says `executing`, although the Agent gave up and Makaron failed twice.
 - Choices are generic. Every request offers **retry** (with a note for the Agent), **skip this item** and **pause the project**. An Agent may add choices specific to the problem. Each of those is a retry that carries a note.
 - A decision flows back into the run. A retry carries the person's note into the Agent's brief. A skip makes the item terminal, so the project can still finish. A pause stops dispatch.
 
@@ -55,10 +60,10 @@ A new attempt of the card supersedes its open request.
 
 ### How a person hears about it
 
-- The completion-notice path gains a second event, `decisionRequested`. Its routing is the same as the completion notice: the project's own `collaboration.sourceChatId`, then the Workflow's `notifications.*.to`.
+- The completion-notice path gains a second event, `needsYou`. It covers approvals waiting on a person as well as decision requests; it replaces the ignored `reviewRequested`. Its routing is the same as the completion notice: the project's own `collaboration.sourceChatId`, then the Workflow's `notifications.*.to`.
 - There is **one notice per project per root cause**. Requests are batched for about two minutes and grouped by `group_key`. The notice reads, for example: "DL-0928-07：5 条卡在同一个问题：素材只有 1 段视频，Makaron 拉取超时". It lists the choices and links to the decision view on the board.
 - A new root cause, or a new card joining a group that was already announced, updates the notice. Unchanged requests are never announced again.
-- The board's 需要你 lists open requests from the same table.
+- The board's 需要你 lists open decision requests and pending approvals, both served by the engine.
 
 ### How a decision continues the run
 
@@ -72,11 +77,11 @@ Each decision is an audit event (`decision.requested`, `decision.decided`).
 
 ## Steps
 
-1. **Engine safety net and notice.** The table; opening requests from blocked cards; the `decisionRequested` notice routed like the completion notice; the decide API and `nightshiftctl` for retry and pause; `overview` exposes open requests so the board can show them.
+1. **Engine safety net and notice.** The table; opening requests from blocked cards; the `needsYou` notice (decision requests and pending approvals) routed like the completion notice; the decide API and `nightshiftctl` for retry and pause; `overview` exposes open requests so the board can show them.
 2. **Agent-filed problems and the full set of choices.** `nightshiftctl cards needs-decision`; Agent-supplied choices; skip as a terminal item state; the decision note in the retry brief; buttons on the Feishu notice. The existing `nightshift-feishu` plugin already handles card commands.
 3. **Authoring.** The operator skill and the workflow authoring reference tell stages to check preconditions before they spend money, and to file a problem instead of improvising. For example, a brief stage checks that the footage covers the items before any paid production. The pattern was seen on 09-28: one video reused across 30 briefs, and Agents downloading footage to work around provider limits.
 
 ## Ownership
 
 - Engine, API, notices and CLI: 夜班模式 - 监控 session.
-- Board decision view (需要你 reads `decision_requests`; a decide drawer): 夜班模式 - 设计 session, which owns the dashboard client.
+- Board decision view (需要你 reads the engine's queue of decision requests and approvals; a decide drawer): 夜班模式 - 设计 session, which owns the dashboard client.
