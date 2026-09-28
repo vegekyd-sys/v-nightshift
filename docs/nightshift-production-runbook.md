@@ -44,6 +44,7 @@ Night Shift starts new native cards only while the Gateway host has headroom, an
 | `NIGHTSHIFT_AGENT_DB_PRESSURE_WINDOW_SECONDS` | 120 | How far back each reading looks. |
 | `NIGHTSHIFT_AGENT_DB_SLOW_ADMISSION_YELLOW` | 3 | Slow lease admissions in the window that stop new starts. |
 | `NIGHTSHIFT_USER_HARM_COOLDOWN_MS` | 900000 | Hold after a lease timeout cut a person's reply. Quiet probes cannot end it early. |
+| `NIGHTSHIFT_ORPHANED_SESSION_MS` | 2700000 | A blocked card whose Agent Session has written nothing for this long is failed as `agent_interrupted` and handed to the stage's retry policy. |
 | `NIGHTSHIFT_DISPATCH_INITIAL_MAX_ACTIVE` | 3 | Concurrency the ramp starts from after a restart or a red probe. |
 | `NIGHTSHIFT_GATEWAY_GREEN_LATENCY_MS` / `_RED_LATENCY_MS` | 250 / 1000 | Worker status RPC latency that pauses growth or halves the target. |
 | `NIGHTSHIFT_CARD_REFRESH_MIN_INTERVAL_MS` | 30000 | An explicit `refresh=1` read younger than this is served from the cache. |
@@ -65,6 +66,14 @@ Night Shift therefore reads the Gateway journal (`journalctl -u $NIGHTSHIFT_GATE
 | unknown | journal unreadable, empty for the unit, or failing | Recorded with a reason; does not block. The other probes still gate. |
 
 A cut reply also sets a ceiling, `dispatchPressure.harmCeiling` in `/api/health`, at 70% of the Night Shift cards running when it happened. Recovery is capped there, including the rule that admits one card beyond those still running, so it cannot jump straight back to the level that caused the harm. The ceiling starts rising when the hold ends: one card per 5 quiet minutes. It lowers again at the next separate cut reply and disappears once it climbs back to `maxActive`. It is held in memory, so a service restart forgets it. On 2026-09-28, without it, recovery at 15:10 returned to the ten cards that had cut a reply at 14:55, and two more replies were cut at 15:22.
+
+## Orphaned runs
+
+A card can sit blocked after its Agent is gone. Usually its Worker exited mid-run, for example while polling a provider, and the Session never gets a terminal message. The scheduler checks blocked cards' Sessions on repair passes. When a blocked card's Session has written nothing for `NIGHTSHIFT_ORPHANED_SESSION_MS` (45 minutes), it records `stage.attempt.failed` with kind `agent_interrupted`, and the stage's ordinary retry policy takes over:
+- A stage with side effects retries automatically only when the external-operation ledger holds an `executing` or `succeeded` entry with an external task id for that card. The retried Agent then resumes the existing provider task instead of paying again.
+- Without such an entry the card stays blocked with "需要人工检查后重试".
+
+Blocked-card Session checks have their own budget, separate from completion validation. A card deferred for budget is checked on the next ordinary pass rather than at the next repair tick. On 2026-09-28, sharing that budget left two paid produce cards unread and blocked for two hours, while Makaron had finished both videos 3 minutes after their Agents died.
 
 Running cards are never stopped by this guard. A retried card also gets its native failure budget reset (`workboard.cards.reassign`), because the board refuses to start a card whose failure count exceeds `maxRetries`.
 

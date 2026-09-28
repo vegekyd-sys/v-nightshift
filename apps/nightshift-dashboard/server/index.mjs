@@ -88,6 +88,7 @@ const agentDbPressureUnit = process.env.NIGHTSHIFT_GATEWAY_UNIT || "openclaw-gat
 const agentDbPressureWindowSeconds = positiveInteger(process.env.NIGHTSHIFT_AGENT_DB_PRESSURE_WINDOW_SECONDS, 120, 900);
 const agentDbSlowAdmissionYellow = positiveInteger(process.env.NIGHTSHIFT_AGENT_DB_SLOW_ADMISSION_YELLOW, 3, 1_000);
 const userHarmCooldownMs = positiveInteger(process.env.NIGHTSHIFT_USER_HARM_COOLDOWN_MS, 900_000, 7_200_000);
+const orphanedSessionMs = positiveInteger(process.env.NIGHTSHIFT_ORPHANED_SESSION_MS, 2_700_000, 86_400_000);
 // How soon to retry after a scheduler pass fails, doubling up to the ceiling.
 const schedulerRetryMinMs = positiveInteger(process.env.NIGHTSHIFT_SCHEDULER_RETRY_MIN_MS, 10_000, 600_000);
 const schedulerRetryMaxMs = positiveInteger(process.env.NIGHTSHIFT_SCHEDULER_RETRY_MAX_MS, 120_000, 600_000);
@@ -110,6 +111,7 @@ const runtime = new NightShiftRuntime({
   completionValidator: validateCompletion,
   dispatchMaxStarts: dispatchMaxStartsPerInstance,
   maxWorkboardActive: schedulerMaxWorkboardActive,
+  orphanedSessionMs,
   store,
   workboard,
 });
