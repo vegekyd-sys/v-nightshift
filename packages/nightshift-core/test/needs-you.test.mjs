@@ -100,7 +100,8 @@ const MAKARON_STOP = {
   kind: "contract_error",
   source: "workflow",
   rawError: "External side effect has no succeeded Night Shift operation checkpoint",
-  agentReport: "卡已 block（无成片）。**结论**：produce 阶段拿不到视频，Makaron 两次拉取素材超时（400）。建议人工决定是否更换素材。",
+  // Written the way the real DL-0928-07 report was: labels at line start.
+  agentReport: "卡已 block（无成片）。\n**结论**：produce 阶段拿不到视频，Makaron 两次拉取素材超时（400）。\n**建议**：建议人工决定是否更换素材。",
 };
 
 // On V at deploy time the only two cards that truly needed a person (GeeLark
@@ -322,7 +323,7 @@ test("a labeled stop report fills what happened, why, impact and what to do", ()
 });
 
 test("an unlabeled report still yields a cause and a suggestion, or a fitting default", () => {
-  const unlabeled = describeStop({ failure: { kind: "contract_error", agentReport: "拿不到视频。失败点在 Makaron 侧对素材 URL 的抓取超时。建议人工决定是否更换素材传输方式。" } });
+  const unlabeled = describeStop({ failure: { kind: "worker_unavailable", agentReport: "拿不到视频。失败点在 Makaron 侧对素材 URL 的抓取超时。建议人工决定是否更换素材传输方式。" } });
   assert.match(unlabeled.cause, /失败点在 Makaron/);
   assert.match(unlabeled.suggestion, /建议人工决定/);
   assert.match(describeStop({}).suggestion, /能补齐就「重新执行」/);
@@ -368,7 +369,7 @@ test("the engine's own completion checks read in words a person can act on", () 
 });
 
 test("a cause that only repeats the problem is left out", () => {
-  const described = describeStop({ failure: { kind: "contract_error", agentReport: "Makaron 拉取素材超时导致失败。" } });
+  const described = describeStop({ failure: { kind: "worker_unavailable", agentReport: "**问题**：Makaron 拉取素材超时导致失败。\n**原因**：Makaron 拉取素材超时导致失败。" } });
   assert.equal(described.cause, "");
 });
 
@@ -399,4 +400,42 @@ test("a stop recorded without the Agent's words gets them from the Session, and 
   assert.equal(rewritten.announcedAt, opened.announcedAt, "rewriting the text leaves the notice state alone");
   await runtime.reconcile("NS-NY");
   assert.equal(workboard.sessionReads, 1, "the Session is read once per attempt");
+});
+
+// GeeLark 圣山-US-009 on V: the Agent published and said so; the engine refused
+// the artifact path. The card must say what the engine saw, then what the Agent said.
+test("an unlabeled closing message never replaces what the engine saw", () => {
+  const described = describeStop({ failure: {
+    kind: "contract_error",
+    rawError: "Completion validation failed: Artifact path must stay inside the instance directory",
+    agentReport: "Card 58dbc363 completed — ✅ PUBLISHED (terminal, recorded=true).",
+  } });
+  assert.match(described.problem, /项目目录之外/);
+  assert.match(described.cause, /^agent 的说法：Card 58dbc363 completed — ✅ PUBLISHED/);
+  assert.match(described.suggestion, /重新执行/);
+  const makaron = describeStop({ failure: {
+    kind: "contract_error",
+    rawError: "External side effect has no succeeded Night Shift operation checkpoint",
+    agentReport: "卡已 block（无成片）。结论：produce 阶段拿不到视频，两次提交均失败。建议人工决定是否更换素材传输方式。",
+  } });
+  assert.match(makaron.problem, /外部操作.*没有成功记录/);
+  assert.match(makaron.cause, /agent 的说法：/);
+  assert.match(makaron.suggestion, /建议人工决定是否更换素材/);
+});
+
+test("open requests written under older rules are rewritten under the current ones", async () => {
+  const { card, observe, store } = await fixture();
+  const stopped = card("stale", "video-1");
+  const failure = {
+    kind: "contract_error",
+    rawError: "Completion validation failed: Artifact path must stay inside the instance directory",
+    agentReport: "Card 58dbc363 completed — ✅ PUBLISHED (terminal, recorded=true).",
+  };
+  const opened = observe(stopped, { failure });
+  // Simulate the text an earlier rule set wrote.
+  store.updateDecisionRequestText(opened.id, { problem: "Card 58dbc363 completed — ✅ PUBLISHED", evidence: { failure, describeVersion: 1 } });
+  const rewritten = observe(stopped, { failure });
+  assert.match(rewritten.problem, /项目目录之外/);
+  assert.equal(rewritten.evidence.describeVersion, 2);
+  store.close();
 });
