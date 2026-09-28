@@ -34,9 +34,10 @@ export class NeedsYouTracker {
     this.pending = new Map();
   }
 
-  // Blocked cards that existed before this tracker first ran are history: on V
-  // (2026-09-28) the board held 500+ of them, 94 in 44 shelved projects. The
-  // first run records the moment and opens nothing for anything older.
+  // The moment this tracker first ran. A stop older than that still enters the
+  // queue (the board must show it), but it is not announced: the notice is for
+  // what newly needs someone. The 500+ historical blocked cards on V
+  // (2026-09-28) sit in shelved projects, which eligibleProject already skips.
   baselineAt() {
     const existing = this.store.getNotificationMetadata(BASELINE_KEY);
     if (existing?.at) return Date.parse(existing.at);
@@ -63,7 +64,7 @@ export class NeedsYouTracker {
       return existing;
     }
     if (!eligibleProject(instance, now, this.shelveAfterMs)) return null;
-    if (cardTouchedAt(card) < this.baselineAt()) return null;
+    const beforeBaseline = cardTouchedAt(card) < this.baselineAt();
     // The engine retries it; nobody needs to act.
     if (failure?.automaticRetry) return null;
     // Paid work still under way with no recorded stop: #80 turns a silent run
@@ -79,7 +80,7 @@ export class NeedsYouTracker {
     }
     this.pending.delete(card.id);
     const { problem, cause, impact, suggestion, detail } = describeStop({ failure, summary });
-    return this.store.openDecisionRequest({
+    const request = this.store.openDecisionRequest({
       instanceId: instance.id,
       cardId: card.id,
       contentItemId,
@@ -96,6 +97,8 @@ export class NeedsYouTracker {
       options: STOP_OPTIONS,
       groupKey: groupKey({ instanceId: instance.id, stageId, failure, problem }),
     }, new Date(now));
+    if (beforeBaseline && !request.reused) this.store.markDecisionRequestsAnnounced([request.id], new Date(now));
+    return this.store.getDecisionRequest(request.id);
   }
 
   pendingList() {

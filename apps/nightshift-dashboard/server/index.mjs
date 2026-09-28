@@ -885,13 +885,16 @@ async function handleApi(request, response, url) {
   if (decisionRequestMatch && request.method === "POST") {
     const body = await bodyJson(request);
     try {
-      const result = await runtime.decide({
+      // The same identity rule as takeover and dispatch control: the signed-in
+      // operator on the public host, local:<name> on the loopback.
+      const actor = operatorIdentity(request, body);
+      const result = await serializedOperation(() => runtime.decide({
         decisionId: decodeURIComponent(decisionRequestMatch[1]),
         optionId: body.optionId,
         note: body.note ?? null,
-        actor: body.actor,
+        actor,
         applyToGroup: body.applyToGroup === true,
-      });
+      }));
       if (result.affectedCardIds.length) await refreshCards({ cardIds: result.affectedCardIds });
       json(response, 200, result);
     } catch (error) {

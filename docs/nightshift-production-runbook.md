@@ -90,7 +90,7 @@ A card that stops and will not recover by itself becomes a decision request (`de
 - Cards the engine retries by itself.
 - Paid work still `executing` with no recorded stop.
 - Shelved projects: paused and untouched for more than 3 days.
-- Cards blocked before the first run. The baseline is `needs-you-v1.baseline` in `notification_metadata`.
+Cards blocked before the first run (baseline `needs-you-v1.baseline` in `notification_metadata`) still enter the queue, so the board shows them, but they are not announced.
 
 **The queue.** 需要你 is open decision requests plus review cards waiting on a person, both approvals and human-review stages. `GET /api/overview` returns it as `needsYou { items, pending, countsByInstance }` for every project that is not shelved, whatever the scope.
 

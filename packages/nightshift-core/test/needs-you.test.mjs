@@ -98,11 +98,17 @@ const MAKARON_STOP = {
   agentReport: "卡已 block（无成片）。**结论**：produce 阶段拿不到视频，Makaron 两次拉取素材超时（400）。建议人工决定是否更换素材。",
 };
 
-test("blocked cards from before the first run are history, not requests", async () => {
+// On V at deploy time the only two cards that truly needed a person (GeeLark
+// 圣山-BR-008 and 圣山-US-009) had stopped days earlier. They must show on the
+// board; only the notice is for what is new.
+test("a stop from before the first run enters the queue but is not announced", async () => {
   const { card, observe, store } = await fixture();
-  const old = card("old", "video-1", { updatedAt: Date.parse("2026-09-20T00:00:00Z") });
-  observe(old, { failure: MAKARON_STOP });
-  assert.equal(store.listDecisionRequests().length, 0);
+  const old = card("old", "video-1", { updatedAt: Date.parse("2026-09-26T00:04:00Z") });
+  const request = observe(old, { failure: MAKARON_STOP });
+  assert.equal(request.status, "open");
+  assert.ok(request.announcedAt, "treated as already announced");
+  const fresh = observe(card("fresh", "video-2"), { failure: MAKARON_STOP });
+  assert.equal(fresh.announcedAt, null);
   store.close();
 });
 
