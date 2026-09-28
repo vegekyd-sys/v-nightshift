@@ -281,10 +281,68 @@ test("a person's cut reply holds dispatch for the full harm cooldown", () => {
   }
   now = 899_000;
   assert.equal(guard.recordProbe({ latencyMs: 80, running: 12, workerPool: pool }).availableStarts, 0);
+  // The hold is over, but the twelve cards that cut the reply are still above
+  // the remembered ceiling (12 × 0.7 = 8): nothing new starts until they drain.
   now = 905_000;
   guard.recordProbe({ latencyMs: 80, running: 12, workerPool: pool });
   now = 910_000;
-  assert.equal(guard.recordProbe({ latencyMs: 80, running: 12, workerPool: pool }).availableStarts, 1);
+  assert.equal(guard.recordProbe({ latencyMs: 80, running: 12, workerPool: pool }).availableStarts, 0);
+  now = 915_000;
+  guard.recordProbe({ latencyMs: 80, running: 7, workerPool: pool });
+  now = 920_000;
+  assert.equal(guard.recordProbe({ latencyMs: 80, running: 7, workerPool: pool }).availableStarts, 1);
+});
+
+// Replays V on 2026-09-28: ten cards cut a person's reply at 14:55, recovery
+// at 15:10 went straight back to ten, and two more replies were cut at 15:22.
+test("recovery after a cut reply stays below the concurrency that caused it and climbs one card per step", () => {
+  let now = 0;
+  const guard = new DispatchPressureGuard({ initialMaxActive: 12, now: () => now, userHarmCooldownMs: 900_000, harmCeilingStepMs: 300_000 });
+  const pool = { capacity: 45, active: 10, queued: 0 };
+  const harmed = { ...HARMED, interactiveRunIds: ["chat-1"] };
+  assert.equal(guard.recordProbe({ latencyMs: 40, running: 10, workerPool: pool, agentDbPressure: harmed }).harmCeiling, 7);
+  // During the hold the cards drain; the ceiling does not relax yet.
+  let target = 0;
+  for (now = 900_000; now < 1_200_000; now += 5_000) target = guard.recordProbe({ latencyMs: 80, running: 3, workerPool: pool }).targetMaxActive;
+  assert.equal(target, 7, "capped at 70% of the ten cards, however many green probes arrive");
+  now = 1_199_000;
+  assert.equal(guard.snapshot(3).harmCeiling, 7);
+  for (now = 1_200_000; now < 1_500_000; now += 5_000) target = guard.recordProbe({ latencyMs: 80, running: 3, workerPool: pool }).targetMaxActive;
+  assert.equal(target, 8, "one more card after five quiet minutes");
+  now = 900_000 + 300_000 * 29;
+  guard.recordProbe({ latencyMs: 80, running: 3, workerPool: pool });
+  assert.equal(guard.snapshot(3).harmCeiling, null, "the ceiling is gone once it climbs back to maxActive");
+});
+
+test("one cut reply lowers the ceiling once even while the probe keeps reporting it and cards drain", () => {
+  let now = 0;
+  const guard = new DispatchPressureGuard({ initialMaxActive: 12, now: () => now });
+  const pool = { capacity: 45, active: 10, queued: 0 };
+  const harmed = { ...HARMED, interactiveRunIds: ["chat-1"] };
+  guard.recordProbe({ latencyMs: 40, running: 10, workerPool: pool, agentDbPressure: harmed });
+  for (const running of [8, 6, 4, 2]) {
+    now += 15_000;
+    guard.recordProbe({ latencyMs: 40, running, workerPool: pool, agentDbPressure: harmed });
+  }
+  assert.equal(guard.snapshot(2).harmCeiling, 7);
+  // A second, separate cut reply lowers it further.
+  now += 15_000;
+  guard.recordProbe({ latencyMs: 40, running: 6, workerPool: pool, agentDbPressure: { ...HARMED, interactiveRunIds: ["chat-1", "chat-2"] } });
+  assert.equal(guard.snapshot(6).harmCeiling, 4);
+});
+
+test("without run ids a harm counts once per hold", () => {
+  let now = 0;
+  const guard = new DispatchPressureGuard({ initialMaxActive: 12, now: () => now });
+  guard.recordProbe({ latencyMs: 40, running: 10, agentDbPressure: HARMED });
+  now = 60_000;
+  guard.recordProbe({ latencyMs: 40, running: 2, agentDbPressure: HARMED });
+  assert.equal(guard.snapshot(2).harmCeiling, 7);
+});
+
+test("an ordinary lease timeout sets no ceiling", () => {
+  const guard = new DispatchPressureGuard({ initialMaxActive: 12 });
+  assert.equal(guard.recordProbe({ latencyMs: 40, running: 10, agentDbPressure: RED_LEASE }).harmCeiling, null);
 });
 
 test("an ordinary lease timeout keeps the ordinary red cooldown", () => {

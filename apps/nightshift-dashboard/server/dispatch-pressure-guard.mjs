@@ -16,6 +16,10 @@ export class DispatchPressureGuard {
     // After a card's writes cut a person's reply, back off long enough for the
     // conversation to finish rather than returning at the next quiet probe.
     userHarmCooldownMs = 900_000,
+    // The concurrency that cut a person's reply is remembered: recovery stays
+    // below it and climbs back one card per step instead of per probe.
+    harmCeilingRatio = 0.7,
+    harmCeilingStepMs = 300_000,
   } = {}) {
     this.baselineGreenMultiplier = positiveNumber(baselineGreenMultiplier, "baselineGreenMultiplier");
     this.baselineRedMultiplier = positiveNumber(baselineRedMultiplier, "baselineRedMultiplier");
@@ -45,6 +49,12 @@ export class DispatchPressureGuard {
     this.reservedInteractiveWorkers = positiveInteger(reservedInteractiveWorkers, "reservedInteractiveWorkers");
     this.userHarmCooldownMs = positiveInteger(userHarmCooldownMs, "userHarmCooldownMs");
     this.userHarmHoldUntilMs = 0;
+    this.harmCeilingRatio = positiveNumber(harmCeilingRatio, "harmCeilingRatio");
+    if (this.harmCeilingRatio >= 1) throw new Error("harmCeilingRatio must be below 1");
+    this.harmCeilingStepMs = positiveInteger(harmCeilingStepMs, "harmCeilingStepMs");
+    this.harmCeilingBase = null;
+    this.harmCeilingAt = 0;
+    this.harmRunIds = [];
     this.workerPool = null;
     this.hostPressure = null;
     this.agentDbPressure = null;
@@ -77,9 +87,13 @@ export class DispatchPressureGuard {
       this.greenStreak = 0;
       this.recoveryGreenStartedAt = null;
       this.recoveryGreenSamples = 0;
+      const harmedBefore = at < this.userHarmHoldUntilMs;
       // A repeated red extends the hold from now; it never shortens a longer one.
       this.holdUntilMs = Math.max(this.holdUntilMs, at + redCooldownMs);
-      if (agentDbPressure?.userHarm) this.userHarmHoldUntilMs = this.holdUntilMs;
+      if (agentDbPressure?.userHarm) {
+        this.userHarmHoldUntilMs = this.holdUntilMs;
+        this.recordHarm(at, normalizedRunning, agentDbPressure.interactiveRunIds, harmedBefore);
+      }
       this.recoveringPressure = true;
       this.startCredits = 0;
       this.lastProbe = {
@@ -143,7 +157,7 @@ export class DispatchPressureGuard {
       // Existing jobs keep running during a pause. Once recovery is observed,
       // allow one new job beyond current occupancy instead of rebuilding an
       // artificial ceiling below the jobs that are already running.
-      this.targetMaxActive = Math.min(this.maxActive, Math.max(
+      this.targetMaxActive = Math.min(this.maxActive, this.harmCeiling(at) ?? this.maxActive, Math.max(
         this.targetMaxActive + 1,
         this.recoveringPressure ? normalizedRunning + 1 : this.minActive,
       ));
@@ -201,7 +215,35 @@ export class DispatchPressureGuard {
       redLatencyMs: thresholds.redLatencyMs,
       running: Math.max(0, running),
       targetMaxActive: this.targetMaxActive,
+      harmCeiling: this.harmCeiling(this.now()),
     };
+  }
+
+  // One harm is one set of cut replies. The probe reports the same runs for its
+  // whole window, and the cards drain meanwhile; counting each report again
+  // would ratchet the ceiling down to one. On V (2026-09-28 15:10) recovery
+  // went straight back to the ten cards that had cut a reply at 14:55, and cut
+  // two more at 15:22.
+  recordHarm(at, running, runIds, harmedBefore) {
+    const ids = Array.isArray(runIds) ? runIds.filter((id) => typeof id === "string") : [];
+    const fresh = ids.length > 0 ? ids.some((id) => !this.harmRunIds.includes(id)) : !harmedBefore;
+    this.harmRunIds = [...this.harmRunIds, ...ids.filter((id) => !this.harmRunIds.includes(id))].slice(-200);
+    if (!fresh) return;
+    const ceiling = Math.max(this.minActive, Math.floor(running * this.harmCeilingRatio));
+    const current = this.harmCeiling(at);
+    this.harmCeilingBase = current === null ? ceiling : Math.min(current, ceiling);
+    // The ceiling starts to relax when the harm hold ends, not while it runs;
+    // otherwise a 15-minute hold would already have climbed three steps back.
+    this.harmCeilingAt = this.userHarmHoldUntilMs;
+    this.targetMaxActive = Math.min(this.targetMaxActive, this.harmCeilingBase);
+  }
+
+  harmCeiling(at) {
+    if (this.harmCeilingBase === null) return null;
+    const ceiling = this.harmCeilingBase + Math.floor(Math.max(0, at - this.harmCeilingAt) / this.harmCeilingStepMs);
+    if (ceiling < this.maxActive) return ceiling;
+    this.harmCeilingBase = null;
+    return null;
   }
 
   consumeStarts(count) {
