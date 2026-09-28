@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { api } from "./api.js";
+import { countByKind, enabledStages, expectedTasks, inScope, isToday, projectScope, scopeAuthorizes, taskAttention } from "./attention.js";
 import { Drawer, EmptyColumn, Icons, Metric, Sidebar, WorkCard } from "./components.jsx";
 
 const columns = [
@@ -230,6 +231,9 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
   const deepLinkApplied = useRef(false);
   const [workflowId, setWorkflowId] = useState(initialWorkflowId ?? "");
   const [projectId, setProjectId] = useState(initialProjectId ?? "all");
+  // The factory floor shows what is being made now; delivered and shelved
+  // projects are one click away instead of mixed into it.
+  const [scope, setScope] = useState("live");
   const [mobileStageId, setMobileStageId] = useState("");
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
   const [bulkApproval, setBulkApproval] = useState(null);
@@ -252,6 +256,22 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
   const group = groups.find((entry) => entry.id === workflowId) ?? groups[0];
   const releaseShas = useMemo(() => new Set(group?.releases.map((release) => release.workflowSha256) ?? []), [group]);
   const projects = useMemo(() => (data?.instances ?? []).filter((instance) => releaseShas.has(instance.workflowSha256)), [data?.instances, releaseShas]);
+  const scopeCounts = useMemo(() => {
+    const now = Date.now();
+    const counts = { live: 0, delivered: 0, shelved: 0, all: 0 };
+    for (const project of projects) {
+      const actual = projectScope(project, now);
+      if (actual === "archived") continue;
+      counts[actual] += 1;
+      counts.all += 1;
+    }
+    return counts;
+  }, [projects]);
+  const scopedProjects = useMemo(() => projects.filter((project) => inScope(project, scope)), [projects, scope]);
+  useEffect(() => {
+    // A deep link to a delivered or shelved project must still open it.
+    if (projectId !== "all" && !scopedProjects.some((project) => project.id === projectId) && projects.some((project) => project.id === projectId)) setScope("all");
+  }, [projectId, projects, scopedProjects]);
   useEffect(() => {
     if (!data) return;
     if (projectId === "all" || projects.some((project) => project.id === projectId)) return;
@@ -267,27 +287,37 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
   useEffect(() => {
     window.localStorage.setItem("nightshift.workflowLibraryCollapsed", String(libraryCollapsed));
   }, [libraryCollapsed]);
-  const visibleProjects = projectId === "all" ? projects : projects.filter((project) => project.id === projectId);
+  const visibleProjects = projectId === "all" ? scopedProjects : projects.filter((project) => project.id === projectId);
   const pinnedRelease = projectId === "all" ? group?.releases[0] : group?.releases.find((release) => release.workflowSha256 === visibleProjects[0]?.workflowSha256);
   const stages = pinnedRelease?.manifest?.spec?.stages ?? [];
+  // A stage that none of the shown projects will run (a publish step in a
+  // download batch) is an empty column that only adds noise.
+  const runwayStages = useMemo(() => {
+    const used = stages.filter((stage) => visibleProjects.some((project) => enabledStages([stage], project.inputs ?? {}).length > 0));
+    return used.length ? used : stages;
+  }, [stages, visibleProjects]);
   const taskIndex = useMemo(() => indexStageTasks(stages, visibleProjects, data?.cards ?? []), [stages, visibleProjects, data?.cards]);
   const allTasks = useMemo(() => [...taskIndex.values()].flat(), [taskIndex]);
-  const liveSummary = useMemo(() => summarizeStatuses(allTasks), [allTasks]);
-  const activeTasks = useMemo(() => allTasks.filter((task) => task.status === "running"), [allTasks]);
+  const factory = useMemo(() => ({
+    ...countByKind(allTasks),
+    doneToday: allTasks.filter((task) => task.attention.kind === "done" && isToday(task.card?.updatedAt ?? task.updatedAt)).length,
+  }), [allTasks]);
+  const needsYou = useMemo(() => allTasks.filter((task) => task.attention.kind === "needs-you"), [allTasks]);
+  const releaseBySha = useMemo(() => new Map((data?.workflows ?? []).map((release) => [release.workflowSha256, release])), [data?.workflows]);
   useEffect(() => {
-    if (!stages.length) return;
-    if (stages.some((stage) => stage.id === mobileStageId)) return;
-    const attentionStage = stages.find((stage) => (taskIndex.get(stage.id) ?? []).some((task) => ["running", "review", "blocked"].includes(task.status)));
-    setMobileStageId(attentionStage?.id ?? stages[0].id);
-  }, [mobileStageId, stages, taskIndex]);
+    if (!runwayStages.length) return;
+    if (runwayStages.some((stage) => stage.id === mobileStageId)) return;
+    const firstWith = (kinds) => runwayStages.find((stage) => (taskIndex.get(stage.id) ?? []).some((task) => kinds.includes(task.attention.kind)));
+    setMobileStageId((firstWith(["needs-you"]) ?? firstWith(["running", "healing"]) ?? runwayStages[0]).id);
+  }, [mobileStageId, runwayStages, taskIndex]);
 
   if (!data) return <div className="workflow-loading"><span className="delivery-skeleton" /><strong>正在载入 Workflow 运行状态</strong></div>;
   if (!group) return <div className="simple-screen"><header className="topbar"><div><h1>Workflows</h1><p className="topbar-copy">导入第一份 workflow.md，建立可执行生产线。</p></div><div className="top-actions"><button className="primary" onClick={() => setEditor({ mode: "create", source: newWorkflowSource() })}><Plus size={15} />新建 Workflow</button></div></header></div>;
 
   return <div className="workflow-screen workflow-studio">
     <header className="topbar workflow-topbar">
-      <div className="workflow-title"><span className="workflow-v-avatar"><img src="/v-avatar.jpg" alt="V" /><i /></span><div className="workflow-title-copy"><span className="section-label">V · Workflow control room</span><h1>{group.name}</h1><p className={`topbar-copy workflow-live-line ${activeTasks.length ? "is-live" : ""}`}><span />{activeTasks.length ? `${activeTasks.length} 个任务运行中` : "本轮调度完成"} · {liveSummary.review ?? 0} 个待审核 · {visibleProjects.length} 个项目</p></div></div>
-      <div className="workflow-header-stats" aria-label="Workflow 状态"><span><strong>{liveSummary.running ?? 0}</strong>进行中</span><span><strong>{liveSummary.review ?? 0}</strong>待审核</span><span><strong>{liveSummary.done ?? 0}</strong>已完成</span></div>
+      <div className="workflow-title"><span className="workflow-v-avatar"><img src="/v-avatar.jpg" alt="V" /><i /></span><div className="workflow-title-copy"><span className="section-label">V · Workflow control room</span><h1>{group.name}</h1><p className={`topbar-copy workflow-live-line ${factory.running ? "is-live" : ""}`}><span />{factory["needs-you"] ? `${factory["needs-you"]} 件事等你处理` : "工厂自己在跑，没有要你决定的事"} · {visibleProjects.length} 个项目</p></div></div>
+      <div className="workflow-header-stats factory-stats" aria-label="工厂状态"><span className={factory["needs-you"] ? "is-alert" : "is-clear"}><strong>{factory["needs-you"]}</strong>需要你</span><span><strong>{factory.healing}</strong>自愈中</span><span><strong>{factory.running}</strong>进行中</span><span><strong>{factory.doneToday}</strong>今天完成</span></div>
       <div className="top-actions desktop-workflow-actions"><button onClick={() => setEditor({ mode: "import", source: "" })}><Upload size={15} />导入 Workflow</button><button onClick={() => setEditor({ mode: "edit", source: group.releases[0].sourceMarkdown ?? group.releases[0].sourceYaml })}><FilePenLine size={15} />编辑 Workflow</button><button className="primary" onClick={() => setEditor({ mode: "create", source: newWorkflowSource() })}><Plus size={15} />新建 Workflow</button></div>
       <button className="mobile-workflow-menu-button" aria-label="Workflow 操作" aria-expanded={mobileActionsOpen} onClick={() => setMobileActionsOpen((value) => !value)}><MoreHorizontal size={19} /></button>
       {mobileActionsOpen && <div className="mobile-workflow-menu">
@@ -309,24 +339,26 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
       {libraryCollapsed && <button className="workflow-library-peek" aria-label="展开 Workflow 列表" title="展开 Workflow 列表" onClick={() => setLibraryCollapsed(false)}><Icons.PanelLeftOpen size={16} /></button>}
       <main className="workflow-runway">
         <div className="runway-toolbar">
-          <div className="release-identity"><span className="mono">{pinnedRelease?.version}</span><strong>{stages.length} 个阶段</strong><small>SHA {pinnedRelease?.workflowSha256.slice(0, 12)}</small></div>
+          <div className="release-identity"><span className="mono">{pinnedRelease?.version}</span><strong>{runwayStages.length === stages.length ? `${stages.length} 个阶段` : `${runwayStages.length} / ${stages.length} 个阶段`}</strong><small>SHA {pinnedRelease?.workflowSha256.slice(0, 12)}</small></div>
           <div className="runway-actions">
             <label className="mobile-workflow-filter"><span>Workflow</span><select value={workflowId} onChange={(event) => { setWorkflowId(event.target.value); setProjectId("all"); }}>{groups.map((entry) => <option key={entry.id} value={entry.id}>{entry.name} · {entry.releases[0].version}</option>)}</select><ChevronDown size={14} /></label>
-            <label className="project-filter"><span>查看项目</span><select value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="all">全部项目（{projects.length}）</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><ChevronDown size={14} /></label>
+            <div className="factory-scope" role="tablist" aria-label="项目范围">{[["live", "在产"], ["delivered", "已交付"], ["shelved", "搁置"], ["all", "全部"]].map(([id, title]) => <button role="tab" aria-selected={scope === id} className={scope === id ? "selected" : ""} key={id} onClick={() => { setScope(id); setProjectId("all"); }}>{title}<span>{scopeCounts[id]}</span></button>)}</div>
+            <label className="project-filter"><span>查看项目</span><select value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="all">{scopeTitle(scope)}全部（{scopedProjects.length}）</option>{(projectId === "all" || scopedProjects.some((project) => project.id === projectId) ? scopedProjects : projects).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><ChevronDown size={14} /></label>
             <button className="workflow-project-shortcut" onClick={() => onNewProject(group.releases[0])}><Plus size={13} />用最新版本新建项目</button>
           </div>
         </div>
+        <FactoryOverview scope={scope} projects={projectId === "all" ? visibleProjects : []} taskIndex={taskIndex} releaseBySha={releaseBySha} needsYou={needsYou} onSelect={setSelected} onOpenProject={setProjectId} />
         <nav className="mobile-stage-nav" aria-label="Workflow 阶段">
-          {stages.map((stage, index) => {
+          {runwayStages.map((stage, index) => {
             const tasks = taskIndex.get(stage.id) ?? [];
             const summary = summarizeStatuses(tasks);
             const tone = ["running", "review", "blocked", "ready", "done"].find((status) => summary[status]) ?? "empty";
             return <button className={`${mobileStageId === stage.id ? "selected" : ""} state-${tone}`} key={stage.id} onClick={() => setMobileStageId(stage.id)}><span>{String(index + 1).padStart(2, "0")}</span><strong>{stage.title}</strong><small>{tasks.length ? `${tasks.length} 个任务` : "未开始"}</small></button>;
           })}
         </nav>
-        <div className="stage-runway" style={{ "--stage-count": stages.length }}>
+        <div className="stage-runway" style={{ "--stage-count": runwayStages.length }}>
           <div className="stage-rail" />
-          {stages.map((stage, index) => <StageLane key={stage.id} stage={stage} index={index} mobileSelected={mobileStageId === stage.id} tasks={taskIndex.get(stage.id) ?? []} onSelect={setSelected} onBulkApprove={(cards) => { setBulkApproval({ cards, stage }); setBulkEvidence(""); setBulkError(""); }} />)}
+          {runwayStages.map((stage, index) => <StageLane key={stage.id} stage={stage} index={index} mobileSelected={mobileStageId === stage.id} tasks={taskIndex.get(stage.id) ?? []} onSelect={setSelected} onBulkApprove={(cards) => { setBulkApproval({ cards, stage }); setBulkEvidence(""); setBulkError(""); }} />)}
         </div>
       </main>
       <Drawer card={selected} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onClose={() => setSelected(null)} onDecide={decide} onRetry={retry} />
@@ -339,13 +371,72 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
 }
 
 function StageLane({ stage, index, mobileSelected, tasks, onSelect, onBulkApprove }) {
-  const summary = summarizeStatuses(tasks);
-  const isLive = (summary.running ?? 0) > 0;
+  // Finished work is the factory's output, not something to watch: it folds
+  // into a count so the lane shows only what is still moving or waiting.
+  const [showDone, setShowDone] = useState(false);
+  const counts = countByKind(tasks);
+  const isLive = counts.running > 0;
   const reviewCards = tasks.filter((task) => task.status === "review" && task.card).map((task) => task.card);
+  const shown = showDone ? tasks : tasks.filter((task) => task.attention.kind !== "done");
   return <section className={`stage-lane ${isLive ? "is-live" : ""} ${mobileSelected ? "mobile-selected" : ""}`}>
     <header><span className="stage-index">{String(index + 1).padStart(2, "0")}</span><div><strong>{stage.title}</strong><small>{stage.scope === "content-item" ? "每条内容" : "整个项目"} · {stage.actor === "human" ? "人工" : "Agent"}</small></div></header>
-    <div className="stage-counts">{Object.entries(summary).map(([status, count]) => <span className={`state-${status}`} key={status}>{statusLabel(status)} {count}</span>)}{tasks.length === 0 && <span>尚未开始</span>}{reviewCards.length > 1 && <button className="bulk-review-button" onClick={() => onBulkApprove(reviewCards)}>批量通过 {reviewCards.length}</button>}</div>
-    <div className="stage-tasks">{tasks.map((task) => <button key={`${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}-${task.card?.id ?? task.attempt}`} className={`stage-task state-${task.status}`} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}><span className="task-state" /><div><strong>{task.contentTitle ?? task.projectName}</strong><small>{task.contentTitle ? task.projectName : task.projectId}</small></div><span className="task-action">{taskActionLabel(task)}</span></button>)}</div>
+    <div className="stage-counts">
+      {ATTENTION_KINDS.filter(([kind]) => kind !== "done" && counts[kind]).map(([kind, title]) => <span className={`attention-${kind}`} key={kind}>{title} {counts[kind]}</span>)}
+      {tasks.length === 0 && <span>尚未开始</span>}
+      {reviewCards.length > 1 && <button className="bulk-review-button" onClick={() => onBulkApprove(reviewCards)}>批量通过 {reviewCards.length}</button>}
+    </div>
+    <div className="stage-tasks">
+      {shown.map((task) => <button key={`${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}-${task.card?.id ?? task.attempt}`} className={`stage-task state-${task.status} attention-${task.attention.kind}`} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}><span className="task-state" /><div><strong>{task.contentTitle ?? task.projectName}</strong><small>{task.contentTitle ? task.projectName : task.projectId}</small></div><span className="task-action">{attentionLabel(task)}</span></button>)}
+      {counts.done > 0 && <button className="factory-done-toggle" onClick={() => setShowDone((value) => !value)}>{showDone ? "收起已完成" : `已完成 ${counts.done}`}</button>}
+    </div>
+  </section>;
+}
+
+const ATTENTION_KINDS = [["needs-you", "需要你"], ["running", "进行中"], ["healing", "自愈中"], ["queued", "排队"], ["stale", "已搁置"], ["done", "已完成"]];
+
+function scopeTitle(scope) {
+  return ({ live: "在产", delivered: "已交付", shelved: "搁置", all: "" })[scope] ?? "";
+}
+
+function FactoryOverview({ scope, projects, taskIndex, releaseBySha, needsYou, onSelect, onOpenProject }) {
+  const tasksByProject = useMemo(() => {
+    const result = new Map();
+    for (const tasks of taskIndex.values()) {
+      for (const task of tasks) result.set(task.projectId, [...(result.get(task.projectId) ?? []), task]);
+    }
+    return result;
+  }, [taskIndex]);
+  return <section className="factory-overview" aria-label="工厂现场">
+    {needsYou.length > 0 && <div className="factory-inbox">
+      <header><strong>需要你</strong><span>{needsYou.length} 件</span></header>
+      {needsYou.map((task) => <button key={`${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}`} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}>
+        <span className="factory-inbox-dot" />
+        <div><strong>{task.attention.reason}</strong><small>{task.contentTitle ? `${task.contentTitle} · ` : ""}{task.projectName}</small></div>
+        <span className="factory-inbox-open">处理</span>
+      </button>)}
+    </div>}
+    {(scope === "shelved" || scope === "all") && projects.some((project) => projectScope(project) === "shelved") && <p className="factory-note">搁置的项目暂停后超过 3 天没有动静。它们剩下的卡片只供翻看，不计入「需要你」。</p>}
+    {projects.length > 0 && <div className="factory-projects">
+      {projects.map((project) => {
+        const release = releaseBySha.get(project.workflowSha256);
+        const tasks = tasksByProject.get(project.id) ?? [];
+        const counts = countByKind(tasks);
+        const expected = Math.max(expectedTasks(release?.manifest?.spec?.stages ?? [], project), tasks.length, 1);
+        const share = (value) => `${(value / expected) * 100}%`;
+        return <button className="factory-project" key={project.id} onClick={() => onOpenProject(project.id)}>
+          <div className="factory-project-head">
+            <strong>{project.name}</strong>
+            <span>{projectScope(project) === "shelved" ? "已搁置 · " : project.status === "paused" ? "已暂停 · " : ""}{counts["needs-you"] ? `${counts["needs-you"]} 件等你 · ` : ""}{counts.done}/{expected}</span>
+          </div>
+          <div className="factory-bar" aria-hidden="true">
+            <span className="bar-done" style={{ width: share(counts.done) }} />
+            <span className="bar-running" style={{ width: share(counts.running) }} />
+            <span className="bar-healing" style={{ width: share(counts.healing) }} />
+            <span className="bar-needs-you" style={{ width: share(counts["needs-you"]) }} />
+          </div>
+        </button>;
+      })}
+    </div>}
   </section>;
 }
 
@@ -673,6 +764,9 @@ function indexStageTasks(stages, projects, cards) {
   const result = new Map(stages.map((stage) => [stage.id, []]));
   const stageById = new Map(stages.map((stage) => [stage.id, stage]));
   const projectsById = new Map(projects.map((project) => [project.id, project]));
+  const operationByCard = new Map(projects.flatMap((project) => (project.operations ?? []).map((operation) => [operation.ownerCardId, operation])));
+  const now = Date.now();
+  const shelvedProjects = new Set(projects.filter((project) => projectScope(project, now) === "shelved").map((project) => project.id));
   for (const project of projects) {
     const contentById = new Map((project.contentItems ?? []).map((item) => [item.id, item]));
     const runs = [
@@ -725,7 +819,8 @@ function indexStageTasks(stages, projects, cards) {
       const current = latest.get(key);
       if (!current || preferTask(task, current)) latest.set(key, task);
     }
-    result.set(stageId, [...latest.values()].sort((left, right) => statusOrder(left.status) - statusOrder(right.status) || left.projectName.localeCompare(right.projectName)));
+    const tasksWithAttention = [...latest.values()].map((task) => ({ ...task, attention: taskAttention(task, { operation: operationByCard.get(task.card?.id ?? task.cardId), shelved: shelvedProjects.has(task.projectId) }) }));
+    result.set(stageId, tasksWithAttention.sort((left, right) => attentionOrder(left.attention.kind) - attentionOrder(right.attention.kind) || left.projectName.localeCompare(right.projectName)));
   }
   return result;
 }
@@ -772,6 +867,7 @@ function withDecisionContext(card, data) {
 
 function missingApprovalFor(instance, stage, contentItemId = null) {
   if (!stage?.approval?.before) return false;
+  if (scopeAuthorizes(instance, stage.approval.before)) return false;
   const requiredScope = stage.approval.scope ?? "stage";
   return !(instance?.approvals ?? []).some((approval) =>
     approval.status === "approved" &&
@@ -785,6 +881,17 @@ function missingApprovalFor(instance, stage, contentItemId = null) {
 
 function summarizeStatuses(tasks) {
   return tasks.reduce((summary, task) => ({ ...summary, [task.status]: (summary[task.status] ?? 0) + 1 }), {});
+}
+
+function attentionOrder(kind) { return ({ "needs-you": 0, running: 1, healing: 2, queued: 3, stale: 4, done: 5 })[kind] ?? 6; }
+
+function attentionLabel(task) {
+  const { kind, reason } = task.attention ?? {};
+  if (kind === "needs-you" || kind === "healing") return reason;
+  if (kind === "stale") return `已搁置 · ${reason}`;
+  if (kind === "running") return "Agent 在做";
+  if (kind === "done") return taskActionLabel(task);
+  return statusLabel(task.status);
 }
 
 function statusOrder(status) { return ({ running: 0, retry_wait: 1, review: 2, blocked: 3, ready: 4, done: 5 })[status] ?? 6; }

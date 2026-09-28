@@ -314,3 +314,34 @@ body { background:radial-gradient(circle at 72% -20%,rgba(128,92,214,.14),transp
 .execution-takeover p,.execution-card small{font-size:12px;color:#a8bacd}
 .execution-fault{padding:12px;background:#321d25;border-radius:8px;color:#ffbdb0;overflow-wrap:anywhere}.execution-fault p{margin:8px 0}
 @media(max-width:640px){.execution-controls{margin:0 12px 12px}.execution-controls-head>span{font-size:12px}.execution-card>span{flex-basis:100%}}
+/* Lights-out factory view: only work that needs a person is loud. */
+.factory-stats>span.is-clear strong { color:var(--accent); }.factory-stats>span.is-alert strong { color:var(--red); }
+.factory-scope { display:flex; gap:4px; padding:3px; border:1px solid #303949; border-radius:10px; background:#0b1019; }
+.factory-scope button { display:flex; align-items:center; gap:6px; height:28px; padding:0 10px; border:0; border-radius:7px; background:transparent; color:#8592a6; font-size:12px; cursor:pointer; }
+.factory-scope button span { color:#5d6a7c; font-size:11px; }.factory-scope button:hover { color:#dbe3ea; }
+.factory-scope button.selected { color:#eef2f5; background:#1a2130; }.factory-scope button.selected span { color:var(--accent); }
+.factory-overview { display:flex; flex-direction:column; gap:12px; padding:14px 22px 4px; }
+.factory-overview:empty { display:none; }
+.factory-inbox { border:1px solid rgba(255,126,134,.38); border-radius:12px; background:rgba(40,18,24,.45); overflow:hidden; }
+.factory-inbox>header { display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid rgba(255,126,134,.18); }.factory-inbox>header strong { color:#ffb3b8; font-size:12px; }.factory-inbox>header span { color:#b08a90; font-size:11px; }
+.factory-inbox>button { width:100%; display:grid; grid-template-columns:8px minmax(0,1fr) auto; align-items:center; gap:12px; padding:10px 14px; border:0; border-top:1px solid rgba(255,126,134,.1); background:transparent; color:inherit; text-align:left; cursor:pointer; }
+.factory-inbox>button:first-of-type { border-top:0; }.factory-inbox>button:hover { background:rgba(255,126,134,.06); }
+.factory-inbox>button div { min-width:0; display:flex; flex-direction:column; gap:3px; }.factory-inbox>button strong { font-size:12px; }.factory-inbox>button small { overflow:hidden; color:#8592a6; font-size:11px; text-overflow:ellipsis; white-space:nowrap; }
+.factory-inbox-dot { width:7px; height:7px; border-radius:50%; background:var(--red); box-shadow:0 0 10px rgba(255,126,134,.5); }.factory-inbox-open { color:#ffb3b8; font-size:11px; }
+.factory-note { margin:0; color:#8592a6; font-size:11px; }
+.factory-projects { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:8px; }
+.factory-project { display:flex; flex-direction:column; gap:8px; padding:10px 12px; border:1px solid #232b38; border-radius:10px; background:#0c111a; color:inherit; text-align:left; cursor:pointer; }
+.factory-project:hover { border-color:#3a4456; }
+.factory-project-head { display:flex; align-items:baseline; justify-content:space-between; gap:10px; }.factory-project-head strong { overflow:hidden; font-size:12px; text-overflow:ellipsis; white-space:nowrap; }.factory-project-head span { flex:0 0 auto; color:#8592a6; font-size:11px; }
+.factory-bar { display:flex; height:5px; overflow:hidden; border-radius:3px; background:#161d29; }
+.factory-bar span { display:block; height:100%; }.bar-done { background:#6fcf97; }.bar-running { background:var(--accent); }.bar-healing { background:#4f6f95; }.bar-needs-you { background:var(--red); }
+.stage-counts .attention-needs-you { color:#ffb3b8; border:1px solid rgba(255,126,134,.4); }.stage-counts .attention-running { color:var(--accent); }.stage-counts .attention-healing { color:#9cc7eb; }.stage-counts .attention-queued { color:#8592a6; }
+.stage-task.attention-healing { min-height:80px; border-color:rgba(114,174,230,.32); background:linear-gradient(135deg,rgba(24,36,52,.7),rgba(15,18,26,.98)); }
+.stage-task.attention-healing .task-state { background:#72aee6; }.stage-task.attention-healing .task-action { color:#9cc7eb; }
+.stage-task.attention-needs-you .task-action { color:#ffb3b8; }
+.stage-task .task-action { white-space:normal; line-height:1.35; }
+.factory-done-toggle { width:100%; height:32px; border:1px dashed #252d3a; border-radius:10px; background:transparent; color:#718a7f; font-size:11px; cursor:pointer; }.factory-done-toggle:hover { color:#9fc3ae; border-color:#34404f; }
+@media (max-width: 760px) { .factory-scope { overflow-x:auto; }.factory-overview { padding:12px 14px 4px; }.factory-projects { grid-template-columns:1fr; } }
+.stage-counts .attention-stale { color:#5d6a7c; }
+.stage-task.attention-stale { min-height:52px; opacity:.45; border-color:#202733; box-shadow:none; background:#0b1017; }.stage-task.attention-stale:hover { opacity:.85; }.stage-task.attention-stale .task-state { background:#4a5566; animation:none; }.stage-task.attention-stale .task-action { color:#6b7788; }
+.stage-task.attention-stale::after { content:none; }

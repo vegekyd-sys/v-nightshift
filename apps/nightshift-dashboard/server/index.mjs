@@ -267,6 +267,13 @@ async function handleApi(request, response, url) {
       contentItems: store.listContentItems(instance.id),
       contentItemRuns: store.listContentItemRuns(instance.id),
       stageRuns: store.listStageRuns(instance.id),
+      // A card can read blocked while its paid provider call is still running;
+      // the board needs this to tell that apart from a card waiting on a person.
+      operations: store.listExternalOperations(instance.id).map((operation) => ({
+        ownerCardId: operation.ownerCardId,
+        status: operation.status,
+        updatedAt: operation.updatedAt,
+      })),
     }));
     json(response, 200, {
       board,
