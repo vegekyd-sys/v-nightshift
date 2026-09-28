@@ -253,6 +253,14 @@ export class NightShiftStore {
     return { ...this.getDecisionRequest(id), reused: false };
   }
 
+  updateDecisionRequestText(id, { problem, cause = "", impact = "", suggestion = "", detail = "", evidence }, now = new Date()) {
+    this.db.prepare(`UPDATE decision_requests SET problem = ?, cause = ?, impact = ?, suggestion = ?, detail = ?, evidence_json = ? WHERE id = ? AND status = 'open'`)
+      .run(problem, cause, impact, suggestion, detail, JSON.stringify(evidence ?? {}), id);
+    const current = this.getDecisionRequest(id);
+    this.appendEvent({ instanceId: current?.instanceId, type: "decision.described", payload: { decisionId: id }, now });
+    return current;
+  }
+
   getDecisionRequest(id) {
     const row = this.db.prepare("SELECT * FROM decision_requests WHERE id = ?").get(id);
     return row ? decisionRequestRow(row) : null;

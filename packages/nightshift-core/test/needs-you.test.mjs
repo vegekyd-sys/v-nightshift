@@ -38,6 +38,11 @@ class DecisionWorkboard {
 
   async resetCardFailures() {}
 
+  async getSession(sessionKey) {
+    this.sessionReads = (this.sessionReads ?? 0) + 1;
+    return this.sessions?.get(sessionKey) ?? { messages: [] };
+  }
+
   async releaseCard(id, status) {
     const card = this.cards.find((entry) => entry.id === id);
     card.status = status;
@@ -348,4 +353,50 @@ test("the card renders in the accepted layout", async () => {
   assert.match(card.blocks[5].text, /^\*\*可选操作\*\*\n· \*\*重新执行\*\*：按原任务再跑一次/);
   assert.equal(card.blocks[6].text, "项目 DL-0928-07 · 22:07 · 同一原因的卡会合并在这一条里");
   assert.equal(card.blocks[7].buttons[0].label, "去看板处理");
+});
+
+test("the engine's own completion checks read in words a person can act on", () => {
+  const sideEffect = describeStop({ failure: { kind: "contract_error", rawError: "Completion validation failed: External side effect has no succeeded Night Shift operation checkpoint" } });
+  assert.match(sideEffect.problem, /外部操作.*没有成功记录/);
+  assert.match(sideEffect.suggestion, /确认外部平台上这一步成没成/);
+  assert.doesNotMatch(sideEffect.problem, /checkpoint/);
+  const path = describeStop({ failure: { kind: "contract_error", rawError: "Completion validation failed: Artifact path must stay inside the instance directory" } });
+  assert.match(path.problem, /项目目录之外/);
+  const unknown = describeStop({ failure: { kind: "contract_error", rawError: "Something new broke" } });
+  assert.equal(unknown.problem, "产物没有通过完成校验");
+  assert.match(unknown.cause, /Something new broke/);
+});
+
+test("a cause that only repeats the problem is left out", () => {
+  const described = describeStop({ failure: { kind: "contract_error", agentReport: "Makaron 拉取素材超时导致失败。" } });
+  assert.equal(described.cause, "");
+});
+
+// DL-0928-07 item 1 stopped before #86 kept the Agent's report: its request
+// opened with the engine's words while the Agent had written exactly why.
+test("a stop recorded without the Agent's words gets them from the Session, and the request is rewritten", async () => {
+  const { card, observe, runtime, store, workboard } = await fixture();
+  const failure = {
+    kind: "contract_error",
+    rawError: "External side effect has no succeeded Night Shift operation checkpoint",
+    validationPhase: "side_effect",
+    retryable: false,
+    automaticRetry: false,
+  };
+  const stopped = card("old-stop", "video-1", { sessionKey: "agent:main:subagent:old-stop" });
+  const opened = observe(stopped, { failure });
+  assert.match(opened.problem, /外部操作.*没有成功记录/);
+  store.upsertContentItemRun({ instanceId: "NS-NY", contentItemId: "video-1", stageId: "produce", attempt: 1, cardId: "old-stop", status: "blocked", summary: "blocked", failure });
+  workboard.sessions = new Map([["agent:main:subagent:old-stop", { messages: [
+    { role: "user", content: "brief" },
+    { role: "assistant", content: [{ type: "text", text: LABELED_REPORT }], stopReason: "stop" },
+  ] }]]);
+  await runtime.reconcile("NS-NY");
+  const rewritten = store.getDecisionRequest(opened.id);
+  assert.match(rewritten.problem, /^Makaron 两次都没能在规定时间内下载到素材/);
+  assert.match(rewritten.cause, /只有 1 段视频素材/);
+  assert.match(rewritten.suggestion, /^先确认能否补视频素材/);
+  assert.equal(rewritten.announcedAt, opened.announcedAt, "rewriting the text leaves the notice state alone");
+  await runtime.reconcile("NS-NY");
+  assert.equal(workboard.sessionReads, 1, "the Session is read once per attempt");
 });
