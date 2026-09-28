@@ -198,7 +198,8 @@ export function Drawer({ card, context = null, delivery, deliveryState, delivery
       <DrawerNow card={card} attention={context?.attention} attempts={attempts} />
       {card.status === "blocked" && !approval && <div className="review-zone drawer-actions"><button className="primary" disabled={submitting} onClick={async () => { setSubmitting(true); try { await onRetry(card); } catch (reason) { setSubmitError(reason.message); setSubmitting(false); } }}>{submitting ? "重新排队中…" : "修正后重新执行"}</button><span>{context?.attention?.kind === "healing" ? "它正在自己恢复，一般不需要重试；重试付费任务可能重复扣费。" : "先处理好原因，再让 Agent 重新做这一步。"}</span>{submitError && <p className="decision-error">{submitError}</p>}</div>}
       <StageHandoffPanel handoff={handoff} state={handoffState} error={handoffError} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} />
-      {(automation.skills?.length ?? 0) > 0 && <section className="stage-skills"><h3>这一步用到的能力</h3><div>{automation.skills.map((skill) => <span key={skill}><Wrench size={11} />{skill}</span>)}</div></section>}
+      {(automation.skills?.length ?? 0) > 0 && <div className="drawer-skills"><span>用到的能力</span>{automation.skills.map((skill) => <em key={skill}>{skill}</em>)}</div>}
+      <div className="drawer-more">
       <NativeWorkboardActivity card={card} />
       {attempts.length > 0 && <AgentSessionPanel
         attempts={attempts}
@@ -240,6 +241,7 @@ export function Drawer({ card, context = null, delivery, deliveryState, delivery
       </details>
       {approval && <section className="publication-approval"><h3>执行确认</h3><p>{publicationApproval ? "本次确认包含外部发布授权；确认后任务才会进入发布步骤。" : "这个阶段需要明确授权后才能继续；确认后任务会进入执行队列。"}</p><Detail label="权限" value={publicationApproval ? "外部发布" : approval.effect} /><Detail label="范围" value={approval.scope ?? "stage"} />{Object.entries(approval.bindings ?? {}).map(([name, value]) => <Detail key={name} label={name === "publicationTarget" ? "发布目标" : name} value={presentApprovalBinding(value)} />)}{approvalIncomplete && <p className="decision-error">发布前还缺少：{approval.missingFields.join("、")}</p>}</section>}
       {card.notes && <details className="drawer-tech"><summary>给 Agent 的任务说明</summary><pre>{card.notes}</pre></details>}
+      </div>
       {(card.status === "review" || approval) && <div className="review-zone">
         {!reviewAction && (approval ? <div className="approval-actions approval-actions-two"><button className="primary" onClick={() => setReviewAction("approve")}>确认执行</button><button className="danger" onClick={() => setReviewAction("reject")}>暂不执行</button></div> : <div className="approval-actions"><button className="primary" onClick={() => setReviewAction("approve")}>通过</button><button onClick={() => setReviewAction("request-changes")}>要求修改</button><button className="danger" onClick={() => setReviewAction("reject")}>拒绝</button></div>)}
         {reviewAction && <div className={`review-composer action-${reviewAction}`}>
@@ -286,7 +288,7 @@ function formatRelative(value) {
 
 function StageHandoffPanel({ handoff, state, error, delivery, deliveryState, deliveryError }) {
   if (state === "loading") return <section className="handoff-panel handoff-loading"><div className="delivery-skeleton" /><span>正在载入阶段输入与输出…</span></section>;
-  if (!handoff) return <section className="handoff-panel handoff-empty"><AlertTriangle size={17} /><span>{error || "这张卡没有可用的阶段交接信息。"}</span></section>;
+  if (!handoff) return <p className="drawer-quiet">交付物：{error || "这一步还没有交接信息"}</p>;
   const previous = handoff.previous?.length ? handoff.previous.map((entry) => entry.title).join("、") : "项目输入";
   const next = handoff.next?.length ? handoff.next.map((entry) => entry.title).join("、") : "流程结束";
   return <section className="handoff-panel">

@@ -572,10 +572,8 @@ body { background:radial-gradient(circle at 72% -20%,rgba(128,92,214,.14),transp
 .drawer-tech>summary span { margin-left:auto; padding:1px 8px; border-radius:8px; background:rgba(255,255,255,.06); color:#8b93a8; font-size:11px; }
 .drawer-tech[open]>summary { margin-bottom:12px; }
 .drawer-tech .detail-row { font-size:13px; }.drawer-tech pre { max-height:320px; overflow:auto; }
-.factory-studio .drawer .agent-session-panel { margin-top:4px; border-top:1px solid rgba(255,255,255,.06); }
 .factory-studio .drawer .handoff-panel { margin-top:14px; }
 .factory-studio .drawer .stage-skills h3 { font-size:12px; }
-.factory-studio .drawer .agent-session-panel { padding:14px 0; border:0; border-top:1px solid rgba(255,255,255,.06); border-radius:0; background:transparent; box-shadow:none; }
 .drawer-section-toggle { width:100%; display:flex; align-items:center; gap:8px; padding:0; border:0; background:transparent; color:#aab2c4; font-size:13px; text-align:left; cursor:pointer; }
 .drawer-section-toggle::before { content:"›"; display:inline-block; width:12px; color:#6b7388; transition:transform .15s ease; }.drawer-section-toggle[aria-expanded="true"]::before { transform:rotate(90deg); }
 .drawer-section-toggle small { margin-left:auto; color:#6b7388; font-size:12px; }
@@ -624,3 +622,41 @@ body { background:radial-gradient(circle at 72% -20%,rgba(128,92,214,.14),transp
   .factory-project-row-main strong { display:-webkit-box; white-space:normal; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; }
   .factory-project-row-progress { grid-column:1 / -1; }
 }
+/* Drawer, calm: one type family, a few sizes, spacing instead of lines. */
+.factory-studio .drawer,.factory-studio .drawer * { font-family:Inter,"SF Pro Display","PingFang SC","Microsoft YaHei",sans-serif; }
+.factory-studio .drawer .mono,.factory-studio .drawer pre,.factory-studio .drawer code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+.factory-studio .drawer section,.factory-studio .drawer section.agent-session-panel,.factory-studio .drawer .drawer-tech { margin:0; padding:0; border:0; border-radius:0; background:transparent; box-shadow:none; }
+.factory-studio .drawer-head span { color:#9f8fd0; font-size:12px; letter-spacing:0; text-transform:none; }
+.factory-studio .drawer-head h2 { font-size:19px; font-weight:650; }
+.factory-studio .drawer section.drawer-now { margin:22px 0 0; padding:18px 20px; border-radius:16px; }
+.factory-studio .drawer-now-head strong { font-size:16px; font-weight:650; }
+.factory-studio .drawer-now-latest { margin-top:14px; padding-top:0; border-top:0; }
+.factory-studio .drawer-now-latest span,.factory-studio .drawer-now>small { color:#8b93a8; font-size:12px; }
+.factory-studio .drawer-now-latest p { margin-top:6px; font-size:14px; }
+.factory-studio .drawer-now>small { margin-top:14px; }
+.factory-studio .drawer .drawer-actions { margin:14px 0 0; }
+.factory-studio .drawer .handoff-panel { margin-top:22px; padding:16px 18px; border-radius:14px; background:rgba(255,255,255,.03); }
+.drawer-quiet { margin:22px 2px 0; color:#6b7388; font-size:13px; }
+.drawer-skills { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:18px 2px 0; }
+.drawer-skills>span { margin-right:4px; color:#8b93a8; font-size:12px; }
+.drawer-skills em { padding:4px 10px; border-radius:8px; background:rgba(169,140,255,.1); color:#cfc5ff; font-size:12px; font-style:normal; }
+.factory-studio .drawer .drawer-more { margin-top:26px; padding:4px; border-radius:14px; background:rgba(255,255,255,.03); }
+.factory-studio .drawer .drawer-more>* { border:0; }
+.factory-studio .drawer .drawer-more .drawer-tech>summary,.factory-studio .drawer .drawer-more .drawer-section-toggle { margin:0; padding:12px 14px; border-radius:10px; color:#cbd2df; font-size:14px; }
+.factory-studio .drawer .drawer-more .drawer-tech>summary:hover,.factory-studio .drawer .drawer-more .drawer-section-toggle:hover { background:rgba(255,255,255,.04); }
+.factory-studio .drawer .drawer-more .drawer-tech>summary:focus,.factory-studio .drawer .drawer-more .drawer-section-toggle:focus { outline:none; }
+.factory-studio .drawer .drawer-more .drawer-tech>summary:focus-visible,.factory-studio .drawer .drawer-more .drawer-section-toggle:focus-visible { outline:none; background:rgba(169,140,255,.1); }
+.factory-studio .drawer .drawer-more .drawer-tech[open]>summary,.factory-studio .drawer .drawer-more .drawer-section-toggle[aria-expanded="true"] { margin-bottom:0; }
+.factory-studio .drawer .drawer-more .drawer-tech>:not(summary),.factory-studio .drawer .drawer-more .agent-session-panel>:not(.drawer-section-toggle) { margin-left:14px; margin-right:14px; }
+.factory-studio .drawer .drawer-more .drawer-tech[open],.factory-studio .drawer .drawer-more .agent-session-panel { padding-bottom:4px; }
+.factory-studio .drawer .drawer-section-toggle small,.factory-studio .drawer .drawer-tech>summary span { color:#6b7388; font-size:12px; background:transparent; padding:0; }
+.factory-studio .drawer .detail-row { padding:7px 0; border:0; font-size:13px; }
+.factory-studio .drawer .native-activity ol { margin:4px 0 8px; padding:0; }
+.factory-studio .drawer .native-activity li strong { font-size:13px; }.factory-studio .drawer .native-activity li small { font-size:12px; }.factory-studio .drawer .native-activity li p { font-size:13px; }
+/* The base .agent-session-panel rule uses !important; inside the drawer list it must not draw a box. */
+.factory-studio .drawer .drawer-more .agent-session-panel { margin:0; padding:0 0 4px!important; border:0!important; border-radius:0; background:transparent; }
+.factory-studio .drawer section.drawer-now { background:rgba(255,255,255,.045); }
+.factory-studio .drawer section.drawer-now.attention-running { background:rgba(125,141,255,.12); }
+.factory-studio .drawer section.drawer-now.attention-needs-you { background:rgba(255,143,128,.11); }
+.factory-studio .drawer section.drawer-now.attention-healing { background:rgba(128,147,179,.14); }
+.factory-studio .drawer section.drawer-now.attention-done { background:rgba(187,169,255,.1); }
