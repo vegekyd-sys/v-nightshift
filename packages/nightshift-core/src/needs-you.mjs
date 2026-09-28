@@ -7,6 +7,9 @@ import { infrastructureFailureSummary } from "./failure-policy.mjs";
 
 const DAY_MS = 86_400_000;
 const BASELINE_KEY = "needs-you-v1.baseline";
+// Bumped whenever the words a request shows are produced differently, so open
+// requests are rewritten under the current rules instead of keeping old text.
+export const DESCRIBE_VERSION = 2;
 const OPERATION_UNDER_WAY = new Set(["reserved", "executing"]);
 const MOVED_ON = new Set(["ready", "running", "done", "review", "scheduled", "todo", "backlog"]);
 
@@ -63,9 +66,14 @@ export class NeedsYouTracker {
       this.pending.delete(card.id);
       // A request opened before the Agent's report was known is rewritten once
       // the report arrives, so the person reads the Agent's words.
-      if (existing.status === "open" && existing.source === "engine" && failure?.agentReport && !existing.evidence?.failure?.agentReport) {
+      const staleWords = existing.evidence?.describeVersion !== DESCRIBE_VERSION;
+      const newReport = failure?.agentReport && !existing.evidence?.failure?.agentReport;
+      if (existing.status === "open" && existing.source === "engine" && failure && (staleWords || newReport)) {
         const text = describeStop({ failure, summary });
-        return this.store.updateDecisionRequestText(existing.id, { ...text, evidence: { ...existing.evidence, failure } }, new Date(now));
+        return this.store.updateDecisionRequestText(existing.id, {
+          ...text,
+          evidence: { ...existing.evidence, failure, describeVersion: DESCRIBE_VERSION },
+        }, new Date(now));
       }
       return existing;
     }
@@ -98,7 +106,12 @@ export class NeedsYouTracker {
       impact,
       suggestion,
       detail,
-      evidence: { failure, summary, operation: operation ? { status: operation.status, externalTaskId: operation.externalTaskId ?? null } : null },
+      evidence: {
+        failure,
+        summary,
+        operation: operation ? { status: operation.status, externalTaskId: operation.externalTaskId ?? null } : null,
+        describeVersion: DESCRIBE_VERSION,
+      },
       scope: stage?.scope === "content-item" ? "item" : "project",
       options: STOP_OPTIONS,
       groupKey: groupKey({ instanceId: instance.id, stageId, failure, problem }),
@@ -200,6 +213,20 @@ export function describeStop({ failure = null, summary = null }) {
     const report = String(failure.agentReport);
     const sections = labeledSections(report);
     const sentences = splitSentences(report);
+    // An unlabeled closing message is not a stop report: on V an Agent that had
+    // published wrote "Card completed — ✅ PUBLISHED" while the engine refused
+    // its artifact path. What the engine saw leads; the Agent's claim follows.
+    if (!sections.problem && failure.kind === "contract_error") {
+      const explained = explainContractError(failure.rawError || summary || "");
+      const claim = truncate(sections.cause || firstSentence(report), 220);
+      return {
+        problem: explained.problem,
+        cause: `agent 的说法：${claim}`,
+        impact: truncate(sections.impact || "", 300),
+        suggestion: truncate(sections.suggestion || sentences.find((sentence) => /建议|需要人工|请人工|应当|下一步/.test(sentence)) || explained.suggestion, 300),
+        detail: report,
+      };
+    }
     const problem = truncate(sections.problem || firstSentence(report), 200);
     const cause = truncate(sections.cause || sentences.find((sentence) => /原因|因为|由于|失败点|根因|导致/.test(sentence)) || "", 300);
     return {
