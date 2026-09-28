@@ -61,6 +61,12 @@ export class NeedsYouTracker {
     const existing = this.store.getDecisionRequestForCard(card.id, attempt);
     if (existing) {
       this.pending.delete(card.id);
+      // A request opened before the Agent's report was known is rewritten once
+      // the report arrives, so the person reads the Agent's words.
+      if (existing.status === "open" && existing.source === "engine" && failure?.agentReport && !existing.evidence?.failure?.agentReport) {
+        const text = describeStop({ failure, summary });
+        return this.store.updateDecisionRequestText(existing.id, { ...text, evidence: { ...existing.evidence, failure } }, new Date(now));
+      }
       return existing;
     }
     if (!eligibleProject(instance, now, this.shelveAfterMs)) return null;
@@ -103,6 +109,15 @@ export class NeedsYouTracker {
 
   pendingList() {
     return [...this.pending.values()];
+  }
+
+  // Whether the engine should read this card's Agent Session for a report:
+  // it will (or already does) need a person and its request lacks the Agent's words.
+  wantsReport({ card, instance }) {
+    if (!eligibleProject(instance, this.now(), this.shelveAfterMs)) return false;
+    const existing = this.store.getDecisionRequestForCard(card.id, String(cardAttempt(card)));
+    if (existing && (existing.status !== "open" || existing.evidence?.failure?.agentReport)) return false;
+    return true;
   }
 }
 
@@ -185,23 +200,30 @@ export function describeStop({ failure = null, summary = null }) {
     const report = String(failure.agentReport);
     const sections = labeledSections(report);
     const sentences = splitSentences(report);
+    const problem = truncate(sections.problem || firstSentence(report), 200);
+    const cause = truncate(sections.cause || sentences.find((sentence) => /原因|因为|由于|失败点|根因|导致/.test(sentence)) || "", 300);
     return {
-      problem: truncate(sections.problem || firstSentence(report), 200),
-      cause: truncate(sections.cause || sentences.find((sentence) => /原因|因为|由于|失败点|根因|导致/.test(sentence)) || "", 300),
+      problem,
+      cause: sameText(cause, problem) ? "" : cause,
       impact: truncate(sections.impact || "", 300),
       suggestion: truncate(sections.suggestion || sentences.find((sentence) => /建议|需要人工|请人工|应当|下一步/.test(sentence)) || defaultSuggestion(failure), 300),
       detail: report,
     };
   }
   if (failure) {
-    const text = failure.kind && failure.kind !== "contract_error"
-      ? infrastructureFailureSummary(failure)
-      : (summary || failure.rawError || failure.message || "产物没有通过完成校验");
+    if (failure.kind && failure.kind !== "contract_error") {
+      return {
+        problem: firstSentence(infrastructureFailureSummary(failure)),
+        cause: "",
+        impact: "",
+        suggestion: defaultSuggestion(failure),
+        detail: [summary, failure.rawError].filter(Boolean).join("\n\n"),
+      };
+    }
+    const explained = explainContractError(failure.rawError || summary || failure.message || "");
     return {
-      problem: firstSentence(text),
-      cause: truncate(failure.kind === "contract_error" ? String(failure.rawError ?? "") : "", 300),
+      ...explained,
       impact: "",
-      suggestion: defaultSuggestion(failure),
       detail: [summary, failure.rawError].filter(Boolean).join("\n\n"),
     };
   }
@@ -213,6 +235,63 @@ export function describeStop({ failure = null, summary = null }) {
     suggestion: defaultSuggestion(null),
     detail: text,
   };
+}
+
+// The engine's own completion checks, in words a person can act on. The
+// English original stays in the request's detail.
+const CONTRACT_EXPLANATIONS = [
+  {
+    pattern: /external side effect has no succeeded|operation checkpoint|ledger/i,
+    problem: "外部操作（付费生成、发布或上传）没有成功记录，无法确认它是否真的完成了",
+    cause: "agent 结束时，台账里没有这一步外部操作的成功记录。",
+    suggestion: "先看 agent 的记录，确认外部平台上这一步成没成：没成就「重新执行」；如果其实成了只是没记上，需要人工核对后再继续。",
+  },
+  {
+    pattern: /must stay inside the instance directory|outside the (instance|project)/i,
+    problem: "agent 交付的文件放到了项目目录之外，引擎不接受",
+    cause: "产物路径不在这个项目自己的目录里，可能是 agent 写错了路径。",
+    suggestion: "「重新执行」，让 agent 按规定的目录重新交付；如果反复出现，需要看它的记录。",
+  },
+  {
+    pattern: /artifact not found|declared output .* is missing|is not a file/i,
+    problem: "缺少这一步应该交付的产物文件",
+    cause: "agent 结束时，约定要交付的文件不存在。",
+    suggestion: "「重新执行」；如果反复缺同一个文件，说明这一步做不出来，需要看 agent 的记录判断原因。",
+  },
+  {
+    pattern: /handoff/i,
+    problem: "这一步没有写好交给下一步的交接记录",
+    cause: "交接记录缺失或格式不对，下一步拿不到它需要的内容。",
+    suggestion: "「重新执行」，让 agent 补齐交接记录。",
+  },
+  {
+    pattern: /completion rule failed|does not equal the workflow contract|does not match|host .* is not allowed/i,
+    problem: "产物没有通过这一步的验收条件",
+    cause: "交付的内容和 Workflow 约定的验收条件不一致。",
+    suggestion: "看一下 agent 的记录和产物：能修正就「重新执行」，条件本身不合理就需要改 Workflow。",
+  },
+  {
+    pattern: /evidence|skill/i,
+    problem: "执行过程缺少证据，引擎无法确认这一步按要求完成",
+    cause: "agent 没有留下 Workflow 要求的执行证据（比如读取声明的技能）。",
+    suggestion: "「重新执行」；如果反复出现，需要检查这一步挂的技能是否可用。",
+  },
+];
+
+function explainContractError(raw) {
+  const text = String(raw ?? "").replace(/^(Completion validation failed|Terminal Agent Session did not satisfy the Workflow output contract):\s*/i, "");
+  const match = CONTRACT_EXPLANATIONS.find((entry) => entry.pattern.test(text));
+  if (match) return { problem: match.problem, cause: match.cause, suggestion: match.suggestion };
+  return {
+    problem: "产物没有通过完成校验",
+    cause: text ? `引擎的原始说明：${truncate(text, 200)}` : "",
+    suggestion: defaultSuggestion({ kind: "contract_error" }),
+  };
+}
+
+function sameText(left, right) {
+  const normalize = (value) => String(value ?? "").replace(/[\s。，,.]/g, "");
+  return Boolean(left) && normalize(left) === normalize(right);
 }
 
 const SECTION_LABELS = [

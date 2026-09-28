@@ -40,6 +40,7 @@ export class NightShiftRuntime {
     this.deferredSessionInspections = new Set();
     this.orphanedSessionMs = positiveInteger(orphanedSessionMs, "orphanedSessionMs");
     this.needsYou = needsYou;
+    this.reportReads = new Set();
     this.now = now;
     this.nextReconcileAt = 0;
     this.store = store;
@@ -207,6 +208,21 @@ export class NightShiftRuntime {
             instanceId,
             release,
           });
+        }
+      }
+      if (this.needsYou && status === "blocked" && failure && !failure.agentReport && !failure.automaticRetry &&
+        stage.actor === "agent" && card.sessionKey && typeof this.workboard.getSession === "function" &&
+        this.needsYou.wantsReport({ card, instance }) && !this.reportReads.has(`${card.id}:${terminalAttempt(card)}`) &&
+        this.consumeSessionInspectionBudget()) {
+        // Stops recorded before the Agent's report was kept (and reports lost
+        // with a Session's last turn): read the Agent's final words once.
+        this.reportReads.add(`${card.id}:${terminalAttempt(card)}`);
+        try {
+          const session = await this.workboard.getSession(card.sessionKey, { limit: 12 });
+          const report = lastAssistantText(session);
+          if (report) failure = { ...failure, agentReport: boundedSummary(report) };
+        } catch {
+          // The request opens with the engine's explanation; the next attempt may read it.
         }
       }
       if (this.needsYou) {
@@ -1062,6 +1078,16 @@ function terminalAttempt(card) {
 function terminalInspectionEventId(card, attempt, now = Date.now()) {
   const fiveMinuteBucket = Math.floor(now / 300_000);
   return `session-inspection:${card.id}:${attempt}:${fiveMinuteBucket}`;
+}
+
+function lastAssistantText(session) {
+  const messages = Array.isArray(session?.messages) ? session.messages : [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role !== "assistant") continue;
+    const text = messageText(messages[index]);
+    if (text) return text;
+  }
+  return "";
 }
 
 function messageText(message) {
