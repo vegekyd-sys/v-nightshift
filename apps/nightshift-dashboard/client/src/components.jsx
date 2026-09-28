@@ -240,7 +240,7 @@ export function Drawer({ card, context = null, delivery, deliveryState, delivery
         <Detail label="防重复提交" value={automation.idempotencyKey || automation.nightshiftActionKey ? "已启用" : "原生卡片"} />
       </details>
       {approval && <section className="publication-approval"><h3>执行确认</h3><p>{publicationApproval ? "本次确认包含外部发布授权；确认后任务才会进入发布步骤。" : "这个阶段需要明确授权后才能继续；确认后任务会进入执行队列。"}</p><Detail label="权限" value={publicationApproval ? "外部发布" : approval.effect} /><Detail label="范围" value={approval.scope ?? "stage"} />{Object.entries(approval.bindings ?? {}).map(([name, value]) => <Detail key={name} label={name === "publicationTarget" ? "发布目标" : name} value={presentApprovalBinding(value)} />)}{approvalIncomplete && <p className="decision-error">发布前还缺少：{approval.missingFields.join("、")}</p>}</section>}
-      {card.notes && <details className="drawer-tech"><summary>给 Agent 的任务说明</summary><TaskBrief notes={card.notes} /></details>}
+      {card.notes && <details className="drawer-tech" open key={`brief-${card.id}`}><summary>给 Agent 的任务说明</summary><TaskBrief notes={card.notes} /></details>}
       </div>
       {(card.status === "review" || approval) && <div className="review-zone">
         {!reviewAction && (approval ? <div className="approval-actions approval-actions-two"><button className="primary" onClick={() => setReviewAction("approve")}>确认执行</button><button className="danger" onClick={() => setReviewAction("reject")}>暂不执行</button></div> : <div className="approval-actions"><button className="primary" onClick={() => setReviewAction("approve")}>通过</button><button onClick={() => setReviewAction("request-changes")}>要求修改</button><button className="danger" onClick={() => setReviewAction("reject")}>拒绝</button></div>)}
