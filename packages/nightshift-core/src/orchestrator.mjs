@@ -186,6 +186,13 @@ export function planNextActions({
   return actions;
 }
 
+// The native board refuses a card with more than 20 parents ("parents supports
+// at most 20 entries"). On V (2026-09-29) a 30-item project finished every
+// produce card and then could not create its delivery card. Parents only draw
+// lineage on the board: Night Shift itself creates a fan-in stage after all of
+// its dependencies are done. So the list is capped and the full count kept.
+export const WORKBOARD_PARENTS_LIMIT = 20;
+
 function cardPayload(release, instance, stage, status, contentItem = null, resourceKey = null, contentItems = [], parents = [], now = new Date()) {
   const inputHash = instance.inputHash ?? hashJson(instance.inputs ?? {});
   const agentRole = stage.agentRole ?? release.spec.ownerAgentRole;
@@ -216,8 +223,9 @@ function cardPayload(release, instance, stage, status, contentItem = null, resou
       `stage:${stage.id}`,
       ...(contentItem ? [`content-item:${contentItem.id}`, `route:${contentItem.route ?? "UNROUTED"}`] : []),
     ],
-    parents,
+    parents: parents.slice(0, WORKBOARD_PARENTS_LIMIT),
     automation: {
+      ...(parents.length > WORKBOARD_PARENTS_LIMIT ? { dependencyCount: parents.length } : {}),
       workflowId: release.metadata.id,
       workflowVersion: release.metadata.version,
       workflowSha256: release.metadata.workflowSha256,
