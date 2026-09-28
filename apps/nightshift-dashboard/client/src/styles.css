@@ -719,3 +719,111 @@ body { background:radial-gradient(circle at 72% -20%,rgba(128,92,214,.14),transp
 .delivery-quiet { display:flex; align-items:center; gap:8px; margin:0; color:#8b93a8; font-size:13px; }
 .factory-studio .drawer .delivery-panel { padding:0; border:0; background:transparent; }
 .factory-studio .factory-project-time { margin-top:-4px; color:#7b8499; font-size:12px; }
+/* The workflow title sits above the numbers beside it, so its menu is never
+   painted under them. */
+.factory-topbar>.workflow-title { z-index:3; }
+.factory-switcher-menu,.factory-more-menu { background:#0f131c; }
+.factory-sheet-title { display:none; }
+/* Phones, second pass: one 16px gutter, room between blocks, fewer boxes and
+   lines, menus as bottom sheets above everything. */
+@media (max-width:700px) {
+  .sidebar { z-index:90; height:calc(64px + env(safe-area-inset-bottom)); padding:6px 12px calc(6px + env(safe-area-inset-bottom)); border-top:1px solid rgba(255,255,255,.06); background:rgba(10,11,18,.97); backdrop-filter:blur(12px); }
+  .sidebar nav button { width:auto; flex:1; max-width:96px; height:52px; }
+  .factory-studio.workflow-screen,.factory-page { padding-bottom:calc(104px + env(safe-area-inset-bottom)); }
+
+  /* Header: title and one action on the first row, then the four numbers. */
+  .factory-studio .factory-topbar { grid-template-columns:minmax(0,1fr) auto; grid-template-areas:"title actions" "metrics metrics"; align-items:center; gap:20px 12px; padding:20px 16px 18px; }
+  .factory-studio .factory-topbar>.factory-status { display:none; }
+  .factory-studio .workflow-v-avatar { display:none; }
+  .factory-studio .factory-topbar>.workflow-title { width:100%; }
+  .factory-studio .factory-switcher { width:100%; height:60px; gap:6px; padding:0 14px 0 16px; border-radius:16px; }
+  .factory-studio .factory-switcher-row { width:100%; justify-content:space-between; gap:10px; }
+  .factory-studio .factory-switcher h1 { font-size:19px; line-height:1.2; }
+  .factory-studio .factory-switcher-hint { padding:4px 6px 4px 9px; font-size:12px; }
+  .factory-studio .factory-actions { gap:8px; }
+  .factory-studio .factory-actions>button.factory-more { width:48px; height:48px; min-height:48px; border:0; border-radius:14px; background:rgba(255,255,255,.06); }
+  .factory-studio .factory-topbar>.factory-metrics { gap:8px; padding:0 2px; }
+  .factory-studio .factory-metrics span { gap:6px; font-size:12px; }.factory-studio .factory-metrics strong { font-size:24px; }
+  .factory-studio .factory-page-title { gap:6px; }.factory-studio .factory-page-title h1 { font-size:24px; }
+  /* Live Board: search takes its own row instead of squeezing the title. */
+  .factory-studio.factory-page .factory-page-top { grid-template-areas:"title refresh" "search search" "metrics metrics"; gap:16px 12px; }
+  .factory-studio .factory-page-top>.factory-actions { display:contents; }
+  .factory-studio .factory-page-top .factory-search { grid-area:search; width:100%; height:44px; border-radius:12px; }
+  .factory-studio .factory-page-top .factory-actions>button { grid-area:refresh; min-height:40px; border:0; border-radius:12px; background:rgba(255,255,255,.06); }
+  .factory-studio .factory-workspace>.drawer,.factory-board>.drawer { padding:20px 20px calc(40px + env(safe-area-inset-bottom)); }
+
+  /* Menus open as sheets from the bottom, above the tab bar. */
+  .factory-topbar:has(.factory-scrim) { z-index:130; }
+  .factory-studio .factory-scrim { z-index:130; background:rgba(5,6,12,.62); backdrop-filter:blur(2px); }
+  .factory-studio .factory-switcher-menu,.factory-studio .factory-more-menu { position:fixed; z-index:131; top:auto; right:0; bottom:0; left:0; width:auto; max-height:74vh; display:flex; flex-direction:column; gap:2px; overflow-y:auto; margin:0; padding:10px 12px calc(18px + env(safe-area-inset-bottom)); border:0; border-top:1px solid rgba(169,140,255,.2); border-radius:22px 22px 0 0; background:#11131d; box-shadow:0 -24px 60px rgba(0,0,0,.5); }
+  .factory-studio .factory-switcher-menu::before,.factory-studio .factory-more-menu::before { content:""; flex:0 0 auto; width:38px; height:4px; margin:0 auto 6px; border-radius:2px; background:rgba(255,255,255,.18); }
+  .factory-studio .factory-sheet-title { display:block; flex:0 0 auto; padding:8px 12px 12px; overflow:hidden; color:#9f8fd0; font-size:13px; font-weight:600; text-overflow:ellipsis; white-space:nowrap; }
+  .factory-studio .factory-switcher-menu button { flex:0 0 auto; min-height:54px; gap:12px; padding:0 14px; border-radius:12px; }
+  .factory-studio .factory-switcher-menu strong { font-size:15px; }.factory-studio .factory-switcher-menu small { font-size:13px; }
+  .factory-studio .factory-more-menu button { flex:0 0 auto; min-height:54px; gap:12px; padding:0 14px; border-radius:12px; font-size:15px; }
+  .factory-studio .factory-more-menu small { margin-top:8px; padding:14px 14px 0; border-top:1px solid rgba(255,255,255,.06); font-size:11px; }
+
+  /* Scope tabs */
+  .factory-studio .factory-toolbar { padding:0 16px; border-bottom:1px solid rgba(255,255,255,.06); }
+  .factory-studio .factory-scope { height:48px; gap:24px; }.factory-studio .factory-scope button { font-size:15px; }
+  .factory-studio .factory-focus { max-width:100%; margin:0 0 12px; }
+
+  /* Projects and the needs-you inbox */
+  .factory-studio .factory-overview { padding:20px 16px 4px; }
+  .factory-studio .factory-inbox { margin-bottom:4px; padding:6px 0; border:0; border-radius:18px; background:rgba(255,143,128,.08); }
+  .factory-studio .factory-inbox>header { padding:12px 18px 4px; border:0; }
+  .factory-studio .factory-inbox>button { gap:12px; padding:12px 18px; border:0; border-radius:0; }
+  .factory-studio .factory-inbox>button strong { font-size:15px; line-height:1.45; }
+  .factory-studio .factory-projects { gap:12px; }
+  .factory-studio .factory-project { gap:12px; padding:18px; border-radius:18px; }
+  .factory-studio .factory-project-head { align-items:flex-start; gap:14px; }
+  .factory-studio .factory-project-head strong { display:-webkit-box; font-size:16px; line-height:1.4; white-space:normal; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; }
+  .factory-studio .factory-project-head span { padding-top:2px; font-size:13px; }
+  .factory-studio .factory-project-stages { gap:6px 14px; font-size:13px; line-height:1.5; }
+  .factory-studio .factory-project-time { margin-top:0; font-size:12px; }
+
+  /* Stage switcher: sticky, edge to edge, no index numbers. */
+  .factory-studio .mobile-stage-nav { top:0; gap:4px; min-height:0; margin-top:24px; padding:0 16px; scroll-padding:0 16px; }
+  .factory-studio .mobile-stage-nav button { flex:0 0 auto; min-width:120px; max-width:210px; height:60px; display:flex; flex-direction:column; align-items:flex-start; justify-content:center; gap:3px; padding:0 14px; }
+  .factory-studio .mobile-stage-nav button strong { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .factory-studio .mobile-stage-nav button>span { display:none; }
+  .factory-studio .mobile-stage-nav button strong { font-size:14px; }.factory-studio .mobile-stage-nav button small { font-size:12px; }
+
+  /* One stage's work as a list of soft rows, the status under the title. */
+  .factory-studio .stage-runway { margin:0; border:0; border-radius:0; background:transparent; }
+  .factory-studio .stage-lane,.factory-studio .stage-lane.mobile-selected { padding:20px 16px 24px; border:0; background:transparent; }
+  .factory-studio .factory-lane-progress { padding:0 2px 16px; }
+  .factory-studio .stage-counts { min-height:0; gap:8px; padding:0 0 14px; }
+  .factory-studio .stage-counts span { padding:4px 10px; border:0; border-radius:8px; background:rgba(255,255,255,.05); color:#aab2c4; font-size:12px; }
+  .factory-studio .stage-counts span.attention-needs-you { background:rgba(255,143,128,.12); color:#ffb4a9; }
+  .factory-studio .stage-counts span.attention-running { background:rgba(125,141,255,.12); color:#b3bcff; }
+  .factory-studio .stage-tasks { gap:10px; }
+  .factory-studio .stage-task,.factory-studio .stage-task.state-running,.factory-studio .stage-task.state-review,.factory-studio .stage-task.state-blocked,.factory-studio .stage-task.attention-needs-you,.factory-studio .stage-task.attention-healing { min-height:0; grid-template-columns:8px minmax(0,1fr); grid-template-rows:auto auto; column-gap:12px; row-gap:8px; align-items:start; padding:16px; border:0; border-radius:16px; background:rgba(255,255,255,.035); box-shadow:none; }
+  .factory-studio .stage-task.state-running { padding-top:16px; background:rgba(125,141,255,.1); }
+  .factory-studio .stage-task.state-running::after { display:none; }
+  .factory-studio .stage-task.attention-needs-you { background:rgba(255,143,128,.09); }
+  .factory-studio .stage-task.attention-healing { background:rgba(128,147,179,.1); }
+  .factory-studio .stage-task .task-state { grid-column:1; grid-row:1; margin-top:7px; }
+  .factory-studio .stage-task>div { grid-column:2; grid-row:1; min-width:0; }
+  .factory-studio .stage-task strong,.factory-studio .stage-task.state-running strong { font-size:15px; line-height:1.45; }
+  .factory-studio .stage-task small { display:block; margin-top:4px; font-size:12px; }
+  .factory-studio .stage-task .task-action,.factory-studio .stage-task.attention-needs-you .task-action { grid-column:2; grid-row:2; align-self:start; justify-self:start; font-size:13px; line-height:1.45; text-align:left; white-space:normal; }
+  .factory-studio .factory-done { margin-top:10px; padding:6px 4px 0; }
+  .factory-studio .factory-done-row { min-height:40px; font-size:14px; }
+
+  /* Live Board, Projects, Agents: same gutter and rhythm. */
+  .factory-page .mobile-board-tabs { gap:4px; padding:0 16px; }
+  .factory-page .mobile-board-tabs button { min-width:0; flex:0 0 auto; padding:0 12px; }
+  .factory-board { margin:20px 16px; border:0; border-radius:0; background:transparent; box-shadow:none; }
+  .factory-board .factory-column { padding:0; }.factory-board .factory-column>header { display:none; }
+  .factory-studio .factory-column-body { gap:12px; }
+  .factory-card,.factory-card.attention-running,.factory-card.attention-needs-you,.factory-card.attention-healing { gap:8px; padding:16px 18px; border:0; border-radius:18px; }
+  .factory-card { background:rgba(255,255,255,.035); }
+  .factory-card.attention-running { background:rgba(125,141,255,.1); }
+  .factory-card.attention-needs-you { background:rgba(255,143,128,.09); }
+  .factory-card.attention-healing { background:rgba(128,147,179,.1); }
+  .factory-card strong { font-size:15px; line-height:1.45; }
+  .factory-project-list,.factory-agent-grid { margin:16px; gap:12px; }
+  .factory-project-row { gap:12px; padding:18px; border-radius:18px; }
+  .factory-agent { padding:18px; border-radius:18px; }
+}
