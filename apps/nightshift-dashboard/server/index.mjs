@@ -13,7 +13,7 @@ import { HumanAttemptController, humanCompletionEvidence, publicHumanAttempt, ev
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadPublicAuth, requiresPublicAuth, verifyPublicAuth, resolveOperatorIdentity } from "./public-auth.mjs";
@@ -33,6 +33,7 @@ import {
   normalizeArtifactPath,
   normalizeProjectGovernance,
   normalizeDeliverablesManifest,
+  deliverablesFromHandoffs,
   normalizeStageHandoff,
   presentStageHandoff,
   redactSensitiveInputs,
@@ -1186,8 +1187,37 @@ async function loadDeliverables(instanceId, contentItemId = null) {
   const manifestPath = contentItemId
     ? resolve(dataDir, "instances", instanceId, "content-items", contentItemId, "deliverables.json")
     : resolve(dataDir, "instances", instanceId, "deliverables.json");
-  const source = JSON.parse(await readFile(manifestPath, "utf8"));
+  let source;
+  try {
+    source = JSON.parse(await readFile(manifestPath, "utf8"));
+  } catch (error) {
+    if (error.code !== "ENOENT" || !contentItemId) throw error;
+    source = await deliverablesFromItemHandoffs(instanceId, contentItemId);
+    if (!source) throw error;
+  }
   return normalizeDeliverablesManifest(source, { instanceId, contentItemId });
+}
+
+// No deliverables.json: fall back to the video the item's stage handoffs
+// record (星擎夜班 D writes produce/final.mp4 and no manifest).
+async function deliverablesFromItemHandoffs(instanceId, contentItemId) {
+  const itemRoot = resolve(dataDir, "instances", instanceId, "content-items", contentItemId);
+  let names;
+  try {
+    names = (await readdir(resolve(itemRoot, "handoffs"))).filter((name) => name.endsWith(".json")).sort();
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+  const handoffs = [];
+  for (const name of names) {
+    try { handoffs.push(JSON.parse(await readFile(resolve(itemRoot, "handoffs", name), "utf8"))); } catch { /* an unreadable handoff is skipped */ }
+  }
+  const item = store.listContentItems(instanceId).find((entry) => entry.id === contentItemId);
+  const draft = deliverablesFromHandoffs(handoffs, { instanceId, contentItemId, title: item?.title ?? null });
+  if (!draft) return null;
+  const asset = await readFile(resolve(itemRoot, dirname(draft.video.path), "finishedAsset.json"), "utf8").then(JSON.parse).catch(() => null);
+  return asset ? deliverablesFromHandoffs(handoffs, { instanceId, contentItemId, title: item?.title ?? null, asset }) : draft;
 }
 
 async function validateCompletion({ card, contentItemId, instance, release, reuseExecutionEvidence = false, stageId, submittedAttempt, terminalSession }) {

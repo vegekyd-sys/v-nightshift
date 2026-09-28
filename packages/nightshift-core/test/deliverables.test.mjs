@@ -91,3 +91,19 @@ test("binds a delivery package to one content item", () => {
     /content item mismatch/,
   );
 });
+
+test("a finished video recorded only in the stage handoff still becomes a playable delivery", async () => {
+  const { deliverablesFromHandoffs, normalizeDeliverablesManifest, deliverableArtifactPaths } = await import("../src/deliverables.mjs");
+  const handoffs = [
+    { stageId: "brief", outputs: [{ name: "finishedVideoBrief", artifact: "content-items/yq-01/finishedVideoBrief.md" }] },
+    { stageId: "produce", outputs: [{ name: "finishedAsset", artifact: "content-items/yq-01/produce/final.mp4" }] },
+  ];
+  const asset = { sha256: "144aba76", video: { width: 1080, height: 1920, durationSeconds: 15 } };
+  const raw = deliverablesFromHandoffs(handoffs, { instanceId: "DL-1", contentItemId: "yq-01", title: "条目", asset });
+  const manifest = normalizeDeliverablesManifest(raw, { instanceId: "DL-1", contentItemId: "yq-01" });
+  assert.equal(manifest.video.path, "produce/final.mp4", "relative to the item, like deliverables.json");
+  assert.equal(manifest.video.width, 1080);
+  assert.equal(manifest.qc.status, "none", "nothing here attests QC");
+  assert.deepEqual([...deliverableArtifactPaths(manifest)], ["produce/final.mp4"], "only the recorded video is served");
+  assert.equal(deliverablesFromHandoffs([handoffs[0]], { instanceId: "DL-1", contentItemId: "yq-01" }), null, "no video, no delivery");
+});

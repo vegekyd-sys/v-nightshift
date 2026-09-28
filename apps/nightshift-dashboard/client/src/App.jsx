@@ -329,6 +329,35 @@ function DoneList({ entries, onSelect, stale = false }) {
   </div>;
 }
 
+// When a project started and how long it has run, or when it was delivered and
+// how long it took. The last update of a done project is its delivery.
+function projectTiming(instance, now = Date.now()) {
+  const started = Date.parse(instance.createdAt ?? "");
+  const updated = Date.parse(instance.updatedAt ?? "");
+  if (!started) return "";
+  if (instance.status === "done" && updated) return `${clockLabel(updated, now)} 交付 · 用时 ${spanLabel(updated - started)}`;
+  if (instance.status === "paused") return `${clockLabel(started, now)} 开始 · 已暂停`;
+  return `${clockLabel(started, now)} 开始 · 已进行 ${spanLabel(now - started)}`;
+}
+
+function clockLabel(at, now) {
+  const date = new Date(at);
+  const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  const today = new Date(now);
+  if (date.toDateString() === today.toDateString()) return `今天 ${time}`;
+  const yesterday = new Date(now - 86_400_000);
+  if (date.toDateString() === yesterday.toDateString()) return `昨天 ${time}`;
+  return `${date.getMonth() + 1}/${date.getDate()} ${time}`;
+}
+
+function spanLabel(ms) {
+  const minutes = Math.max(0, Math.round(ms / 60000));
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours} 小时${minutes % 60 ? ` ${minutes % 60} 分` : ""}`;
+  return `${Math.floor(hours / 24)} 天 ${hours % 24} 小时`;
+}
+
 function formatBoardAge(value) {
   const at = typeof value === "number" ? value : Date.parse(value ?? 0);
   if (!at) return "";
@@ -615,6 +644,7 @@ function FactoryOverview({ scope, stages, projects, focused = false, renderContr
             })}
             {(counts.running + counts.healing) > 0 && <em>{counts.running + counts.healing} 个在做</em>}
           </div>
+          <small className="factory-project-time">{projectTiming(project)}</small>
           {focused && renderControls?.(project)}
         </Tag>;
       })}
@@ -811,7 +841,7 @@ function Projects({ onScopeChange, data, onNewProject, onOpenProject, refresh })
         const expected = Math.max(progress.expected, counts.done + counts.running + counts.healing + counts["needs-you"] + counts.queued + counts.stale, 1);
         const share = (value) => `${(value / expected) * 100}%`;
         return <div className="factory-project-row" role="button" tabIndex="0" key={instance.id} onClick={() => onOpenProject(instance.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onOpenProject(instance.id); }}>
-          <div className="factory-project-row-main"><strong>{instance.name}</strong><small>{release?.name ?? instance.workflowSha256.slice(0, 12)} · {release?.version ?? ""}</small></div>
+          <div className="factory-project-row-main"><strong>{instance.name}</strong><small>{release?.name ?? instance.workflowSha256.slice(0, 12)} · {release?.version ?? ""} · {projectTiming(instance)}</small></div>
           <div className="factory-project-row-progress">
             <div className="factory-bar" aria-hidden="true"><span className="bar-done" style={{ width: share(counts.done) }} /><span className="bar-running" style={{ width: share(counts.running) }} /><span className="bar-healing" style={{ width: share(counts.healing) }} /><span className="bar-needs-you" style={{ width: share(counts["needs-you"]) }} /></div>
             <span>{progress.splitting ? "拆单中" : `${progress.estimated ? "约 " : ""}${counts.done}/${expected}`}</span>
