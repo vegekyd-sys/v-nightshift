@@ -118,7 +118,7 @@ export function WorkCard({ card, onClick }) {
 
 const DRAWER_STATUS = { blocked: "已阻塞", running: "进行中", review: "待审核", done: "已完成", ready: "待开始", todo: "待开始", scheduled: "定时待发", cancelled: "已取消" };
 
-export function Drawer({ card, context = null, delivery, deliveryState, deliveryError, handoff, handoffState, handoffError, onClose, onDecide, onRetry }) {
+export function Drawer({ card, context = null, delivery, deliveryState, deliveryError, handoff, handoffState, handoffError, onClose, onDecide, onRetry, onResolve }) {
   const [reviewAction, setReviewAction] = useState(null);
   const [evidence, setEvidence] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -195,8 +195,10 @@ export function Drawer({ card, context = null, delivery, deliveryState, delivery
   return (
     <aside className="drawer">
       <div className="drawer-head"><div><span>{[context?.projectName, context?.stageTitle].filter(Boolean).join(" · ") || "任务详情"}</span><h2>{context?.contentTitle ?? delivery?.title ?? card.title}</h2></div><button onClick={onClose} aria-label="关闭详情"><X size={18} /></button></div>
-      <DrawerNow card={card} attention={context?.attention} attempts={attempts} />
-      {card.status === "blocked" && !approval && <div className="review-zone drawer-actions"><button className="primary" disabled={submitting} onClick={async () => { setSubmitting(true); try { await onRetry(card); } catch (reason) { setSubmitError(reason.message); setSubmitting(false); } }}>{submitting ? "重新排队中…" : "修正后重新执行"}</button><span>{context?.attention?.kind === "healing" ? "它正在自己恢复，一般不需要重试；重试付费任务可能重复扣费。" : "先处理好原因，再让 Agent 重新做这一步。"}</span>{submitError && <p className="decision-error">{submitError}</p>}</div>}
+      {context?.attention?.request?.kind === "decision" && onResolve
+        ? <DecisionPanel key={context.attention.request.id} request={context.attention.request} onResolve={onResolve} />
+        : <DrawerNow card={card} attention={context?.attention} attempts={attempts} />}
+      {card.status === "blocked" && !approval && context?.attention?.request?.kind !== "decision" && <div className="review-zone drawer-actions"><button className="primary" disabled={submitting} onClick={async () => { setSubmitting(true); try { await onRetry(card); } catch (reason) { setSubmitError(reason.message); setSubmitting(false); } }}>{submitting ? "重新排队中…" : "修正后重新执行"}</button><span>{context?.attention?.kind === "healing" ? "它正在自己恢复，一般不需要重试；重试付费任务可能重复扣费。" : "先处理好原因，再让 Agent 重新做这一步。"}</span>{submitError && <p className="decision-error">{submitError}</p>}</div>}
       <StageHandoffPanel handoff={handoff} state={handoffState} error={handoffError} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} />
       {(automation.skills?.length ?? 0) > 0 && <div className="drawer-skills"><span>用到的能力</span>{automation.skills.map((skill) => <em key={skill}>{skill}</em>)}</div>}
       <div className="drawer-more">
@@ -253,6 +255,79 @@ export function Drawer({ card, context = null, delivery, deliveryState, delivery
       </div>}
     </aside>
   );
+}
+
+// A stop the engine put in 需要你, read in the order a person decides it: what
+// happened, why, what it affects, what to do; then the choices, each with what
+// it does, a note for the Agent, and whether the same answer covers the group.
+// The Feishu notice uses the same order.
+function DecisionPanel({ request, onResolve }) {
+  const [detail, setDetail] = useState(null);
+  const [loadError, setLoadError] = useState("");
+  const [optionId, setOptionId] = useState(null);
+  const [note, setNote] = useState("");
+  const [applyToGroup, setApplyToGroup] = useState(request.groupSize > 1);
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState(null);
+  const [submitError, setSubmitError] = useState("");
+  useEffect(() => {
+    let active = true;
+    api(`/api/decisions/${encodeURIComponent(request.id)}`)
+      .then((value) => { if (active) setDetail(value); })
+      .catch((reason) => { if (active) setLoadError(reason.message); });
+    return () => { active = false; };
+  }, [request.id]);
+  const options = detail?.options ?? request.options ?? [];
+  const chosen = options.find((option) => option.id === optionId) ?? null;
+  const decided = detail && detail.status !== "open" ? detail : result?.alreadyDecided ? result.request : null;
+  const rows = [
+    ["为什么", detail?.cause],
+    ["影响", detail?.impact],
+    ["建议怎么做", detail?.suggestion],
+  ].filter(([, value]) => value);
+
+  async function submit() {
+    if (!chosen || submitting) return;
+    setSubmitting(true);
+    setSubmitError("");
+    try {
+      const value = await onResolve(request, { optionId: chosen.id, note: note.trim() || null, applyToGroup: applyToGroup && request.groupSize > 1 });
+      setResult(value);
+    } catch (reason) {
+      setSubmitError(reason.message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return <section className="decision-panel">
+    <div className="decision-panel-head"><AlertTriangle size={16} /><span>需要你决定</span>{request.groupSize > 1 && <em>同一原因共 {request.groupSize} 条</em>}</div>
+    <p className="decision-problem">{detail?.problem ?? request.problem}</p>
+    {rows.length > 0 && <dl className="decision-facts">{rows.map(([title, value]) => <React.Fragment key={title}><dt>{title}</dt><dd>{value}</dd></React.Fragment>)}</dl>}
+    {!detail && !loadError && <p className="decision-quiet">正在载入原因和建议…</p>}
+    {loadError && <p className="decision-quiet">原因暂时载入不了：{loadError}</p>}
+    {decided
+      ? <p className="decision-done"><Check size={14} />已经处理过：{optionLabel(options, decided.decision?.optionId)}{decided.decision?.actor ? ` · ${decided.decision.actor}` : ""}</p>
+      : result
+        ? <p className="decision-done"><Check size={14} />已提交：{chosen?.label}{result.affectedCardIds?.length > 1 ? `，${result.affectedCardIds.length} 条重新排队` : ""}{result.errors?.length ? `；${result.errors.length} 条没有成功：${result.errors[0].error}` : ""}</p>
+        : <>
+          <div className="decision-options" role="radiogroup" aria-label="怎么处理">
+            {options.map((option) => <button type="button" role="radio" aria-checked={optionId === option.id} className={`decision-option effect-${option.effect} ${optionId === option.id ? "selected" : ""}`} key={option.id} onClick={() => setOptionId(option.id)}>
+              <span className="decision-radio" /><div><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</div>
+            </button>)}
+          </div>
+          {chosen && <>
+            <textarea className="decision-note" aria-label="附言" value={note} onChange={(event) => setNote(event.target.value)} placeholder={chosen.effect === "retry" ? "附一句话给 Agent（可选），比如「已补素材」" : "暂停原因（可选）"} />
+            {request.groupSize > 1 && chosen.effect === "retry" && <label className="decision-group"><input type="checkbox" checked={applyToGroup} onChange={(event) => setApplyToGroup(event.target.checked)} />同样处理这组 {request.groupSize} 条</label>}
+            {submitError && <p className="decision-error">{submitError}</p>}
+            <button className="primary decision-submit" disabled={submitting} onClick={submit}>{submitting ? "提交中…" : `确认：${chosen.label}${applyToGroup && request.groupSize > 1 && chosen.effect === "retry" ? `（${request.groupSize} 条）` : ""}`}</button>
+          </>}
+        </>}
+  </section>;
+}
+
+function optionLabel(options, optionId) {
+  return options.find((option) => option.id === optionId)?.label ?? optionId ?? "已决定";
 }
 
 const NOW_TITLES = { running: "Agent 正在做", queued: "排队等待开始", done: "这一步已完成", stale: "项目已搁置，这张卡只供翻看" };
