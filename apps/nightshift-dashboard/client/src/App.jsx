@@ -422,7 +422,7 @@ function WorkflowStudio({ onScopeChange, data, refresh, initialProjectId, initia
   const projects = useMemo(() => (data?.instances ?? []).filter((instance) => releaseShas.has(instance.workflowSha256)), [data?.instances, releaseShas]);
   const scopeCounts = useMemo(() => {
     const now = Date.now();
-    const counts = { live: 0, delivered: 0, shelved: 0, all: 0 };
+    const counts = { live: 0, paused: 0, delivered: 0, shelved: 0, all: 0 };
     for (const project of projects) {
       const actual = projectScope(project, now);
       if (actual === "archived") continue;
@@ -519,7 +519,7 @@ function WorkflowStudio({ onScopeChange, data, refresh, initialProjectId, initia
     <div className={`workflow-workspace factory-workspace ${selected ? "with-drawer" : ""}`}>
       <main className="workflow-runway">
         <div className="runway-toolbar factory-toolbar">
-          <div className="factory-scope" role="tablist" aria-label="项目范围">{[["live", "在产"], ["delivered", "已交付"], ["shelved", "搁置"], ["all", "全部"]].map(([id, title]) => <button role="tab" aria-selected={scope === id && !focusedProject} className={scope === id && !focusedProject ? "selected" : ""} key={id} onClick={() => { setScope(id); setProjectId("all"); }}>{title}<span>{scopeCounts[id]}</span></button>)}</div>
+          <div className="factory-scope" role="tablist" aria-label="项目范围">{PROJECT_TABS.filter(([id]) => id !== "paused" || scopeCounts.paused > 0 || scope === "paused").map(([id, title]) => <button role="tab" aria-selected={scope === id && !focusedProject} className={scope === id && !focusedProject ? "selected" : ""} key={id} onClick={() => { setScope(id); setProjectId("all"); }}>{title}<span>{scopeCounts[id]}</span></button>)}</div>
           {focusedProject && <button className="factory-focus" onClick={() => setProjectId("all")}><span>只看</span><strong>{focusedProject.name}</strong><X size={13} /></button>}
         </div>
         <FactoryOverview scope={scope} stages={runwayStages} projects={visibleProjects} focused={projectId !== "all"} renderControls={(instance) => <ExecutionControls instance={instance} cards={data.cards ?? []} refresh={refresh} />} taskIndex={taskIndex} releaseBySha={releaseBySha} needsYou={needsYou} onSelect={setSelected} onOpenProject={setProjectId} />
@@ -590,8 +590,10 @@ function shortStageTitle(title = "") {
   return title.split(/\s*[+＋（(|｜]\s*/)[0].trim() || title;
 }
 
+const PROJECT_TABS = [["live", "在产"], ["paused", "已暂停"], ["delivered", "已交付"], ["shelved", "搁置"], ["all", "全部"]];
+
 function scopeTitle(scope) {
-  return ({ live: "在产", delivered: "已交付", shelved: "搁置", all: "" })[scope] ?? "";
+  return ({ live: "在产", paused: "已暂停", delivered: "已交付", shelved: "搁置", all: "" })[scope] ?? "";
 }
 
 function FactoryOverview({ scope, stages, projects, focused = false, renderControls, taskIndex, releaseBySha, needsYou, onSelect, onOpenProject }) {
@@ -815,7 +817,7 @@ function Projects({ onScopeChange, data, onNewProject, onOpenProject, refresh })
       return { instance, release, counts, doneToday, progress, scope: projectScope(instance, now) };
     }).sort((left, right) => Date.parse(right.instance.updatedAt) - Date.parse(left.instance.updatedAt));
   }, [data]);
-  const scopeCounts = { live: 0, delivered: 0, shelved: 0, all: rows.length };
+  const scopeCounts = { live: 0, paused: 0, delivered: 0, shelved: 0, all: rows.length };
   for (const row of rows) scopeCounts[row.scope] += 1;
   const shown = rows.filter((row) => scope === "all" || row.scope === scope);
   const totals = shown.reduce((sum, row) => {
@@ -834,7 +836,7 @@ function Projects({ onScopeChange, data, onNewProject, onOpenProject, refresh })
   return <div className="simple-screen factory-studio factory-page">
     <PageHeader eyebrow="Night Shift · 全部 Workflow" title="Projects" counts={totals} doneToday={doneToday} actions={<button className="primary" onClick={onNewProject}><Plus size={15} />新建项目</button>} />
     <div className="runway-toolbar factory-toolbar">
-      <div className="factory-scope" role="tablist" aria-label="项目范围">{[["live", "在产"], ["delivered", "已交付"], ["shelved", "搁置"], ["all", "全部"]].map(([id, title]) => <button role="tab" aria-selected={scope === id} className={scope === id ? "selected" : ""} key={id} onClick={() => setScope(id)}>{title}<span>{scopeCounts[id]}</span></button>)}</div>
+      <div className="factory-scope" role="tablist" aria-label="项目范围">{PROJECT_TABS.filter(([id]) => id !== "paused" || scopeCounts.paused > 0 || scope === "paused").map(([id, title]) => <button role="tab" aria-selected={scope === id} className={scope === id ? "selected" : ""} key={id} onClick={() => setScope(id)}>{title}<span>{scopeCounts[id]}</span></button>)}</div>
     </div>
     <div className="factory-project-list">
       {shown.map(({ instance, release, counts, progress, scope: state }) => {
@@ -846,7 +848,7 @@ function Projects({ onScopeChange, data, onNewProject, onOpenProject, refresh })
             <div className="factory-bar" aria-hidden="true"><span className="bar-done" style={{ width: share(counts.done) }} /><span className="bar-running" style={{ width: share(counts.running) }} /><span className="bar-healing" style={{ width: share(counts.healing) }} /><span className="bar-needs-you" style={{ width: share(counts["needs-you"]) }} /></div>
             <span>{progress.splitting ? "拆单中" : `${progress.estimated ? "约 " : ""}${counts.done}/${expected}`}</span>
           </div>
-          <span className={`factory-state state-${instance.control?.fault ? "fault" : counts["needs-you"] && state === "live" ? "needs-you" : state === "live" && instance.status === "paused" ? "paused" : state}`}>{instance.control?.fault ? "调度失败" : counts["needs-you"] && state === "live" ? `${counts["needs-you"]} 件等你` : state === "live" ? (instance.status === "paused" ? "已暂停" : "在产") : state === "delivered" ? "已交付" : "已搁置"}</span>
+          <span className={`factory-state state-${instance.control?.fault ? "fault" : counts["needs-you"] && state === "live" ? "needs-you" : state}`}>{instance.control?.fault ? "调度失败" : counts["needs-you"] && state === "live" ? `${counts["needs-you"]} 件等你` : ({ live: "在产", paused: "已暂停", delivered: "已交付", shelved: "已搁置" })[state] ?? state}</span>
           <time>{formatBoardAge(instance.updatedAt)}</time>
           <button className="project-delete" aria-label={`归档项目 ${instance.name}`} title="归档项目" onClick={(event) => { event.stopPropagation(); setDeleteError(""); setDeleting(instance); }}><Trash2 size={15} /></button>
         </div>;

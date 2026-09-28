@@ -76,6 +76,6 @@ test("tab sizes and agents' finished work count every project, not only the load
   cards[1].status = "done";
   cards[1].updatedAt = NOW - 60_000;
   const overview = buildOverview({ scope: "live", instances, cards, releases, now: NOW });
-  assert.deepEqual(overview.cardCounts, { live: 1, delivered: 0, shelved: 1, all: 2 });
+  assert.deepEqual(overview.cardCounts, { live: 1, paused: 0, delivered: 0, shelved: 1, all: 2 });
   assert.deepEqual(overview.agentDoneToday, { makaron: 1 });
 });
