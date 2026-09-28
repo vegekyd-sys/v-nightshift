@@ -326,14 +326,10 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
     <header className="topbar workflow-topbar factory-topbar">
       <div className="workflow-title">
         <span className="workflow-v-avatar"><img src="/v-avatar.jpg" alt="V" /><i /></span>
-        <div className="workflow-title-copy">
-          <button className="factory-switcher" aria-haspopup="listbox" aria-expanded={switcherOpen} aria-label={`当前 Workflow：${group.name}，点击切换`} onClick={() => setSwitcherOpen((value) => !value)}>
-            <span className="factory-switcher-label">Workflow</span>
-            <h1>{group.name}</h1>
-            <span className="factory-switcher-hint">切换<ChevronDown size={16} /></span>
-          </button>
-          <p className={`topbar-copy workflow-live-line ${factory.running ? "is-live" : ""}`}><span />{factory["needs-you"] ? `${factory["needs-you"]} 件事等你处理` : "工厂自己在跑，没有要你决定的事"}<small>{pinnedRelease?.version} · {runwayStages.length === stages.length ? `${stages.length} 个阶段` : `${runwayStages.length}/${stages.length} 个阶段`}</small></p>
-        </div>
+        <button className="factory-switcher" aria-haspopup="listbox" aria-expanded={switcherOpen} aria-label={`当前 Workflow：${group.name}，点击切换`} onClick={() => setSwitcherOpen((value) => !value)}>
+          <span className="factory-switcher-label">Workflow</span>
+          <span className="factory-switcher-row"><h1>{group.name}</h1><span className="factory-switcher-hint">切换<ChevronDown size={15} /></span></span>
+        </button>
         {switcherOpen && <>
           <div className="factory-scrim" onClick={() => setSwitcherOpen(false)} />
           <div className="factory-switcher-menu" role="listbox" aria-label="切换 Workflow">
@@ -345,6 +341,7 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
           </div>
         </>}
       </div>
+      <div className={`factory-status ${factory["needs-you"] ? "is-alert" : factory.running ? "is-live" : ""}`}><span />{factory["needs-you"] ? `${factory["needs-you"]} 件事等你处理` : factory.running || factory.healing ? "工厂自己在跑" : "本轮都做完了"}</div>
       <div className="factory-metrics" aria-label="工厂状态">
         <span className={factory["needs-you"] ? "is-alert" : "is-clear"}><strong>{factory["needs-you"]}</strong>需要你</span>
         <span><strong>{factory.healing}</strong>自愈中</span>
@@ -360,7 +357,7 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
             <button onClick={() => { setMobileActionsOpen(false); setEditor({ mode: "edit", source: group.releases[0].sourceMarkdown ?? group.releases[0].sourceYaml }); }}><FilePenLine size={15} />编辑这个 Workflow</button>
             <button onClick={() => { setMobileActionsOpen(false); setEditor({ mode: "import", source: "" }); }}><Upload size={15} />导入 Workflow</button>
             <button onClick={() => { setMobileActionsOpen(false); setEditor({ mode: "create", source: newWorkflowSource() }); }}><Plus size={15} />新建 Workflow</button>
-            <small>{pinnedRelease?.version} · SHA {pinnedRelease?.workflowSha256.slice(0, 12)}</small>
+            <small>{pinnedRelease?.version} · {runwayStages.length === stages.length ? `${stages.length} 个阶段` : `本批走 ${runwayStages.length}/${stages.length} 个阶段`} · SHA {pinnedRelease?.workflowSha256.slice(0, 12)}</small>
           </div>
         </>}
       </div>

@@ -439,3 +439,36 @@ body { background:radial-gradient(circle at 72% -20%,rgba(128,92,214,.14),transp
 .factory-project-stages b { color:#c9cfdc; font-weight:600; }
 .factory-project-stages span.is-done b { color:var(--f-done,#bba9ff); }.factory-project-stages span.is-moving b { color:#aab4ff; }
 .factory-project-stages em { margin-left:auto; color:#aab4ff; font-size:12px; font-style:normal; }
+/* One surface for header and tabs, one panel for the lanes, hairlines only
+   where they separate something. */
+.factory-studio .factory-topbar { grid-template-columns:minmax(0,1fr) auto auto auto; align-items:center; gap:28px; height:auto; min-height:0; padding:22px 32px 16px; border-bottom:0; background:transparent; backdrop-filter:none; }
+.factory-studio .factory-topbar::before { opacity:.5; }
+.factory-studio .workflow-title { display:flex; align-items:center; gap:14px; }
+.factory-studio .workflow-v-avatar { width:56px; height:56px; border-radius:16px; border-color:rgba(169,140,255,.32); box-shadow:none; }
+.factory-studio .workflow-v-avatar img { border-radius:13px; }
+.factory-studio .factory-switcher { display:flex; flex-direction:column; justify-content:center; align-items:flex-start; gap:4px; height:56px; padding:0 14px 0 16px; border:0; border-radius:16px; background:rgba(169,140,255,.07); }
+.factory-studio .factory-switcher:hover,.factory-studio .factory-switcher[aria-expanded="true"] { border:0; background:rgba(169,140,255,.13); }
+.factory-switcher-row { display:flex; align-items:center; gap:12px; }
+.factory-studio .factory-switcher h1 { font-size:24px; line-height:1.1; }
+.factory-studio .factory-switcher-label { font-size:10px; letter-spacing:.14em; }
+.factory-studio .factory-switcher-hint { padding:4px 8px 4px 10px; background:rgba(169,140,255,.16); }
+.factory-studio .factory-switcher-menu { left:70px; margin-top:8px; }
+.factory-status { display:flex; align-items:center; gap:8px; height:34px; padding:0 14px; border-radius:17px; background:rgba(255,255,255,.045); color:#aab2c4; font-size:13px; white-space:nowrap; }
+.factory-status>span { width:7px; height:7px; border-radius:50%; background:#5d6a7c; }
+.factory-status.is-live>span { background:var(--f-running); box-shadow:0 0 10px rgba(var(--f-running-rgb),.7); }
+.factory-status.is-alert { background:rgba(255,143,128,.1); color:#ffb4a9; }.factory-status.is-alert>span { background:var(--f-needs); }
+.factory-studio .factory-toolbar { min-height:0; padding:0 32px; border-bottom:1px solid rgba(255,255,255,.06); background:transparent; }
+.factory-studio .factory-scope { height:48px; }
+.factory-studio .workflow-runway { background:transparent; }
+.factory-studio .factory-overview { padding:24px 32px 4px; }
+.factory-studio .factory-project { border:0; background:rgba(255,255,255,.035); }
+.factory-studio .factory-project:hover { border:0; background:rgba(169,140,255,.08); }
+.factory-studio .stage-runway { margin:20px 32px 40px; border-radius:18px; background:rgba(255,255,255,.022); }
+.factory-studio .stage-rail,.factory-studio .stage-lane>header::after { display:none; }
+.factory-studio .stage-lane,.factory-studio .stage-lane.is-live { border-right:1px solid rgba(255,255,255,.045); background:transparent; }
+.factory-studio .stage-lane:last-child { border-right:0; }
+.factory-studio .stage-lane>header { height:auto; padding:22px 6px 14px; }
+.factory-studio .stage-index { border-color:rgba(255,255,255,.08); background:rgba(255,255,255,.03); }
+.factory-studio .factory-lane-progress { padding:0 6px 16px; }
+.factory-studio .factory-done { border-top:1px solid rgba(255,255,255,.05); }
+@media (max-width:1300px) and (min-width:701px) { .factory-studio .factory-topbar { grid-template-columns:minmax(0,1fr) auto; row-gap:14px; }.factory-studio .factory-status { grid-column:1; grid-row:2; justify-self:start; }.factory-studio .factory-metrics { grid-column:2; grid-row:2; } }
