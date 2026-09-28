@@ -99,6 +99,15 @@ A card that stops and will not recover by itself becomes a decision request (`de
 - **pause** pauses the project and leaves the request open.
 - A second decision returns the first (`alreadyDecided`).
 
+**What a request says.** Each request carries the text of the accepted card layout:
+- `problem`: what happened;
+- `cause`: why;
+- `impact`: the engine adds "N 张卡停在「stage」";
+- `suggestion`: what to do;
+- options, each with a one-line description.
+
+An Agent that stops writes its closing report under the labels 问题 / 原因 / 影响 / 建议, and each label fills its field. Unlabeled reports fall back to their sentences, and a missing suggestion falls back to one that fits the kind of stop.
+
 **Notice.** The `needsYou` event goes to the project's `collaboration.sourceChatId`, else to the Workflow's `notifications.needsYou.to`, else to the `instanceCompleted` target. There is one notice per project per 2-minute batch, grouped by root cause (`groupKey`). Review cards already waiting when the notice first runs are not announced (`needs-you-notice-v1.bootstrap`).
 
 ## Feishu completion notices

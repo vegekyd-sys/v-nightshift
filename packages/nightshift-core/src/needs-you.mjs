@@ -12,15 +12,15 @@ const MOVED_ON = new Set(["ready", "running", "done", "review", "scheduled", "to
 
 // Choices every stop offers. Skip arrives with step 2 (a terminal item state).
 export const STOP_OPTIONS = Object.freeze([
-  Object.freeze({ id: "retry", label: "重新执行", effect: "retry" }),
-  Object.freeze({ id: "pause", label: "暂停项目", effect: "pause" }),
+  Object.freeze({ id: "retry", label: "重新执行", effect: "retry", description: "按原任务再跑一次，可以附一句话给 agent（比如「已补素材」）" }),
+  Object.freeze({ id: "pause", label: "暂停项目", effect: "pause", description: "不再派新任务，问题解决后再恢复" }),
 ]);
 
 // Approvals and human review stages keep their own endpoints and choices.
 export const REVIEW_OPTIONS = Object.freeze([
-  Object.freeze({ id: "approve", label: "通过", effect: "approve" }),
-  Object.freeze({ id: "request-changes", label: "要求修改", effect: "request-changes" }),
-  Object.freeze({ id: "reject", label: "拒绝", effect: "reject" }),
+  Object.freeze({ id: "approve", label: "通过", effect: "approve", description: "确认结果，流程继续" }),
+  Object.freeze({ id: "request-changes", label: "要求修改", effect: "request-changes", description: "写明要改什么，agent 按意见重做" }),
+  Object.freeze({ id: "reject", label: "拒绝", effect: "reject", description: "不采用这条结果" }),
 ]);
 
 export class NeedsYouTracker {
@@ -78,7 +78,7 @@ export class NeedsYouTracker {
       }
     }
     this.pending.delete(card.id);
-    const { problem, detail } = describeStop({ failure, summary });
+    const { problem, cause, impact, suggestion, detail } = describeStop({ failure, summary });
     return this.store.openDecisionRequest({
       instanceId: instance.id,
       cardId: card.id,
@@ -87,6 +87,9 @@ export class NeedsYouTracker {
       attempt,
       source: "engine",
       problem,
+      cause,
+      impact,
+      suggestion,
       detail,
       evidence: { failure, summary, operation: operation ? { status: operation.status, externalTaskId: operation.externalTaskId ?? null } : null },
       scope: stage?.scope === "content-item" ? "item" : "project",
@@ -167,22 +170,85 @@ export function eligibleProject(instance, now = Date.now(), shelveAfterMs = 3 * 
   return now - Date.parse(instance.updatedAt ?? instance.createdAt ?? 0) <= shelveAfterMs;
 }
 
-// What the person reads first. The Agent's own words beat the engine's
-// classification: on DL-0928-07 the recorded failure said "External side effect
-// has no succeeded checkpoint" while the Agent had written exactly why Makaron
-// could not fetch the footage.
+// What the person reads: what happened, why, the impact and what to do. The
+// Agent's own words beat the engine's classification: on DL-0928-07 the
+// recorded failure said "External side effect has no succeeded checkpoint"
+// while the Agent had written exactly why Makaron could not fetch the footage.
+// An Agent that stops writes its report under the labels 问题 / 原因 / 影响 /
+// 建议 (the operator skill asks for it); unlabeled reports fall back to their
+// sentences, and a missing suggestion to one that fits the kind of stop.
 export function describeStop({ failure = null, summary = null }) {
   if (failure?.agentReport) {
-    return { problem: firstSentence(failure.agentReport), detail: String(failure.agentReport) };
+    const report = String(failure.agentReport);
+    const sections = labeledSections(report);
+    const sentences = splitSentences(report);
+    return {
+      problem: truncate(sections.problem || firstSentence(report), 200),
+      cause: truncate(sections.cause || sentences.find((sentence) => /原因|因为|由于|失败点|根因|导致/.test(sentence)) || "", 300),
+      impact: truncate(sections.impact || "", 300),
+      suggestion: truncate(sections.suggestion || sentences.find((sentence) => /建议|需要人工|请人工|应当|下一步/.test(sentence)) || defaultSuggestion(failure), 300),
+      detail: report,
+    };
   }
   if (failure) {
     const text = failure.kind && failure.kind !== "contract_error"
       ? infrastructureFailureSummary(failure)
       : (summary || failure.rawError || failure.message || "产物没有通过完成校验");
-    return { problem: firstSentence(text), detail: [summary, failure.rawError].filter(Boolean).join("\n\n") };
+    return {
+      problem: firstSentence(text),
+      cause: truncate(failure.kind === "contract_error" ? String(failure.rawError ?? "") : "", 300),
+      impact: "",
+      suggestion: defaultSuggestion(failure),
+      detail: [summary, failure.rawError].filter(Boolean).join("\n\n"),
+    };
   }
   const text = String(summary ?? "").trim();
-  return { problem: text ? firstSentence(text) : "Agent 停下了，没有给出原因", detail: text };
+  return {
+    problem: text ? firstSentence(text) : "Agent 停下了，没有给出原因",
+    cause: "",
+    impact: "",
+    suggestion: defaultSuggestion(null),
+    detail: text,
+  };
+}
+
+const SECTION_LABELS = [
+  ["problem", /^(问题|发生了什么|结论|现象)$/],
+  ["cause", /^(原因|为什么|根因|根本原因)$/],
+  ["impact", /^(影响|影响范围)$/],
+  ["suggestion", /^(建议|建议怎么做|建议人工处置|下一步|处理建议)$/],
+];
+
+function labeledSections(text) {
+  const sections = {};
+  let current = null;
+  for (const raw of String(text).split("\n")) {
+    const line = raw.replace(/\*\*|__|`/g, "").replace(/^\s*(#+|>|[-*·•]|\d+[.)、])\s*/, "").trim();
+    const match = line.match(/^([^：:]{1,8})[：:]\s*(.*)$/);
+    const label = match ? SECTION_LABELS.find(([, pattern]) => pattern.test(match[1].trim()))?.[0] : null;
+    if (label) {
+      current = label;
+      sections[label] = match[2] ? [match[2]] : [];
+      continue;
+    }
+    if (current && line) sections[current].push(line);
+    if (current && !line && sections[current].length) current = null;
+  }
+  return Object.fromEntries(Object.entries(sections).map(([key, lines]) => [key, lines.join(" ").replace(/\s+/g, " ").trim()]));
+}
+
+function splitSentences(text) {
+  return String(text)
+    .replace(/\*\*|__|`/g, "")
+    .split(/(?<=[。！？])|\n/)
+    .map((sentence) => sentence.replace(/^\s*(#+|>|[-*·•]|\d+[.)、])\s*/, "").trim())
+    .filter((sentence) => sentence.length >= 6);
+}
+
+function defaultSuggestion(failure) {
+  if (!failure) return "打开卡片看 agent 的记录，判断能否补齐条件：能补齐就「重新执行」，暂时补不了就「暂停项目」。";
+  if (failure.kind && failure.kind !== "contract_error") return "系统已经自动重试过仍然失败：确认 V 和相关服务正常后选「重新执行」。";
+  return "看一下 agent 的记录：条件补齐后选「重新执行」，暂时补不了就「暂停项目」。";
 }
 
 // Requests with the same root cause share a key: same project, stage and kind

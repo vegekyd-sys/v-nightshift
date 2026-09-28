@@ -173,6 +173,9 @@ export class NightShiftStore {
         attempt TEXT NOT NULL,
         source TEXT NOT NULL,
         problem TEXT NOT NULL,
+        cause TEXT NOT NULL DEFAULT '',
+        impact TEXT NOT NULL DEFAULT '',
+        suggestion TEXT NOT NULL DEFAULT '',
         detail TEXT NOT NULL DEFAULT '',
         evidence_json TEXT NOT NULL DEFAULT '{}',
         scope TEXT NOT NULL,
@@ -219,9 +222,9 @@ export class NightShiftStore {
     const id = request.id ?? randomUUID();
     this.db.prepare(`
       INSERT INTO decision_requests(
-        id, instance_id, card_id, content_item_id, stage_id, attempt, source, problem, detail,
-        evidence_json, scope, options_json, group_key, status, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)
+        id, instance_id, card_id, content_item_id, stage_id, attempt, source, problem, cause, impact, suggestion,
+        detail, evidence_json, scope, options_json, group_key, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)
     `).run(
       id,
       request.instanceId,
@@ -231,6 +234,9 @@ export class NightShiftStore {
       String(request.attempt),
       request.source,
       request.problem,
+      request.cause ?? "",
+      request.impact ?? "",
+      request.suggestion ?? "",
       request.detail ?? "",
       JSON.stringify(request.evidence ?? {}),
       request.scope,
@@ -944,6 +950,9 @@ function decisionRequestRow(row) {
     attempt: row.attempt,
     source: row.source,
     problem: row.problem,
+    cause: row.cause,
+    impact: row.impact,
+    suggestion: row.suggestion,
     detail: row.detail,
     evidence: JSON.parse(row.evidence_json || "{}"),
     scope: row.scope,

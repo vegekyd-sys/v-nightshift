@@ -93,13 +93,15 @@ export class NightShiftNotificationCoordinator {
       if (target) {
         const projectUrl = dashboardUrl(this.baseUrl, { project: instance.id, view: "workflows" });
         const digest = createHash("sha256").update(items.map((item) => item.id).sort().join("\n")).digest("hex").slice(0, 16);
+        const stages = releaseBySha.get(instance.workflowSha256)?.manifest?.spec?.stages ?? [];
+        const groups = needsYouGroups({ items, stages, store: this.store });
         queued.push(this.store.enqueueNotification({
           allowedOpenIds: [instance.collaboration?.createdByOpenId].filter(Boolean),
-          fallbackText: `需要你：${instance.name}\n${needsYouLines(items).join("\n")}\n${projectUrl}`,
+          fallbackText: `需要你决定：${instance.name}\n${groups.map((group) => `${group.heading}：${group.problem}`).join("\n")}\n${projectUrl}`,
           instanceId: instance.id,
           kind: "needs-you",
           notificationKey: `needs-you:${instance.id}:${digest}`,
-          presentation: needsYouPresentation({ instance, items, projectUrl }),
+          presentation: needsYouPresentation({ instance, groups, projectUrl, now }),
           targetChatId: target,
         }, now));
       }
@@ -163,33 +165,71 @@ function needsYouSettings(release) {
   return notifications.instanceCompleted?.enabled ? notifications.instanceCompleted : {};
 }
 
-function needsYouLines(items) {
+// One group per root cause, carrying everything the card shows for it.
+export function needsYouGroups({ items, stages = [], store = null }) {
   const groups = new Map();
   for (const item of items) {
-    const entry = groups.get(item.groupKey) ?? { item, count: 0 };
-    entry.count += 1;
+    const entry = groups.get(item.groupKey) ?? { items: [], first: item };
+    entry.items.push(item);
     groups.set(item.groupKey, entry);
   }
-  return [...groups.values()].map(({ item, count }) => {
-    if (item.kind === "decision") return `${count} 张卡停下了：${item.problem}`;
-    return `${count} 张卡${item.kind === "approval" ? "等你确认" : "等你审核"}：${item.problem}`;
+  return [...groups.values()].map(({ items: members, first }) => {
+    const stage = stages.find((entry) => entry.id === first.stageId);
+    const stageTitle = stage?.title || first.stageId || "这一步";
+    const count = members.length;
+    if (first.kind === "decision") {
+      const request = store?.getDecisionRequest(first.id) ?? first;
+      const where = `${count} 张卡停在「${stageTitle}」`;
+      return {
+        kind: "decision",
+        heading: `${stageTitle}停下了：${count} 张卡${count > 1 ? "，同一个原因" : ""}`,
+        problem: request.problem,
+        cause: request.cause || "",
+        impact: [where, request.impact].filter(Boolean).join("。"),
+        suggestion: request.suggestion || "",
+        options: request.options ?? first.options,
+      };
+    }
+    const waiting = first.kind === "approval" ? "等你确认" : "等你审核";
+    return {
+      kind: first.kind,
+      heading: `${stageTitle}${waiting}：${count} 张卡`,
+      problem: members.map((member) => member.problem).slice(0, 3).join("；") + (count > 3 ? " 等" : ""),
+      cause: "",
+      impact: "",
+      suggestion: "",
+      options: first.options,
+    };
   });
 }
 
-export function needsYouPresentation({ instance, items, projectUrl }) {
-  const stops = items.filter((item) => item.kind === "decision");
-  const choices = stops.length
-    ? `可选：${[...new Set(stops.flatMap((item) => item.options.map((option) => option.label)))].join(" / ")}`
-    : "可选：通过 / 要求修改 / 拒绝";
-  return {
-    title: `需要你 · ${instance.name}`,
-    tone: "warning",
-    blocks: [
-      { type: "text", text: needsYouLines(items).map((line) => `- ${line}`).join("\n") },
-      { type: "context", text: `${choices}（在看板上处理）· Night Shift 项目 ${instance.id}` },
-      { type: "buttons", buttons: [{ label: "去处理", style: "primary", url: projectUrl }] },
-    ],
-  };
+// The accepted layout (Tianyi, 2026-09-28): what happened, why, impact and
+// what to do, then every choice with what it does, and a link to the board.
+export function needsYouPresentation({ instance, groups, projectUrl, now = new Date() }) {
+  const blocks = [];
+  for (const group of groups) {
+    blocks.push({ type: "text", text: `**${group.heading}**` });
+    if (group.kind === "decision") {
+      blocks.push({ type: "text", text: `**发生了什么**\n${group.problem}` });
+      if (group.cause) blocks.push({ type: "text", text: `**为什么**\n${group.cause}` });
+      if (group.impact) blocks.push({ type: "text", text: `**影响**\n${group.impact}` });
+      if (group.suggestion) blocks.push({ type: "text", text: `**建议怎么做**\n${group.suggestion}` });
+    } else {
+      blocks.push({ type: "text", text: group.problem });
+    }
+  }
+  const options = new Map();
+  for (const group of groups) for (const option of group.options ?? []) if (!options.has(option.id)) options.set(option.id, option);
+  if (options.size) {
+    blocks.push({
+      type: "text",
+      text: `**可选操作**\n${[...options.values()].map((option) => `· **${option.label}**${option.description ? `：${option.description}` : ""}`).join("\n")}`,
+    });
+  }
+  const at = now.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Shanghai" });
+  blocks.push({ type: "context", text: `项目 ${instance.id} · ${at} · 同一原因的卡会合并在这一条里` });
+  blocks.push({ type: "buttons", buttons: [{ label: "去看板处理", style: "primary", url: projectUrl }] });
+  return { title: `需要你决定 · ${instance.name}`, tone: "warning", blocks };
 }
 
 function notificationSettings(release) {

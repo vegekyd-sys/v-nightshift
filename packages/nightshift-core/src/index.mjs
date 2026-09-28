@@ -14,7 +14,7 @@ export { findNightShiftExternalOperation, resolveNightShiftCardContext, resolveN
 export { WorkboardCliAdapter, idempotencyLabel } from "./workboard-adapter.mjs";
 export { NightShiftStore } from "./store.mjs";
 export { NeedsYouTracker, REVIEW_OPTIONS, STOP_OPTIONS, buildNeedsYou, describeStop, eligibleProject, groupKey } from "./needs-you.mjs";
-export { NightShiftNotificationCoordinator, OpenClawFeishuNotificationSender, completionPresentation, completionTarget } from "./notifications.mjs";
+export { NightShiftNotificationCoordinator, OpenClawFeishuNotificationSender, completionPresentation, completionTarget, needsYouGroups, needsYouPresentation } from "./notifications.mjs";
 export { FEISHU_TARGET, normalizeProjectCollaboration } from "./project.mjs";
 export { createReplaySnapshot, replaySnapshotMetrics } from "./replay-snapshot.mjs";
 export {

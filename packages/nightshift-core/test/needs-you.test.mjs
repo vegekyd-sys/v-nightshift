@@ -243,9 +243,14 @@ test("the needs-you notice batches stops per project, groups them, and is sent o
   assert.equal(sent.length, 1);
   assert.equal(sent[0].kind, "needs-you");
   assert.equal(sent[0].targetChatId, "oc_group");
-  assert.match(sent[0].presentation.title, /需要你 · 需要你测试/);
-  assert.match(sent[0].presentation.blocks[0].text, /2 张卡停下了：.*Makaron 两次拉取素材超时/);
-  assert.match(sent[0].presentation.blocks[1].text, /重新执行 \/ 暂停项目/);
+  const blocks = sent[0].presentation.blocks.map((block) => block.text ?? "");
+  assert.equal(sent[0].presentation.title, "需要你决定 · 需要你测试");
+  assert.match(blocks[0], /停下了：2 张卡，同一个原因/);
+  assert.ok(blocks.some((text) => /^\*\*发生了什么\*\*\n.*Makaron 两次拉取素材超时/.test(text)));
+  assert.ok(blocks.some((text) => /^\*\*影响\*\*\n2 张卡停在/.test(text)));
+  assert.ok(blocks.some((text) => /^\*\*建议怎么做\*\*\n建议人工决定是否更换素材/.test(text)));
+  assert.ok(blocks.some((text) => /\*\*重新执行\*\*：按原任务再跑一次/.test(text) && /\*\*暂停项目\*\*：不再派新任务/.test(text)));
+  assert.equal(sent[0].presentation.blocks.at(-1).buttons[0].label, "去看板处理");
   advance(3 * MIN);
   await pass();
   assert.equal(sent.length, 1, "announced requests are not announced again");
@@ -286,4 +291,55 @@ test("a Workflow may declare needsYou on its own", async () => {
     .filter((entry) => entry.code.startsWith("notifications"));
   assert.deepEqual(issues, []);
   assert.ok(compileWorkflow(base));
+});
+
+// An Agent that stops writes 问题 / 原因 / 影响 / 建议; each lands in its place.
+const LABELED_REPORT = [
+  "卡已 block（无成片）。",
+  "**问题**：Makaron 两次都没能在规定时间内下载到素材（报错 400），没有扣积分，也没有出视频。",
+  "**原因**：项目在 Scene 里只有 1 段视频素材，每条 brief 都重复用了 7–11 次，Makaron 反复抓同一个链接超时。",
+  "**影响**：这个项目 30 条都在用这一段素材，后面的条目大概率也会停下。",
+  "**建议**：先确认能否补视频素材；能补就补进 Scene 后重新执行，补不了就暂停项目。",
+].join("\n");
+
+test("a labeled stop report fills what happened, why, impact and what to do", () => {
+  const described = describeStop({ failure: { kind: "contract_error", agentReport: LABELED_REPORT } });
+  assert.match(described.problem, /^Makaron 两次都没能在规定时间内下载到素材/);
+  assert.match(described.cause, /只有 1 段视频素材/);
+  assert.match(described.impact, /30 条都在用这一段素材/);
+  assert.match(described.suggestion, /^先确认能否补视频素材/);
+});
+
+test("an unlabeled report still yields a cause and a suggestion, or a fitting default", () => {
+  const unlabeled = describeStop({ failure: { kind: "contract_error", agentReport: "拿不到视频。失败点在 Makaron 侧对素材 URL 的抓取超时。建议人工决定是否更换素材传输方式。" } });
+  assert.match(unlabeled.cause, /失败点在 Makaron/);
+  assert.match(unlabeled.suggestion, /建议人工决定/);
+  assert.match(describeStop({}).suggestion, /能补齐就「重新执行」/);
+});
+
+test("the card renders in the accepted layout", async () => {
+  const { needsYouPresentation, needsYouGroups } = await import("../src/index.mjs");
+  const described = describeStop({ failure: { kind: "contract_error", agentReport: LABELED_REPORT } });
+  const request = { id: "d1", kind: "decision", stageId: "produce", groupKey: "g", options: [
+    { id: "retry", label: "重新执行", effect: "retry", description: "按原任务再跑一次，可以附一句话给 agent（比如「已补素材」）" },
+    { id: "pause", label: "暂停项目", effect: "pause", description: "不再派新任务，问题解决后再恢复" },
+  ], ...described };
+  const groups = needsYouGroups({ items: [request, { ...request, id: "d2" }], stages: [{ id: "produce", title: "出片" }] });
+  const card = needsYouPresentation({
+    instance: { id: "DL-0928-07", name: "中纺 日语 30条（下载交付）" },
+    groups,
+    projectUrl: "https://nightshift.example/?project=DL-0928-07",
+    now: new Date("2026-09-28T14:07:00Z"),
+  });
+  assert.equal(card.title, "需要你决定 · 中纺 日语 30条（下载交付）");
+  assert.equal(card.tone, "warning");
+  assert.deepEqual(card.blocks.map((block) => block.type), ["text", "text", "text", "text", "text", "text", "context", "buttons"]);
+  assert.equal(card.blocks[0].text, "**出片停下了：2 张卡，同一个原因**");
+  assert.match(card.blocks[1].text, /^\*\*发生了什么\*\*\nMakaron 两次/);
+  assert.match(card.blocks[2].text, /^\*\*为什么\*\*\n项目在 Scene 里只有 1 段视频素材/);
+  assert.match(card.blocks[3].text, /^\*\*影响\*\*\n2 张卡停在「出片」。这个项目 30 条都在用这一段素材/);
+  assert.match(card.blocks[4].text, /^\*\*建议怎么做\*\*\n先确认能否补视频素材/);
+  assert.match(card.blocks[5].text, /^\*\*可选操作\*\*\n· \*\*重新执行\*\*：按原任务再跑一次/);
+  assert.equal(card.blocks[6].text, "项目 DL-0928-07 · 22:07 · 同一原因的卡会合并在这一条里");
+  assert.equal(card.blocks[7].buttons[0].label, "去看板处理");
 });
