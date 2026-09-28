@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { countByKind, expectedTasks, inScope, projectScope, scopeAuthorizes, taskAttention } from "./attention.js";
+import { countByKind, expectedTasks, inScope, projectProgress, projectScope, scopeAuthorizes, stageExpected, taskAttention } from "./attention.js";
 
 const NOW = Date.parse("2026-09-28T10:00:00Z");
 const daysAgo = (days) => new Date(NOW - days * 86_400_000).toISOString();
@@ -86,4 +86,19 @@ test("a shelved project's leftovers are stale, not waiting on anyone", () => {
   assert.equal(stale.reason, "产物没有通过完成校验", "the reason is kept for reference");
   assert.equal(taskAttention({ status: "done" }, { shelved: true }).kind, "done");
   assert.equal(taskAttention({ status: "review" }, { shelved: true }).kind, "stale");
+});
+
+test("before items exist the bar uses the declared target, or says it is still splitting", () => {
+  const stages = [{ id: "plan", scope: "project" }, { id: "brief", scope: "content-item" }, { id: "produce", scope: "content-item" }];
+  assert.deepEqual(projectProgress(stages, { inputs: { targetCount: 20 }, contentItems: [] }), { expected: 41, estimated: true, splitting: false });
+  assert.deepEqual(projectProgress(stages, { inputs: {}, contentItems: [] }), { expected: 1, estimated: false, splitting: true });
+  const items = Array.from({ length: 18 }, (_, index) => ({ id: `i${index}` }));
+  assert.deepEqual(projectProgress(stages, { inputs: { targetCount: 20 }, contentItems: items }), { expected: 37, estimated: false, splitting: false }, "real items win over the target");
+  assert.deepEqual(projectProgress([{ id: "sweep", scope: "project" }], { inputs: {}, contentItems: [] }), { expected: 1, estimated: false, splitting: false }, "a Workflow with no item stages is never splitting");
+});
+
+test("a stage's total counts only projects that run it", () => {
+  const publish = { id: "publish", scope: "content-item", when: { input: "deliveryMode", notEquals: "download" } };
+  const items = (n) => Array.from({ length: n }, (_, index) => ({ id: `i${index}` }));
+  assert.equal(stageExpected(publish, [{ inputs: { deliveryMode: "download" }, contentItems: items(20) }, { inputs: { deliveryMode: "publish" }, contentItems: items(5) }]), 5);
 });

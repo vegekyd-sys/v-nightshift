@@ -99,11 +99,36 @@ function stageEnabled(stage, inputs) {
 }
 
 // Expected task count for a project, so a bar shows the whole job and not
-// only the cards that exist so far.
+// only the cards that exist so far. It reads only the Workflow's stages, their
+// `when`, and the project's content items, so it means the same thing for any
+// Workflow.
 export function expectedTasks(stages, instance) {
+  return projectProgress(stages, instance).expected;
+}
+
+// Before planning splits the job into items, the item count is unknown. A
+// bar of 1/2 that later becomes 1/42 reads as going backwards, so a declared
+// target count stands in; without one the bar says it is still splitting.
+export function projectProgress(stages, instance) {
   const enabled = enabledStages(stages, instance.inputs ?? {});
-  const items = (instance.contentItems ?? []).length;
-  return enabled.reduce((sum, stage) => sum + (stage.scope === "content-item" ? items : 1), 0);
+  const itemStages = enabled.filter((stage) => stage.scope === "content-item").length;
+  const known = (instance.contentItems ?? []).length;
+  const target = Number(instance.inputs?.targetCount);
+  const splitting = itemStages > 0 && known === 0;
+  const items = splitting && Number.isFinite(target) && target > 0 ? target : known;
+  return {
+    expected: enabled.length - itemStages + itemStages * items,
+    estimated: splitting && items > 0,
+    splitting: splitting && items === 0,
+  };
+}
+
+// How many tasks one stage will have across the shown projects.
+export function stageExpected(stage, instances) {
+  return instances.reduce((sum, instance) => {
+    if (enabledStages([stage], instance.inputs ?? {}).length === 0) return sum;
+    return sum + (stage.scope === "content-item" ? (instance.contentItems ?? []).length : 1);
+  }, 0);
 }
 
 export function countByKind(entries) {

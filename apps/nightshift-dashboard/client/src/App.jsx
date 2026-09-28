@@ -4,6 +4,7 @@ import YAML from "yaml";
 import {
   ArrowDown,
   ArrowUp,
+  Check,
   ChevronDown,
   FilePenLine,
   FileUp,
@@ -15,7 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { api } from "./api.js";
-import { countByKind, enabledStages, expectedTasks, inScope, isToday, projectScope, scopeAuthorizes, taskAttention } from "./attention.js";
+import { countByKind, enabledStages, inScope, isToday, projectProgress, projectScope, scopeAuthorizes, stageExpected, taskAttention } from "./attention.js";
 import { Drawer, EmptyColumn, Icons, Metric, Sidebar, WorkCard } from "./components.jsx";
 
 const columns = [
@@ -240,7 +241,7 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
   const [bulkEvidence, setBulkEvidence] = useState("");
   const [bulkSaving, setBulkSaving] = useState(false);
   const [bulkError, setBulkError] = useState("");
-  const [libraryCollapsed, setLibraryCollapsed] = useState(() => typeof window !== "undefined" && window.localStorage.getItem("nightshift.workflowLibraryCollapsed") === "true");
+  const [switcherOpen, setSwitcherOpen] = useState(false);
   const [editor, setEditor] = useState(null);
   useEffect(() => {
     if (!groups.length) return;
@@ -284,9 +285,6 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
     if (!data) return;
     updateDashboardLocation({ project: projectId === "all" ? null : projectId, workflow: workflowId || null });
   }, [data, projectId, workflowId]);
-  useEffect(() => {
-    window.localStorage.setItem("nightshift.workflowLibraryCollapsed", String(libraryCollapsed));
-  }, [libraryCollapsed]);
   const visibleProjects = projectId === "all" ? scopedProjects : projects.filter((project) => project.id === projectId);
   const pinnedRelease = projectId === "all" ? group?.releases[0] : group?.releases.find((release) => release.workflowSha256 === visibleProjects[0]?.workflowSha256);
   const stages = pinnedRelease?.manifest?.spec?.stages ?? [];
@@ -314,38 +312,58 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
   if (!data) return <div className="workflow-loading"><span className="delivery-skeleton" /><strong>正在载入 Workflow 运行状态</strong></div>;
   if (!group) return <div className="simple-screen"><header className="topbar"><div><h1>Workflows</h1><p className="topbar-copy">导入第一份 workflow.md，建立可执行生产线。</p></div><div className="top-actions"><button className="primary" onClick={() => setEditor({ mode: "create", source: newWorkflowSource() })}><Plus size={15} />新建 Workflow</button></div></header></div>;
 
-  return <div className="workflow-screen workflow-studio">
-    <header className="topbar workflow-topbar">
-      <div className="workflow-title"><span className="workflow-v-avatar"><img src="/v-avatar.jpg" alt="V" /><i /></span><div className="workflow-title-copy"><span className="section-label">V · Workflow control room</span><h1>{group.name}</h1><p className={`topbar-copy workflow-live-line ${factory.running ? "is-live" : ""}`}><span />{factory["needs-you"] ? `${factory["needs-you"]} 件事等你处理` : "工厂自己在跑，没有要你决定的事"} · {visibleProjects.length} 个项目</p></div></div>
-      <div className="workflow-header-stats factory-stats" aria-label="工厂状态"><span className={factory["needs-you"] ? "is-alert" : "is-clear"}><strong>{factory["needs-you"]}</strong>需要你</span><span><strong>{factory.healing}</strong>自愈中</span><span><strong>{factory.running}</strong>进行中</span><span><strong>{factory.doneToday}</strong>今天完成</span></div>
-      <div className="top-actions desktop-workflow-actions"><button onClick={() => setEditor({ mode: "import", source: "" })}><Upload size={15} />导入 Workflow</button><button onClick={() => setEditor({ mode: "edit", source: group.releases[0].sourceMarkdown ?? group.releases[0].sourceYaml })}><FilePenLine size={15} />编辑 Workflow</button><button className="primary" onClick={() => setEditor({ mode: "create", source: newWorkflowSource() })}><Plus size={15} />新建 Workflow</button></div>
-      <button className="mobile-workflow-menu-button" aria-label="Workflow 操作" aria-expanded={mobileActionsOpen} onClick={() => setMobileActionsOpen((value) => !value)}><MoreHorizontal size={19} /></button>
-      {mobileActionsOpen && <div className="mobile-workflow-menu">
-        <button onClick={() => { setMobileActionsOpen(false); setEditor({ mode: "import", source: "" }); }}><Upload size={15} />导入 Workflow</button>
-        <button onClick={() => { setMobileActionsOpen(false); setEditor({ mode: "edit", source: group.releases[0].sourceMarkdown ?? group.releases[0].sourceYaml }); }}><FilePenLine size={15} />编辑 Workflow</button>
-        <button onClick={() => { setMobileActionsOpen(false); setEditor({ mode: "create", source: newWorkflowSource() }); }}><Plus size={15} />新建 Workflow</button>
-      </div>}
+  const liveCountFor = (entry) => {
+    const shas = new Set(entry.releases.map((release) => release.workflowSha256));
+    return (data?.instances ?? []).filter((instance) => shas.has(instance.workflowSha256) && projectScope(instance) === "live").length;
+  };
+  const focusedProject = projectId === "all" ? null : projects.find((project) => project.id === projectId);
+
+  return <div className="workflow-screen workflow-studio factory-studio">
+    <header className="topbar workflow-topbar factory-topbar">
+      <div className="workflow-title">
+        <span className="workflow-v-avatar"><img src="/v-avatar.jpg" alt="V" /><i /></span>
+        <div className="workflow-title-copy">
+          <span className="section-label">V · Workflow control room</span>
+          <button className="factory-switcher" aria-haspopup="listbox" aria-expanded={switcherOpen} onClick={() => setSwitcherOpen((value) => !value)}><h1>{group.name}</h1><ChevronDown size={18} /></button>
+          <p className={`topbar-copy workflow-live-line ${factory.running ? "is-live" : ""}`}><span />{factory["needs-you"] ? `${factory["needs-you"]} 件事等你处理` : "工厂自己在跑，没有要你决定的事"}<small>{pinnedRelease?.version} · {runwayStages.length === stages.length ? `${stages.length} 个阶段` : `${runwayStages.length}/${stages.length} 个阶段`}</small></p>
+        </div>
+        {switcherOpen && <>
+          <div className="factory-scrim" onClick={() => setSwitcherOpen(false)} />
+          <div className="factory-switcher-menu" role="listbox" aria-label="切换 Workflow">
+            {groups.map((entry) => ({ entry, live: liveCountFor(entry) })).sort((left, right) => (right.live > 0) - (left.live > 0)).map(({ entry, live }) => {
+              return <button role="option" aria-selected={entry.id === group.id} className={entry.id === group.id ? "selected" : ""} key={entry.id} onClick={() => { setWorkflowId(entry.id); setProjectId("all"); setSwitcherOpen(false); }}>
+                <span className={`factory-switcher-dot ${live ? "is-live" : ""}`} /><strong>{entry.name}</strong><small>{live ? `在产 ${live}` : entry.releases[0].version}</small>
+              </button>;
+            })}
+          </div>
+        </>}
+      </div>
+      <div className="factory-metrics" aria-label="工厂状态">
+        <span className={factory["needs-you"] ? "is-alert" : "is-clear"}><strong>{factory["needs-you"]}</strong>需要你</span>
+        <span><strong>{factory.healing}</strong>自愈中</span>
+        <span><strong>{factory.running}</strong>进行中</span>
+        <span><strong>{factory.doneToday}</strong>今天完成</span>
+      </div>
+      <div className="factory-actions">
+        <button className="primary" onClick={() => onNewProject(group.releases[0])}><Plus size={15} />新建项目</button>
+        <button className="factory-more" aria-label="Workflow 操作" aria-expanded={mobileActionsOpen} onClick={() => setMobileActionsOpen((value) => !value)}><MoreHorizontal size={18} /></button>
+        {mobileActionsOpen && <>
+          <div className="factory-scrim" onClick={() => setMobileActionsOpen(false)} />
+          <div className="factory-more-menu">
+            <button onClick={() => { setMobileActionsOpen(false); setEditor({ mode: "edit", source: group.releases[0].sourceMarkdown ?? group.releases[0].sourceYaml }); }}><FilePenLine size={15} />编辑这个 Workflow</button>
+            <button onClick={() => { setMobileActionsOpen(false); setEditor({ mode: "import", source: "" }); }}><Upload size={15} />导入 Workflow</button>
+            <button onClick={() => { setMobileActionsOpen(false); setEditor({ mode: "create", source: newWorkflowSource() }); }}><Plus size={15} />新建 Workflow</button>
+            <small>{pinnedRelease?.version} · SHA {pinnedRelease?.workflowSha256.slice(0, 12)}</small>
+          </div>
+        </>}
+      </div>
     </header>
     {projectId !== "all" && visibleProjects.map((instance) => <ExecutionControls key={instance.id} instance={instance} cards={data.cards ?? []} refresh={refresh} />)}
-    <div className={`workflow-workspace ${libraryCollapsed ? "library-collapsed" : ""} ${selected ? "with-drawer" : ""}`}>
-      <aside className="workflow-library" aria-label="Workflow 列表" aria-hidden={libraryCollapsed} inert={libraryCollapsed ? true : undefined}>
-        <div className="library-head"><strong>Workflows</strong><span>{groups.length}</span><button aria-label="收起 Workflow 列表" title="收起 Workflow 列表" onClick={() => setLibraryCollapsed(true)}><Icons.PanelLeftClose size={15} /></button></div>
-        {groups.map((entry) => {
-          const shas = new Set(entry.releases.map((release) => release.workflowSha256));
-          const count = (data?.instances ?? []).filter((instance) => shas.has(instance.workflowSha256)).length;
-          return <button className={entry.id === group.id ? "selected" : ""} title={entry.name} key={entry.id} onClick={() => { setWorkflowId(entry.id); setProjectId("all"); }}><span className="workflow-signal" /><div><strong>{entry.name}</strong><small>{count} 个项目 · {entry.releases[0].version}</small></div></button>;
-        })}
-      </aside>
-      {libraryCollapsed && <button className="workflow-library-peek" aria-label="展开 Workflow 列表" title="展开 Workflow 列表" onClick={() => setLibraryCollapsed(false)}><Icons.PanelLeftOpen size={16} /></button>}
+    <div className={`workflow-workspace factory-workspace ${selected ? "with-drawer" : ""}`}>
       <main className="workflow-runway">
-        <div className="runway-toolbar">
-          <div className="release-identity"><span className="mono">{pinnedRelease?.version}</span><strong>{runwayStages.length === stages.length ? `${stages.length} 个阶段` : `${runwayStages.length} / ${stages.length} 个阶段`}</strong><small>SHA {pinnedRelease?.workflowSha256.slice(0, 12)}</small></div>
-          <div className="runway-actions">
-            <label className="mobile-workflow-filter"><span>Workflow</span><select value={workflowId} onChange={(event) => { setWorkflowId(event.target.value); setProjectId("all"); }}>{groups.map((entry) => <option key={entry.id} value={entry.id}>{entry.name} · {entry.releases[0].version}</option>)}</select><ChevronDown size={14} /></label>
-            <div className="factory-scope" role="tablist" aria-label="项目范围">{[["live", "在产"], ["delivered", "已交付"], ["shelved", "搁置"], ["all", "全部"]].map(([id, title]) => <button role="tab" aria-selected={scope === id} className={scope === id ? "selected" : ""} key={id} onClick={() => { setScope(id); setProjectId("all"); }}>{title}<span>{scopeCounts[id]}</span></button>)}</div>
-            <label className="project-filter"><span>查看项目</span><select value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="all">{scopeTitle(scope)}全部（{scopedProjects.length}）</option>{(projectId === "all" || scopedProjects.some((project) => project.id === projectId) ? scopedProjects : projects).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><ChevronDown size={14} /></label>
-            <button className="workflow-project-shortcut" onClick={() => onNewProject(group.releases[0])}><Plus size={13} />用最新版本新建项目</button>
-          </div>
+        <div className="runway-toolbar factory-toolbar">
+          <div className="factory-scope" role="tablist" aria-label="项目范围">{[["live", "在产"], ["delivered", "已交付"], ["shelved", "搁置"], ["all", "全部"]].map(([id, title]) => <button role="tab" aria-selected={scope === id && !focusedProject} className={scope === id && !focusedProject ? "selected" : ""} key={id} onClick={() => { setScope(id); setProjectId("all"); }}>{title}<span>{scopeCounts[id]}</span></button>)}</div>
+          {focusedProject && <button className="factory-focus" onClick={() => setProjectId("all")}><span>只看</span><strong>{focusedProject.name}</strong><X size={13} /></button>}
         </div>
         <FactoryOverview scope={scope} projects={projectId === "all" ? visibleProjects : []} taskIndex={taskIndex} releaseBySha={releaseBySha} needsYou={needsYou} onSelect={setSelected} onOpenProject={setProjectId} />
         <nav className="mobile-stage-nav" aria-label="Workflow 阶段">
@@ -358,7 +376,7 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
         </nav>
         <div className="stage-runway" style={{ "--stage-count": runwayStages.length }}>
           <div className="stage-rail" />
-          {runwayStages.map((stage, index) => <StageLane key={stage.id} stage={stage} index={index} mobileSelected={mobileStageId === stage.id} tasks={taskIndex.get(stage.id) ?? []} onSelect={setSelected} onBulkApprove={(cards) => { setBulkApproval({ cards, stage }); setBulkEvidence(""); setBulkError(""); }} />)}
+          {runwayStages.map((stage, index) => <StageLane key={stage.id} stage={stage} index={index} expected={stageExpected(stage, visibleProjects)} mobileSelected={mobileStageId === stage.id} tasks={taskIndex.get(stage.id) ?? []} onSelect={setSelected} onBulkApprove={(cards) => { setBulkApproval({ cards, stage }); setBulkEvidence(""); setBulkError(""); }} />)}
         </div>
       </main>
       <Drawer card={selected} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onClose={() => setSelected(null)} onDecide={decide} onRetry={retry} />
@@ -370,16 +388,20 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
   </div>;
 }
 
-function StageLane({ stage, index, mobileSelected, tasks, onSelect, onBulkApprove }) {
-  // Finished work is the factory's output, not something to watch: it folds
-  // into a count so the lane shows only what is still moving or waiting.
-  const [showDone, setShowDone] = useState(false);
+function StageLane({ stage, index, expected, mobileSelected, tasks, onSelect, onBulkApprove }) {
+  // Finished work is the factory's output: it stays on the lane as a quiet
+  // checklist under the work still moving, newest first.
+  const [showAllDone, setShowAllDone] = useState(false);
   const counts = countByKind(tasks);
   const isLive = counts.running > 0;
   const reviewCards = tasks.filter((task) => task.status === "review" && task.card).map((task) => task.card);
-  const shown = showDone ? tasks : tasks.filter((task) => task.attention.kind !== "done");
+  const shown = tasks.filter((task) => task.attention.kind !== "done");
+  const done = tasks.filter((task) => task.attention.kind === "done").sort((left, right) => finishedAt(right) - finishedAt(left));
+  const total = Math.max(expected ?? 0, tasks.length);
+  const doneShown = showAllDone ? done : done.slice(0, DONE_PREVIEW);
   return <section className={`stage-lane ${isLive ? "is-live" : ""} ${mobileSelected ? "mobile-selected" : ""}`}>
     <header><span className="stage-index">{String(index + 1).padStart(2, "0")}</span><div><strong>{stage.title}</strong><small>{stage.scope === "content-item" ? "每条内容" : "整个项目"} · {stage.actor === "human" ? "人工" : "Agent"}</small></div></header>
+    {total > 0 && <div className="factory-lane-progress" aria-label={`已完成 ${counts.done} / ${total}`}><div><span style={{ width: `${(counts.done / total) * 100}%` }} /></div><small>{counts.done === total ? "全部完成" : `${counts.done}/${total}`}</small></div>}
     <div className="stage-counts">
       {ATTENTION_KINDS.filter(([kind]) => kind !== "done" && counts[kind]).map(([kind, title]) => <span className={`attention-${kind}`} key={kind}>{title} {counts[kind]}</span>)}
       {tasks.length === 0 && <span>尚未开始</span>}
@@ -387,9 +409,20 @@ function StageLane({ stage, index, mobileSelected, tasks, onSelect, onBulkApprov
     </div>
     <div className="stage-tasks">
       {shown.map((task) => <button key={`${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}-${task.card?.id ?? task.attempt}`} className={`stage-task state-${task.status} attention-${task.attention.kind}`} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}><span className="task-state" /><div><strong>{task.contentTitle ?? task.projectName}</strong><small>{task.contentTitle ? task.projectName : task.projectId}</small></div><span className="task-action">{attentionLabel(task)}</span></button>)}
-      {counts.done > 0 && <button className="factory-done-toggle" onClick={() => setShowDone((value) => !value)}>{showDone ? "收起已完成" : `已完成 ${counts.done}`}</button>}
+      {done.length > 0 && <div className="factory-done" aria-label={`已完成 ${done.length}`}>
+        <div className="factory-done-head"><Check size={13} />已完成 {done.length}</div>
+        {doneShown.map((task) => <button className="factory-done-row" key={`${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}`} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}><Check size={12} /><span>{task.contentTitle ?? task.projectName}</span></button>)}
+        {done.length > DONE_PREVIEW && <button className="factory-done-more" onClick={() => setShowAllDone((value) => !value)}>{showAllDone ? "收起" : `还有 ${done.length - DONE_PREVIEW} 条`}</button>}
+      </div>}
     </div>
   </section>;
+}
+
+const DONE_PREVIEW = 6;
+
+function finishedAt(task) {
+  const value = task.card?.updatedAt ?? task.updatedAt;
+  return typeof value === "number" ? value : Date.parse(value ?? 0) || 0;
 }
 
 const ATTENTION_KINDS = [["needs-you", "需要你"], ["running", "进行中"], ["healing", "自愈中"], ["queued", "排队"], ["stale", "已搁置"], ["done", "已完成"]];
@@ -421,12 +454,14 @@ function FactoryOverview({ scope, projects, taskIndex, releaseBySha, needsYou, o
         const release = releaseBySha.get(project.workflowSha256);
         const tasks = tasksByProject.get(project.id) ?? [];
         const counts = countByKind(tasks);
-        const expected = Math.max(expectedTasks(release?.manifest?.spec?.stages ?? [], project), tasks.length, 1);
+        const progress = projectProgress(release?.manifest?.spec?.stages ?? [], project);
+        const expected = Math.max(progress.expected, tasks.length, 1);
         const share = (value) => `${(value / expected) * 100}%`;
+        const fraction = progress.splitting ? "拆单中" : `${progress.estimated ? "约 " : ""}${counts.done}/${expected}`;
         return <button className="factory-project" key={project.id} onClick={() => onOpenProject(project.id)}>
           <div className="factory-project-head">
             <strong>{project.name}</strong>
-            <span>{projectScope(project) === "shelved" ? "已搁置 · " : project.status === "paused" ? "已暂停 · " : ""}{counts["needs-you"] ? `${counts["needs-you"]} 件等你 · ` : ""}{counts.done}/{expected}</span>
+            <span>{projectScope(project) === "shelved" ? "已搁置 · " : project.status === "paused" ? "已暂停 · " : ""}{counts["needs-you"] ? `${counts["needs-you"]} 件等你 · ` : ""}{fraction}</span>
           </div>
           <div className="factory-bar" aria-hidden="true">
             <span className="bar-done" style={{ width: share(counts.done) }} />
@@ -904,7 +939,7 @@ function preferTask(candidate, current) {
 }
 
 function statusLabel(status) {
-  return ({ ready: "待开始", running: "进行中", retry_wait: "自动恢复中", review: "待审核", blocked: "已阻塞", done: "已完成", cancelled: "已取消" })[status] ?? status;
+  return ({ ready: "待开始", todo: "待开始", planned: "待开始", backlog: "待开始", triage: "待开始", scheduled: "定时待发", running: "进行中", retry_wait: "自动恢复中", review: "待审核", blocked: "已阻塞", done: "已完成", cancelled: "已取消" })[status] ?? status;
 }
 
 function displayedTaskStatus(run, card) {
