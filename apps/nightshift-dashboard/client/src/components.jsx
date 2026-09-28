@@ -116,6 +116,8 @@ export function WorkCard({ card, onClick }) {
   );
 }
 
+const DRAWER_STATUS = { blocked: "已阻塞", running: "进行中", review: "待审核", done: "已完成", ready: "待开始", todo: "待开始", scheduled: "定时待发", cancelled: "已取消" };
+
 export function Drawer({ card, delivery, deliveryState, deliveryError, handoff, handoffState, handoffError, onClose, onDecide, onRetry }) {
   const [reviewAction, setReviewAction] = useState(null);
   const [evidence, setEvidence] = useState("");
@@ -126,6 +128,12 @@ export function Drawer({ card, delivery, deliveryState, deliveryError, handoff, 
   const [sessionState, setSessionState] = useState("idle");
   const [sessionError, setSessionError] = useState("");
   const [sessionExpanded, setSessionExpanded] = useState(true);
+  useEffect(() => {
+    if (!card) return undefined;
+    const onKey = (event) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [card?.id, onClose]);
   const attempts = nativeCardAttempts(card);
   const selectedAttempt = attempts.find((attempt) => attempt.runId === sessionRunId) ?? attempts.at(-1);
   useEffect(() => {
@@ -187,7 +195,7 @@ export function Drawer({ card, delivery, deliveryState, deliveryError, handoff, 
   return (
     <aside className="drawer">
       <div className="drawer-head"><div><span>阶段详情</span><h2>{delivery?.title ?? card.title}</h2></div><button onClick={onClose} aria-label="关闭详情"><X size={18} /></button></div>
-      <div className="drawer-status"><StatusIcon status={card.status} /><strong>{card.status}</strong><span>{card.id?.slice(0, 8)}</span></div>
+      <div className={`drawer-status status-${card.status}`}><StatusIcon status={card.status} /><strong>{DRAWER_STATUS[card.status] ?? card.status}</strong><span>{card.id?.slice(0, 8)}</span></div>
       <StageHandoffPanel handoff={handoff} state={handoffState} error={handoffError} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} />
       {(automation.skills?.length ?? 0) > 0 && <section className="stage-skills"><h3>本阶段使用的 Skills</h3><div>{automation.skills.map((skill) => <span key={skill}><Wrench size={11} />{skill}</span>)}</div></section>}
       <section><h3>Execution</h3><Detail label="Agent" value={card.agentId ?? automation.agentRole ?? "—"} /><Detail label="Stage" value={automation.stageId ?? findLabel(card, "stage")} /><Detail label="Runtime" value={automation.maxRuntime ?? "—"} /><Detail label="Attempts" value={attempts.length} /></section>

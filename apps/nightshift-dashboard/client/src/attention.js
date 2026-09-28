@@ -147,3 +147,33 @@ export function isToday(value, now = Date.now()) {
 function truncate(value, max) {
   return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
+
+// The latest run of each (stage, item) in a project, classed like the lanes.
+// Pages that list projects or cards use it without building the lane index.
+export function projectRuns(instance, { cardsById = new Map(), now = Date.now() } = {}) {
+  const shelved = projectScope(instance, now) === "shelved";
+  const operationByCard = new Map((instance.operations ?? []).map((operation) => [operation.ownerCardId, operation]));
+  const latest = new Map();
+  const runs = [
+    ...(instance.stageRuns ?? []).map((run) => ({ ...run, contentItemId: null })),
+    ...(instance.contentItemRuns ?? []),
+  ];
+  for (const run of runs) {
+    const key = `${run.stageId}:${run.contentItemId ?? "project"}`;
+    const current = latest.get(key);
+    if (!current || (run.attempt ?? 1) >= (current.attempt ?? 1)) latest.set(key, run);
+  }
+  return [...latest.values()].map((run) => {
+    const card = run.cardId ? cardsById.get(run.cardId) : undefined;
+    const status = run.status === "blocked" && run.failure?.automaticRetry && run.failure?.nextRetryAt ? "retry_wait" : (card?.status ?? run.status);
+    const task = { ...run, card, status };
+    return { ...task, attention: taskAttention(task, { operation: operationByCard.get(run.cardId), shelved }) };
+  });
+}
+
+// Attention for a native card on its own (Live Board), using the run and the
+// paid operation behind it when the card belongs to a Night Shift project.
+export function cardAttention(card, { run = null, operation = null, shelved = false, approval = false } = {}) {
+  const status = run?.status === "blocked" && run.failure?.automaticRetry && run.failure?.nextRetryAt ? "retry_wait" : card.status;
+  return taskAttention({ ...(run ?? {}), card: { ...card, status: status === "retry_wait" ? "blocked" : card.status }, status, requiresApproval: approval }, { operation, shelved });
+}

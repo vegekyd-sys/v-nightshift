@@ -102,3 +102,26 @@ test("a stage's total counts only projects that run it", () => {
   const items = (n) => Array.from({ length: n }, (_, index) => ({ id: `i${index}` }));
   assert.equal(stageExpected(publish, [{ inputs: { deliveryMode: "download" }, contentItems: items(20) }, { inputs: { deliveryMode: "publish" }, contentItems: items(5) }]), 5);
 });
+
+test("a project's latest runs are classed like the lanes", async () => {
+  const { projectRuns } = await import("./attention.js");
+  const instance = {
+    status: "active",
+    stageRuns: [{ stageId: "plan", attempt: 1, status: "done" }],
+    contentItemRuns: [
+      { stageId: "brief", contentItemId: "a", attempt: 1, status: "blocked", failure: { automaticRetry: false }, cardId: "c1" },
+      { stageId: "brief", contentItemId: "a", attempt: 2, status: "done", cardId: "c2" },
+      { stageId: "produce", contentItemId: "a", attempt: 1, status: "blocked", cardId: "c3" },
+    ],
+    operations: [{ ownerCardId: "c3", status: "executing" }],
+  };
+  const runs = projectRuns(instance);
+  assert.deepEqual(runs.map((run) => [run.stageId, run.attention.kind]).sort(), [["brief", "done"], ["plan", "done"], ["produce", "healing"]]);
+});
+
+test("an approval card waiting on review needs a person; a retrying card heals", async () => {
+  const { cardAttention } = await import("./attention.js");
+  assert.equal(cardAttention({ status: "review" }, { approval: true }).kind, "needs-you");
+  assert.equal(cardAttention({ status: "blocked" }, { run: { status: "blocked", failure: { automaticRetry: true, nextRetryAt: "2026-09-28T10:00:00Z" } } }).kind, "healing");
+  assert.equal(cardAttention({ status: "blocked" }, { shelved: true }).kind, "stale");
+});
