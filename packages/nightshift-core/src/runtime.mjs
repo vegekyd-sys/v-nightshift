@@ -20,6 +20,8 @@ export class NightShiftRuntime {
     // A blocked card whose Agent Session has written nothing for this long has
     // lost its run: the Worker that carried it exited without a terminal message.
     orphanedSessionMs = 45 * 60_000,
+    // The clock behind the inspection budgets and the orphaned-Session age.
+    now = () => Date.now(),
     store,
     workboard,
   }) {
@@ -35,6 +37,7 @@ export class NightShiftRuntime {
     this.sessionInspectionStarts = [];
     this.deferredSessionInspections = new Set();
     this.orphanedSessionMs = positiveInteger(orphanedSessionMs, "orphanedSessionMs");
+    this.now = now;
     this.nextReconcileAt = 0;
     this.store = store;
     this.workboard = workboard;
@@ -282,7 +285,7 @@ export class NightShiftRuntime {
     const startedAt = timestampMs(card.execution?.startedAt ?? card.metadata?.attempts?.at(-1)?.startedAt ?? 0);
     const terminalAt = timestampMs(latest?.timestamp ?? latest?.__openclaw?.recordTimestampMs ?? 0);
     const stopReason = String(latest?.stopReason ?? "").toLowerCase();
-    const silentMs = Date.now() - Math.max(terminalAt, startedAt);
+    const silentMs = this.now() - Math.max(terminalAt, startedAt);
     if (card.status === "blocked" && startedAt > 0 && silentMs >= this.orphanedSessionMs &&
       (latest?.role !== "assistant" || !["stop", "error", "aborted"].includes(stopReason) || terminalAt < startedAt)) {
       // On V two paid produce cards sat blocked for two hours after their Worker
@@ -302,7 +305,7 @@ export class NightShiftRuntime {
         instance,
         release,
         stageId,
-        terminalAt: Date.now(),
+        terminalAt: this.now(),
       });
     }
     if (latest?.role !== "assistant" || !["stop", "error", "aborted"].includes(stopReason) || terminalAt < startedAt) {
@@ -396,7 +399,7 @@ export class NightShiftRuntime {
     return { status: "blocked", summary, failure };
   }
 
-  consumeSessionInspectionBudget(now = Date.now()) {
+  consumeSessionInspectionBudget(now = this.now()) {
     const cutoff = now - this.terminalInspectionWindowMs;
     this.sessionInspectionStarts = this.sessionInspectionStarts.filter((startedAt) => startedAt > cutoff);
     if (this.sessionInspectionStarts.length >= this.terminalInspectionMaxStarts) {
@@ -407,7 +410,7 @@ export class NightShiftRuntime {
     return true;
   }
 
-  consumeTerminalInspectionBudget(now = Date.now()) {
+  consumeTerminalInspectionBudget(now = this.now()) {
     const cutoff = now - this.terminalInspectionWindowMs;
     this.terminalInspectionStarts = this.terminalInspectionStarts.filter((startedAt) => startedAt > cutoff);
     if (this.terminalInspectionStarts.length >= this.terminalInspectionMaxStarts) {
