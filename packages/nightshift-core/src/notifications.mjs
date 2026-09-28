@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
+import { buildNeedsYou } from "./needs-you.mjs";
 
 const execFileAsync = promisify(execFile);
 // The 2026-08-25 build used "feishu-notifications-v1.bootstrap" and left it set on
@@ -8,12 +10,16 @@ const execFileAsync = promisify(execFile);
 // later transitions to done are announced. Without it, every project already
 // finished before the upgrade would be announced at once.
 const BOOTSTRAP_KEY = "feishu-notifications-v2.bootstrap";
+// Review cards already waiting when 需要你 notices first run are not announced.
+const NEEDS_YOU_BOOTSTRAP_KEY = "needs-you-notice-v1.bootstrap";
+// Stops that arrive together are announced together.
+const NEEDS_YOU_BATCH_MS = 120_000;
 
 // Tells the person who asked for a project, in Feishu, when it finishes.
 // Carried over from the 2026-08-25 build (5cb239f), which reached V from a side
 // branch, never reached dev, and was replaced by the next release built from dev.
 export class NightShiftNotificationCoordinator {
-  constructor({ baseUrl, now = () => new Date(), sender, store }) {
+  constructor({ baseUrl, now = () => new Date(), sender, store, needsYouBatchMs = NEEDS_YOU_BATCH_MS }) {
     if (!baseUrl) throw new Error("Night Shift public base URL is required for notifications");
     if (!sender) throw new Error("Night Shift notification sender is required");
     if (!store) throw new Error("Night Shift store is required for notifications");
@@ -21,6 +27,7 @@ export class NightShiftNotificationCoordinator {
     this.now = now;
     this.sender = sender;
     this.store = store;
+    this.needsYouBatchMs = needsYouBatchMs;
   }
 
   async reconcile({ cards, instances, releases }) {
@@ -49,8 +56,56 @@ export class NightShiftNotificationCoordinator {
         target: completionTarget(instance, settings),
       }));
     }
+    queued.push(...this.enqueueNeedsYou({ cards, instances, releaseBySha }));
     const delivered = await this.deliverPending();
     return { bootstrapped: false, delivered, queued };
+  }
+
+  // One notice per project for what newly needs a person: stops (decision
+  // requests) grouped by root cause, and review cards waiting on someone.
+  enqueueNeedsYou({ cards, instances, releaseBySha }) {
+    const now = this.now();
+    const bootstrap = !this.store.getNotificationMetadata(NEEDS_YOU_BOOTSTRAP_KEY);
+    const releases = [...releaseBySha.values()];
+    const queue = buildNeedsYou({ store: this.store, instances, cards, releases, now: now.getTime() });
+    const byInstance = new Map();
+    for (const item of queue.items) {
+      if (item.kind === "decision") {
+        const request = this.store.getDecisionRequest(item.id);
+        if (!request || request.announcedAt) continue;
+        if (now.getTime() - Date.parse(request.createdAt) < this.needsYouBatchMs) continue;
+      } else {
+        const transition = this.store.transitionNotificationSubject(`needs-you:${item.cardId}`, "review", now);
+        if (!transition.changed || bootstrap) continue;
+      }
+      if (!byInstance.has(item.instanceId)) byInstance.set(item.instanceId, []);
+      byInstance.get(item.instanceId).push(item);
+    }
+    if (bootstrap) this.store.setNotificationMetadata(NEEDS_YOU_BOOTSTRAP_KEY, { completedAt: now.toISOString() }, now);
+    const queued = [];
+    for (const [instanceId, items] of byInstance) {
+      const instance = instances.find((entry) => entry.id === instanceId);
+      const settings = needsYouSettings(releaseBySha.get(instance?.workflowSha256));
+      // The project's own chat wins; else the Workflow's target for this event.
+      const target = settings.enabled === true ? (instance?.collaboration?.sourceChatId || settings.to || null) : null;
+      const decisionIds = items.filter((item) => item.kind === "decision").map((item) => item.id);
+      // Without a target nothing is sent, but the requests still count as seen.
+      if (target) {
+        const projectUrl = dashboardUrl(this.baseUrl, { project: instance.id, view: "workflows" });
+        const digest = createHash("sha256").update(items.map((item) => item.id).sort().join("\n")).digest("hex").slice(0, 16);
+        queued.push(this.store.enqueueNotification({
+          allowedOpenIds: [instance.collaboration?.createdByOpenId].filter(Boolean),
+          fallbackText: `需要你：${instance.name}\n${needsYouLines(items).join("\n")}\n${projectUrl}`,
+          instanceId: instance.id,
+          kind: "needs-you",
+          notificationKey: `needs-you:${instance.id}:${digest}`,
+          presentation: needsYouPresentation({ instance, items, projectUrl }),
+          targetChatId: target,
+        }, now));
+      }
+      this.store.markDecisionRequestsAnnounced(decisionIds, now);
+    }
+    return queued;
   }
 
   enqueueCompletion({ cards, generation, instance, target }) {
@@ -98,6 +153,43 @@ export class NightShiftNotificationCoordinator {
 // the Workflow's declared target.
 export function completionTarget(instance, settings) {
   return instance.collaboration?.sourceChatId || settings?.instanceCompleted?.to || null;
+}
+
+// Who hears that a project needs them: the Workflow's own needsYou setting, or
+// else whoever hears when it finishes.
+function needsYouSettings(release) {
+  const notifications = notificationSettings(release);
+  if (notifications.needsYou) return notifications.needsYou;
+  return notifications.instanceCompleted?.enabled ? notifications.instanceCompleted : {};
+}
+
+function needsYouLines(items) {
+  const groups = new Map();
+  for (const item of items) {
+    const entry = groups.get(item.groupKey) ?? { item, count: 0 };
+    entry.count += 1;
+    groups.set(item.groupKey, entry);
+  }
+  return [...groups.values()].map(({ item, count }) => {
+    if (item.kind === "decision") return `${count} 张卡停下了：${item.problem}`;
+    return `${count} 张卡${item.kind === "approval" ? "等你确认" : "等你审核"}：${item.problem}`;
+  });
+}
+
+export function needsYouPresentation({ instance, items, projectUrl }) {
+  const stops = items.filter((item) => item.kind === "decision");
+  const choices = stops.length
+    ? `可选：${[...new Set(stops.flatMap((item) => item.options.map((option) => option.label)))].join(" / ")}`
+    : "可选：通过 / 要求修改 / 拒绝";
+  return {
+    title: `需要你 · ${instance.name}`,
+    tone: "warning",
+    blocks: [
+      { type: "text", text: needsYouLines(items).map((line) => `- ${line}`).join("\n") },
+      { type: "context", text: `${choices}（在看板上处理）· Night Shift 项目 ${instance.id}` },
+      { type: "buttons", buttons: [{ label: "去处理", style: "primary", url: projectUrl }] },
+    ],
+  };
 }
 
 function notificationSettings(release) {

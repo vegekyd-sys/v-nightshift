@@ -77,6 +77,30 @@ Blocked-card Session checks have their own budget, separate from completion vali
 
 Running cards are never stopped by this guard. A retried card also gets its native failure budget reset (`workboard.cards.reassign`), because the board refuses to start a card whose failure count exceeds `maxRetries`.
 
+## 需要你 (cards that need a person)
+
+A card that stops and will not recover by itself becomes a decision request (`decision_requests`), owned by the engine. The design is in `docs/nightshift-needs-human-design.md`.
+
+**What opens a request**
+- A blocked card with a recorded failure and no automatic retry due opens a request on the same pass.
+- A blocked card with no failure waits out a 2-minute grace period first. The board shows it as pending.
+- The problem text is the Agent's own closing words (`failure.agentReport`) when the Agent stopped on purpose, otherwise the engine's reason.
+
+**What never opens one**
+- Cards the engine retries by itself.
+- Paid work still `executing` with no recorded stop.
+- Shelved projects: paused and untouched for more than 3 days.
+- Cards blocked before the first run. The baseline is `needs-you-v1.baseline` in `notification_metadata`.
+
+**The queue.** 需要你 is open decision requests plus review cards waiting on a person, both approvals and human-review stages. `GET /api/overview` returns it as `needsYou { items, pending, countsByInstance }` for every project that is not shelved, whatever the scope.
+
+**Deciding.** `POST /api/decisions/:id { optionId, note, actor, applyToGroup }`, or `nightshiftctl decisions decide <id> --option retry|pause [--note …] [--apply-to-group]`.
+- **retry** re-runs the card with `## 人工决定` and the note on top of its brief.
+- **pause** pauses the project and leaves the request open.
+- A second decision returns the first (`alreadyDecided`).
+
+**Notice.** The `needsYou` event goes to the project's `collaboration.sourceChatId`, else to the Workflow's `notifications.needsYou.to`, else to the `instanceCompleted` target. There is one notice per project per 2-minute batch, grouped by root cause (`groupKey`). Review cards already waiting when the notice first runs are not announced (`needs-you-notice-v1.bootstrap`).
+
 ## Feishu completion notices
 
 When a project reaches `done`, Night Shift sends a Feishu card ("项目已完成", with done/blocked counts and a link to the project) to the person it belongs to. Enabled by `NIGHTSHIFT_FEISHU_NOTIFICATIONS=1` in the unit file; sent through `openclaw message send --channel feishu --presentation`.

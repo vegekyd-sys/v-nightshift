@@ -623,7 +623,9 @@ function sha256(value) {
 // used when the project itself records no creator chat: a group (oc_…) or a
 // person's own chat (user:ou_…). Projects created by a schedule rather than a
 // person rely on it.
-const NOTIFICATION_EVENTS = new Set(["instanceCompleted"]);
+// needsYou: someone must act (a stop or a review). Without it, whoever hears
+// instanceCompleted hears needsYou too.
+const NOTIFICATION_EVENTS = new Set(["instanceCompleted", "needsYou"]);
 const FEISHU_NOTIFY_TARGET = /^(oc_[A-Za-z0-9_-]+|user:ou_[A-Za-z0-9_-]+)$/;
 
 function validateNotificationContract(notifications, issues) {

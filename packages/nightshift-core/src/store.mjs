@@ -163,6 +163,29 @@ export class NightShiftStore {
         value_json TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+      -- 需要你: a card attempt that stopped and will not move without a person.
+      CREATE TABLE IF NOT EXISTS decision_requests (
+        id TEXT PRIMARY KEY,
+        instance_id TEXT NOT NULL,
+        card_id TEXT NOT NULL,
+        content_item_id TEXT,
+        stage_id TEXT NOT NULL,
+        attempt TEXT NOT NULL,
+        source TEXT NOT NULL,
+        problem TEXT NOT NULL,
+        detail TEXT NOT NULL DEFAULT '',
+        evidence_json TEXT NOT NULL DEFAULT '{}',
+        scope TEXT NOT NULL,
+        options_json TEXT NOT NULL,
+        group_key TEXT NOT NULL,
+        status TEXT NOT NULL,
+        decision_json TEXT,
+        announced_at TEXT,
+        created_at TEXT NOT NULL,
+        decided_at TEXT,
+        UNIQUE(card_id, attempt)
+      );
+      CREATE INDEX IF NOT EXISTS decision_requests_open ON decision_requests(status, instance_id);
     `);
     // Production databases created by the 2026-08-25 notification build already
     // carry this column and these tables; newer ones gain them here.
@@ -186,6 +209,93 @@ export class NightShiftStore {
         this.db.exec(`ALTER TABLE ${table} ADD COLUMN failure_json TEXT`);
       }
     }
+  }
+
+  // One request per card attempt. Reopening the same attempt returns the row it
+  // already has, so repeated passes never duplicate a request.
+  openDecisionRequest(request, now = new Date()) {
+    const existing = this.getDecisionRequestForCard(request.cardId, request.attempt);
+    if (existing) return { ...existing, reused: true };
+    const id = request.id ?? randomUUID();
+    this.db.prepare(`
+      INSERT INTO decision_requests(
+        id, instance_id, card_id, content_item_id, stage_id, attempt, source, problem, detail,
+        evidence_json, scope, options_json, group_key, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)
+    `).run(
+      id,
+      request.instanceId,
+      request.cardId,
+      request.contentItemId ?? null,
+      request.stageId,
+      String(request.attempt),
+      request.source,
+      request.problem,
+      request.detail ?? "",
+      JSON.stringify(request.evidence ?? {}),
+      request.scope,
+      JSON.stringify(request.options),
+      request.groupKey,
+      now.toISOString(),
+    );
+    this.appendEvent({
+      instanceId: request.instanceId,
+      type: "decision.requested",
+      payload: { decisionId: id, cardId: request.cardId, stageId: request.stageId, source: request.source, groupKey: request.groupKey },
+      now,
+    });
+    return { ...this.getDecisionRequest(id), reused: false };
+  }
+
+  getDecisionRequest(id) {
+    const row = this.db.prepare("SELECT * FROM decision_requests WHERE id = ?").get(id);
+    return row ? decisionRequestRow(row) : null;
+  }
+
+  getDecisionRequestForCard(cardId, attempt) {
+    const row = this.db.prepare("SELECT * FROM decision_requests WHERE card_id = ? AND attempt = ?").get(cardId, String(attempt));
+    return row ? decisionRequestRow(row) : null;
+  }
+
+  listDecisionRequests({ instanceId = null, status = "open" } = {}) {
+    const clauses = [];
+    const values = [];
+    if (status) { clauses.push("status = ?"); values.push(status); }
+    if (instanceId) { clauses.push("instance_id = ?"); values.push(instanceId); }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return this.db.prepare(`SELECT * FROM decision_requests ${where} ORDER BY created_at`).all(...values).map(decisionRequestRow);
+  }
+
+  // A decision is written once; a later call returns the decided row unchanged.
+  decideRequest(id, decision, now = new Date()) {
+    const current = this.getDecisionRequest(id);
+    if (!current) throw new Error(`Unknown decision request ${id}`);
+    if (current.status !== "open") return { ...current, alreadyDecided: true };
+    const recorded = { ...decision, at: now.toISOString() };
+    this.db.prepare("UPDATE decision_requests SET status = 'decided', decision_json = ?, decided_at = ? WHERE id = ? AND status = 'open'")
+      .run(JSON.stringify(recorded), now.toISOString(), id);
+    this.appendEvent({
+      instanceId: current.instanceId,
+      type: "decision.decided",
+      payload: { decisionId: id, cardId: current.cardId, optionId: decision.optionId, actor: decision.actor, note: decision.note ?? null },
+      now,
+    });
+    return { ...this.getDecisionRequest(id), alreadyDecided: false };
+  }
+
+  // A new attempt, or a card that moved on by itself, no longer needs the old decision.
+  supersedeDecisionRequests(cardId, { exceptAttempt = null } = {}, now = new Date()) {
+    const rows = this.db.prepare("SELECT * FROM decision_requests WHERE card_id = ? AND status = 'open'").all(cardId).map(decisionRequestRow);
+    for (const row of rows) {
+      if (exceptAttempt !== null && row.attempt === String(exceptAttempt)) continue;
+      this.db.prepare("UPDATE decision_requests SET status = 'superseded', decided_at = ? WHERE id = ?").run(now.toISOString(), row.id);
+    }
+    return rows.filter((row) => exceptAttempt === null || row.attempt !== String(exceptAttempt)).length;
+  }
+
+  markDecisionRequestsAnnounced(ids, now = new Date()) {
+    const statement = this.db.prepare("UPDATE decision_requests SET announced_at = ? WHERE id = ? AND announced_at IS NULL");
+    for (const id of ids) statement.run(now.toISOString(), id);
   }
 
   getInstanceControl(instanceId) {
@@ -821,6 +931,29 @@ function externalOperationRow(row) {
     result: row.result_json ? JSON.parse(row.result_json) : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function decisionRequestRow(row) {
+  return {
+    id: row.id,
+    instanceId: row.instance_id,
+    cardId: row.card_id,
+    contentItemId: row.content_item_id,
+    stageId: row.stage_id,
+    attempt: row.attempt,
+    source: row.source,
+    problem: row.problem,
+    detail: row.detail,
+    evidence: JSON.parse(row.evidence_json || "{}"),
+    scope: row.scope,
+    options: JSON.parse(row.options_json),
+    groupKey: row.group_key,
+    status: row.status,
+    decision: row.decision_json ? JSON.parse(row.decision_json) : null,
+    announcedAt: row.announced_at,
+    createdAt: row.created_at,
+    decidedAt: row.decided_at,
   };
 }
 
