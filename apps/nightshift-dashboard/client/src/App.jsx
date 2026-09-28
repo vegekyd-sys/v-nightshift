@@ -4,6 +4,7 @@ import YAML from "yaml";
 import {
   ArrowDown,
   ArrowUp,
+  Check,
   ChevronDown,
   FilePenLine,
   FileUp,
@@ -15,19 +16,11 @@ import {
   X,
 } from "lucide-react";
 import { api } from "./api.js";
-import { Drawer, EmptyColumn, Icons, Metric, Sidebar, WorkCard } from "./components.jsx";
+import { cardAttention, countByKind, enabledStages, inScope, isToday, projectProgress, projectRuns, projectScope, scopeAuthorizes, stageExpected, taskAttention } from "./attention.js";
+import { Drawer, Icons, Sidebar } from "./components.jsx";
 
-const columns = [
-  // Cards the board is holding for a timed release. Without a column of their
-  // own they vanish from the board, which is the one thing a scheduled release
-  // must not do: the whole point is that a queued publication stays visible.
-  ["scheduled", "Scheduled", ["scheduled"]],
-  ["ready", "Ready", ["triage", "backlog", "todo", "planned", "ready"]],
-  ["running", "Running", ["running"]],
-  ["review", "Review", ["review"]],
-  ["blocked", "Blocked", ["blocked"]],
-  ["done", "Done", ["done"]],
-];
+
+const NAVIGATION_KEY = "nightshift.navigation.v2";
 
 export function App() {
   const initialLocation = useRef(readDashboardLocation()).current;
@@ -46,20 +39,44 @@ export function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [projectReleaseSha, setProjectReleaseSha] = useState(null);
   const [workflowProjectId, setWorkflowProjectId] = useState(initialLocation.project);
-  const [navigationCollapsed, setNavigationCollapsed] = useState(() => typeof window !== "undefined" && window.localStorage.getItem("nightshift.navigationCollapsed") === "true");
+  // Collapsed unless the viewer opened it. A new key, because the old one was
+  // written as "false" on every visit and would keep everyone expanded.
+  const [navigationCollapsed, setNavigationCollapsed] = useState(() => typeof window === "undefined" || window.localStorage.getItem(NAVIGATION_KEY) !== "expanded");
   const refreshInFlight = useRef(null);
-  const selectedForDecision = useMemo(() => withDecisionContext(selected, data), [selected, data]);
+  // The poll asks only for the scope a page is showing: projects in production
+  // by default, others when a page switches to them. Cards arrive lean; the
+  // drawer fetches the one it opens in full.
+  const scopeRef = useRef("live");
+  const [fullCard, setFullCard] = useState(null);
+  const detailCard = fullCard && fullCard.id === selected?.id ? fullCard : selected;
+  const selectedForDecision = useMemo(() => withDecisionContext(detailCard, data), [detailCard, data]);
 
   function refresh(force = false) {
-    if (refreshInFlight.current) return refreshInFlight.current;
+    const scope = scopeRef.current;
+    if (refreshInFlight.current?.scope === scope) return refreshInFlight.current.request;
     setRefreshing(true);
-    const request = api(force ? "/api/bootstrap?refresh=1" : "/api/bootstrap")
-      .then((result) => { setData(result); setError(""); return result; })
+    const request = api(`/api/overview?scope=${scope}${force ? "&refresh=1" : ""}`)
+      .then((result) => { if (scopeRef.current === scope) { setData(result); setError(""); } return result; })
       .catch((reason) => { setError(reason.message); throw reason; })
-      .finally(() => { setRefreshing(false); refreshInFlight.current = null; });
-    refreshInFlight.current = request;
+      .finally(() => { if (refreshInFlight.current?.request === request) { setRefreshing(false); refreshInFlight.current = null; } });
+    refreshInFlight.current = { request, scope };
     return request;
   }
+
+  function requestScope(scope) {
+    if (scopeRef.current === scope) return;
+    scopeRef.current = scope;
+    refresh(false).catch(() => undefined);
+  }
+
+  useEffect(() => {
+    if (!selected?.id) { setFullCard(null); return undefined; }
+    let current = true;
+    api(`/api/cards/${encodeURIComponent(selected.id)}`)
+      .then((result) => { if (current) setFullCard({ ...result.card, fullDetail: true }); })
+      .catch(() => undefined);
+    return () => { current = false; };
+  }, [selected?.id, data?.cardsUpdatedAt]);
 
   useEffect(() => {
     refresh(false).catch(() => undefined);
@@ -86,7 +103,7 @@ export function App() {
   }, [active]);
 
   useEffect(() => {
-    window.localStorage.setItem("nightshift.navigationCollapsed", String(navigationCollapsed));
+    window.localStorage.setItem(NAVIGATION_KEY, navigationCollapsed ? "collapsed" : "expanded");
   }, [navigationCollapsed]);
 
   useEffect(() => {
@@ -94,6 +111,7 @@ export function App() {
     if (initialLocation.card) {
       const card = (data.cards ?? []).find((entry) => entry.id === initialLocation.card);
       if (card) setSelected(card);
+      else api(`/api/cards/${encodeURIComponent(initialLocation.card)}`).then((result) => setSelected(result.card)).catch(() => undefined);
     }
     deepLinkApplied.current = true;
   }, [data, initialLocation.card]);
@@ -190,10 +208,10 @@ export function App() {
       <Sidebar active={active} collapsed={navigationCollapsed} onChange={setActive} onToggle={() => setNavigationCollapsed((value) => !value)} />
       <main className="main-shell">
         {error && <div className="error-banner">{error}</div>}
-        {active === "board" && <LiveBoard data={data} query={query} setQuery={setQuery} selected={selectedForDecision} setSelected={setSelected} refreshing={refreshing} refresh={refresh} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} />}
-        {active === "workflows" && <WorkflowStudio data={data} refresh={refresh} initialProjectId={workflowProjectId} initialWorkflowId={initialLocation.workflow} setSelected={setSelected} selected={selectedForDecision} decide={decide} approveMany={approveMany} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onNewProject={(release) => setProjectReleaseSha(release?.workflowSha256 ?? data?.workflows?.[0]?.workflowSha256)} />}
-        {active === "projects" && <Projects data={data} refresh={refresh} onNewProject={() => setProjectReleaseSha(data?.workflows?.[0]?.workflowSha256)} onOpenProject={(projectId) => { setWorkflowProjectId(projectId); updateDashboardLocation({ project: projectId, view: "workflows" }); setActive("workflows"); }} />}
-        {active === "agents" && <Agents data={data} />}
+        {active === "board" && <LiveBoard onScopeChange={requestScope} data={data} query={query} setQuery={setQuery} selected={selectedForDecision} setSelected={setSelected} refreshing={refreshing} refresh={refresh} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} />}
+        {active === "workflows" && <WorkflowStudio onScopeChange={requestScope} data={data} refresh={refresh} initialProjectId={workflowProjectId} initialWorkflowId={initialLocation.workflow} setSelected={setSelected} selected={selectedForDecision} decide={decide} approveMany={approveMany} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onNewProject={(release) => setProjectReleaseSha(release?.workflowSha256 ?? data?.workflows?.[0]?.workflowSha256)} />}
+        {active === "projects" && <Projects onScopeChange={requestScope} data={data} refresh={refresh} onNewProject={() => setProjectReleaseSha(data?.workflows?.[0]?.workflowSha256)} onOpenProject={(projectId) => { setWorkflowProjectId(projectId); updateDashboardLocation({ project: projectId, view: "workflows" }); setActive("workflows"); }} />}
+        {active === "agents" && <Agents onScopeChange={requestScope} data={data} />}
       </main>
       {projectReleaseSha && <ProjectEditor releases={data?.workflows ?? []} initialReleaseSha={projectReleaseSha} onClose={() => setProjectReleaseSha(null)} onCreated={(result) => { setProjectReleaseSha(null); setActive("projects"); if (result.initialScheduleError) setError(`项目已创建，首次调度将在下一轮重试：${result.initialScheduleError}`); refresh(true).catch((reason) => setError(reason.message)); }} />}
     </div>
@@ -210,33 +228,154 @@ export function App() {
   }
 }
 
-function LiveBoard({ data, query, setQuery, selected, setSelected, refreshing, refresh, decide, retry, delivery, deliveryState, deliveryError, handoff, handoffState, handoffError }) {
-  const cards = useMemo(() => (data?.cards ?? []).filter((card) => !query || card.title.toLowerCase().includes(query.toLowerCase())), [data, query]);
-  const count = (statuses) => cards.filter((card) => statuses.includes(card.status)).length;
+function LiveBoard({ onScopeChange, data, query, setQuery, selected, setSelected, refreshing, refresh, decide, retry, delivery, deliveryState, deliveryError, handoff, handoffState, handoffError }) {
+  // Every workflow's cards on one floor, sorted by who has to move next rather
+  // than by raw board status.
+  const [scope, setScope] = useState("live");
+  useEffect(() => { onScopeChange(scope); }, [scope]);
   const [mobileColumn, setMobileColumn] = useState("running");
-  return <>
-    <header className="topbar"><div><span className="section-label">Night Shift operations</span><h1>Live Workboard</h1></div><div className="top-actions"><label className="search"><Icons.Search size={16} /><input aria-label="Search cards" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search work" /></label><button onClick={() => refresh(true)} className="refresh-button">{refreshing ? "Refreshing…" : "Refresh"}</button></div></header>
-    <section className="metrics"><Metric label="Active agents" value={count(["running"])} tone="active" /><Metric label="Waiting review" value={count(["review"])} tone="review" /><Metric label="Blocked" value={count(["blocked"])} tone="blocked" /><Metric label="Completed" value={count(["done"])} /></section>
-    <nav className="mobile-board-tabs" aria-label="任务状态">{columns.map(([id, title, statuses]) => <button className={mobileColumn === id ? "active" : ""} key={id} onClick={() => setMobileColumn(id)}><span>{title}</span><strong>{count(statuses)}</strong></button>)}</nav>
-    <section className={`board ${selected ? "with-drawer" : ""}`}>
-      <div className="board-columns">{columns.map(([id, title, statuses]) => { const items = cards.filter((card) => statuses.includes(card.status)); return <div className={`board-column column-${id} ${mobileColumn === id ? "mobile-active" : ""}`} key={id}><div className="column-head"><h2>{title}</h2><span>{items.length}</span></div><div className="column-body">{items.map((card) => <WorkCard key={card.id} card={card} onClick={setSelected} />)}{items.length === 0 && <EmptyColumn />}</div></div>; })}</div>
-      <Drawer card={selected} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onClose={() => setSelected(null)} onDecide={decide} onRetry={retry} />
+  const entries = useMemo(() => boardEntries(data), [data]);
+  const scopeCounts = useMemo(() => ({ live: data?.cardCounts?.live ?? entries.filter((entry) => entry.scope === "live").length, all: data?.cardCounts?.all ?? entries.length }), [data, entries]);
+  const shown = useMemo(() => entries.filter((entry) => (scope === "all" || entry.scope === "live") && (!query || entry.card.title.toLowerCase().includes(query.toLowerCase()) || (entry.projectName ?? "").toLowerCase().includes(query.toLowerCase()))), [entries, scope, query]);
+  const counts = countByKind(shown);
+  const doneToday = shown.filter((entry) => entry.attention.kind === "done" && isToday(entry.card.updatedAt)).length;
+  const columns = BOARD_COLUMNS.filter(([kind]) => kind !== "stale" || scope === "all");
+  return <div className="simple-screen factory-studio factory-page">
+    <PageHeader eyebrow="Night Shift · 全部 Workflow" title="Live Board" counts={counts} doneToday={doneToday} actions={<>
+      <label className="factory-search"><Icons.Search size={16} /><input aria-label="搜索卡片" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索任务或项目" /></label>
+      <button onClick={() => refresh(true)}>{refreshing ? "刷新中…" : "刷新"}</button>
+    </>} />
+    <div className="runway-toolbar factory-toolbar">
+      <div className="factory-scope" role="tablist" aria-label="卡片范围">{[["live", "在产"], ["all", "全部"]].map(([id, title]) => <button role="tab" aria-selected={scope === id} className={scope === id ? "selected" : ""} key={id} onClick={() => setScope(id)}>{title}<span>{scopeCounts[id]}</span></button>)}</div>
+    </div>
+    <nav className="mobile-board-tabs" aria-label="任务状态">{columns.map(([kind, title]) => <button className={mobileColumn === kind ? "active" : ""} key={kind} onClick={() => setMobileColumn(kind)}><span>{title}</span><strong>{counts[kind] ?? 0}</strong></button>)}</nav>
+    <section className={`factory-board ${selected ? "with-drawer" : ""}`} style={{ "--board-columns": columns.length }}>
+      {columns.map(([kind, title]) => {
+        const items = shown.filter((entry) => entry.attention.kind === kind).sort((left, right) => finishedAt(right) - finishedAt(left));
+        return <div className={`factory-column column-${kind} ${mobileColumn === kind ? "mobile-active" : ""}`} key={kind}>
+          <header><strong>{title}</strong><span>{items.length}</span></header>
+          {kind === "done" || kind === "stale"
+            ? <DoneList entries={items} onSelect={setSelected} stale={kind === "stale"} />
+            : <div className="factory-column-body">{items.map((entry) => <FactoryCard key={entry.card.id} entry={entry} onClick={() => setSelected(entry.card)} />)}{items.length === 0 && <p className="factory-empty">{BOARD_EMPTY[kind]}</p>}</div>}
+        </div>;
+      })}
+      {selected && <div className="factory-drawer-scrim" onClick={() => setSelected(null)} />}
+      <Drawer card={selected} context={drawerContextFromEntry(entries.find((entry) => entry.card.id === selected?.id))} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onClose={() => setSelected(null)} onDecide={decide} onRetry={retry} />
     </section>
-  </>;
+  </div>;
 }
 
-function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, setSelected, selected, decide, approveMany, retry, delivery, deliveryState, deliveryError, handoff, handoffState, handoffError, onNewProject }) {
+const BOARD_COLUMNS = [["needs-you", "需要你"], ["running", "进行中"], ["healing", "自愈中"], ["queued", "排队 / 定时"], ["done", "已完成"], ["stale", "已搁置"]];
+const BOARD_EMPTY = { "needs-you": "没有要你决定的事", running: "现在没有 Agent 在做", healing: "没有在自愈的任务", queued: "没有排队的任务" };
+
+function boardEntries(data) {
+  const now = Date.now();
+  const instances = new Map((data?.instances ?? []).map((instance) => [instance.id, instance]));
+  const workflowName = new Map((data?.workflows ?? []).map((release) => [release.workflowSha256, release.name]));
+  const stageTitles = new Map((data?.workflows ?? []).map((release) => [release.workflowSha256, new Map((release.manifest?.spec?.stages ?? []).map((stage) => [stage.id, stage.title]))]));
+  const runByCard = new Map();
+  const operationByCard = new Map();
+  for (const instance of instances.values()) {
+    for (const run of [...(instance.stageRuns ?? []), ...(instance.contentItemRuns ?? [])]) if (run.cardId) runByCard.set(run.cardId, run);
+    for (const operation of instance.operations ?? []) operationByCard.set(operation.ownerCardId, operation);
+  }
+  return (data?.cards ?? []).map((card) => {
+    const instance = instances.get(cardLabel(card, "instance"));
+    const projectState = instance ? projectScope(instance, now) : card.status === "done" ? "delivered" : "live";
+    const content = instance?.contentItems?.find((item) => item.id === (card.metadata?.automation?.contentItemId ?? label(card, "content-item")));
+    const approval = (card.labels ?? []).includes("nightshift:approval");
+    return {
+      card,
+      scope: projectState === "live" ? "live" : "other",
+      projectName: instance?.name ?? null,
+      workflowName: instance ? workflowName.get(instance.workflowSha256) : null,
+      contentTitle: content?.title ?? null,
+      stageId: card.metadata?.automation?.stageId ?? label(card, "stage"),
+      stageTitle: instance ? stageTitles.get(instance.workflowSha256)?.get(card.metadata?.automation?.stageId ?? label(card, "stage")) ?? null : null,
+      attention: cardAttention(card, { run: runByCard.get(card.id), operation: operationByCard.get(card.id), shelved: projectState === "shelved", approval }),
+    };
+  });
+}
+
+function drawerContextFromEntry(entry) {
+  if (!entry) return null;
+  return { projectName: entry.projectName, stageTitle: entry.stageTitle ?? entry.stageId, contentTitle: entry.contentTitle, attention: entry.attention };
+}
+
+function drawerContextFromTask(task, stages = []) {
+  if (!task) return null;
+  return { projectName: task.projectName, stageTitle: stages.find((stage) => stage.id === task.stageId)?.title ?? task.stageId, contentTitle: task.contentTitle, attention: task.attention };
+}
+
+function FactoryCard({ entry, onClick }) {
+  const { card, attention } = entry;
+  const detail = attention.reason ?? (attention.kind === "running" ? "Agent 在做" : card.status === "scheduled" && card.metadata?.automation?.scheduledAt ? `定时 ${new Date(card.metadata.automation.scheduledAt).toLocaleString()}` : statusLabel(card.status));
+  return <button className={`factory-card attention-${attention.kind}`} title={[entry.contentTitle ?? card.title, entry.projectName].filter(Boolean).join("\n")} onClick={onClick}>
+    <div className="factory-card-top"><span>{entry.stageTitle ?? entry.stageId ?? "task"}</span>{entry.workflowName && <em>{entry.workflowName}</em>}</div>
+    <strong>{entry.contentTitle ?? card.title}</strong>
+    {entry.projectName && <small>{entry.projectName}</small>}
+    <div className="factory-card-foot"><span>{detail}</span><time>{formatBoardAge(card.updatedAt)}</time></div>
+  </button>;
+}
+
+function DoneList({ entries, onSelect, stale = false }) {
+  const [expanded, setExpanded] = useState(false);
+  const limit = 24;
+  const shown = expanded ? entries : entries.slice(0, limit);
+  if (!entries.length) return <p className="factory-empty">{stale ? "没有搁置的卡片" : "还没有完成的任务"}</p>;
+  return <div className={`factory-done factory-done-column ${stale ? "is-stale" : ""}`}>
+    {shown.map((entry) => <button className="factory-done-row" title={entry.contentTitle ?? entry.card.title} key={entry.card.id} onClick={() => onSelect(entry.card)}><Check size={13} /><span>{entry.contentTitle ?? entry.card.title}</span></button>)}
+    {entries.length > limit && <button className="factory-done-more" onClick={() => setExpanded((value) => !value)}>{expanded ? "收起" : `还有 ${entries.length - limit} 条`}</button>}
+  </div>;
+}
+
+function formatBoardAge(value) {
+  const at = typeof value === "number" ? value : Date.parse(value ?? 0);
+  if (!at) return "";
+  const minutes = Math.max(0, Math.round((Date.now() - at) / 60000));
+  if (minutes < 60) return `${minutes} 分钟前`;
+  if (minutes < 1440) return `${Math.round(minutes / 60)} 小时前`;
+  return `${Math.round(minutes / 1440)} 天前`;
+}
+
+function PageHeader({ eyebrow, title, counts, doneToday, actions }) {
+  return <header className="topbar workflow-topbar factory-topbar factory-page-top">
+    <div className="workflow-title"><div className="factory-page-title"><span className="factory-switcher-label">{eyebrow}</span><h1>{title}</h1></div></div>
+    {counts ? <FactoryStatus counts={counts} /> : <span />}
+    {counts ? <FactoryMetrics counts={counts} doneToday={doneToday} /> : <span />}
+    <div className="factory-actions">{actions}</div>
+  </header>;
+}
+
+function FactoryStatus({ counts }) {
+  return <div className={`factory-status ${counts["needs-you"] ? "is-alert" : counts.running ? "is-live" : ""}`}><span />{counts["needs-you"] ? `${counts["needs-you"]} 件事等你处理` : counts.running || counts.healing ? "工厂自己在跑" : "本轮都做完了"}</div>;
+}
+
+function FactoryMetrics({ counts, doneToday }) {
+  return <div className="factory-metrics" aria-label="工厂状态">
+    <span className={counts["needs-you"] ? "is-alert" : "is-clear"}><strong>{counts["needs-you"]}</strong>需要你</span>
+    <span><strong>{counts.healing}</strong>自愈中</span>
+    <span><strong>{counts.running}</strong>进行中</span>
+    <span><strong>{doneToday}</strong>今天完成</span>
+  </div>;
+}
+
+function WorkflowStudio({ onScopeChange, data, refresh, initialProjectId, initialWorkflowId, setSelected, selected, decide, approveMany, retry, delivery, deliveryState, deliveryError, handoff, handoffState, handoffError, onNewProject }) {
   const groups = useMemo(() => groupWorkflowReleases(data?.workflows ?? []), [data?.workflows]);
   const deepLinkApplied = useRef(false);
   const [workflowId, setWorkflowId] = useState(initialWorkflowId ?? "");
   const [projectId, setProjectId] = useState(initialProjectId ?? "all");
+  // The factory floor shows what is being made now; delivered and shelved
+  // projects are one click away instead of mixed into it.
+  const [scope, setScope] = useState("live");
+  useEffect(() => { onScopeChange(scope); }, [scope]);
   const [mobileStageId, setMobileStageId] = useState("");
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
   const [bulkApproval, setBulkApproval] = useState(null);
   const [bulkEvidence, setBulkEvidence] = useState("");
   const [bulkSaving, setBulkSaving] = useState(false);
   const [bulkError, setBulkError] = useState("");
-  const [libraryCollapsed, setLibraryCollapsed] = useState(() => typeof window !== "undefined" && window.localStorage.getItem("nightshift.workflowLibraryCollapsed") === "true");
+  const [switcherOpen, setSwitcherOpen] = useState(false);
   const [editor, setEditor] = useState(null);
   useEffect(() => {
     if (!groups.length) return;
@@ -252,6 +391,22 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
   const group = groups.find((entry) => entry.id === workflowId) ?? groups[0];
   const releaseShas = useMemo(() => new Set(group?.releases.map((release) => release.workflowSha256) ?? []), [group]);
   const projects = useMemo(() => (data?.instances ?? []).filter((instance) => releaseShas.has(instance.workflowSha256)), [data?.instances, releaseShas]);
+  const scopeCounts = useMemo(() => {
+    const now = Date.now();
+    const counts = { live: 0, delivered: 0, shelved: 0, all: 0 };
+    for (const project of projects) {
+      const actual = projectScope(project, now);
+      if (actual === "archived") continue;
+      counts[actual] += 1;
+      counts.all += 1;
+    }
+    return counts;
+  }, [projects]);
+  const scopedProjects = useMemo(() => projects.filter((project) => inScope(project, scope)), [projects, scope]);
+  useEffect(() => {
+    // A deep link to a delivered or shelved project must still open it.
+    if (projectId !== "all" && !scopedProjects.some((project) => project.id === projectId) && projects.some((project) => project.id === projectId)) setScope("all");
+  }, [projectId, projects, scopedProjects]);
   useEffect(() => {
     if (!data) return;
     if (projectId === "all" || projects.some((project) => project.id === projectId)) return;
@@ -264,72 +419,96 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
     if (!data) return;
     updateDashboardLocation({ project: projectId === "all" ? null : projectId, workflow: workflowId || null });
   }, [data, projectId, workflowId]);
-  useEffect(() => {
-    window.localStorage.setItem("nightshift.workflowLibraryCollapsed", String(libraryCollapsed));
-  }, [libraryCollapsed]);
-  const visibleProjects = projectId === "all" ? projects : projects.filter((project) => project.id === projectId);
+  const visibleProjects = projectId === "all" ? scopedProjects : projects.filter((project) => project.id === projectId);
   const pinnedRelease = projectId === "all" ? group?.releases[0] : group?.releases.find((release) => release.workflowSha256 === visibleProjects[0]?.workflowSha256);
   const stages = pinnedRelease?.manifest?.spec?.stages ?? [];
+  // A stage that none of the shown projects will run (a publish step in a
+  // download batch) is an empty column that only adds noise.
+  const runwayStages = useMemo(() => {
+    const used = stages.filter((stage) => visibleProjects.some((project) => enabledStages([stage], project.inputs ?? {}).length > 0));
+    return used.length ? used : stages;
+  }, [stages, visibleProjects]);
   const taskIndex = useMemo(() => indexStageTasks(stages, visibleProjects, data?.cards ?? []), [stages, visibleProjects, data?.cards]);
   const allTasks = useMemo(() => [...taskIndex.values()].flat(), [taskIndex]);
-  const liveSummary = useMemo(() => summarizeStatuses(allTasks), [allTasks]);
-  const activeTasks = useMemo(() => allTasks.filter((task) => task.status === "running"), [allTasks]);
+  const factory = useMemo(() => ({
+    ...countByKind(allTasks),
+    doneToday: allTasks.filter((task) => task.attention.kind === "done" && isToday(task.card?.updatedAt ?? task.updatedAt)).length,
+  }), [allTasks]);
+  const needsYou = useMemo(() => allTasks.filter((task) => task.attention.kind === "needs-you"), [allTasks]);
+  const releaseBySha = useMemo(() => new Map((data?.workflows ?? []).map((release) => [release.workflowSha256, release])), [data?.workflows]);
   useEffect(() => {
-    if (!stages.length) return;
-    if (stages.some((stage) => stage.id === mobileStageId)) return;
-    const attentionStage = stages.find((stage) => (taskIndex.get(stage.id) ?? []).some((task) => ["running", "review", "blocked"].includes(task.status)));
-    setMobileStageId(attentionStage?.id ?? stages[0].id);
-  }, [mobileStageId, stages, taskIndex]);
+    if (!runwayStages.length) return;
+    if (runwayStages.some((stage) => stage.id === mobileStageId)) return;
+    const firstWith = (kinds) => runwayStages.find((stage) => (taskIndex.get(stage.id) ?? []).some((task) => kinds.includes(task.attention.kind)));
+    setMobileStageId((firstWith(["needs-you"]) ?? firstWith(["running", "healing"]) ?? runwayStages[0]).id);
+  }, [mobileStageId, runwayStages, taskIndex]);
 
   if (!data) return <div className="workflow-loading"><span className="delivery-skeleton" /><strong>正在载入 Workflow 运行状态</strong></div>;
   if (!group) return <div className="simple-screen"><header className="topbar"><div><h1>Workflows</h1><p className="topbar-copy">导入第一份 workflow.md，建立可执行生产线。</p></div><div className="top-actions"><button className="primary" onClick={() => setEditor({ mode: "create", source: newWorkflowSource() })}><Plus size={15} />新建 Workflow</button></div></header></div>;
 
-  return <div className="workflow-screen workflow-studio">
-    <header className="topbar workflow-topbar">
-      <div className="workflow-title"><span className="workflow-v-avatar"><img src="/v-avatar.jpg" alt="V" /><i /></span><div className="workflow-title-copy"><span className="section-label">V · Workflow control room</span><h1>{group.name}</h1><p className={`topbar-copy workflow-live-line ${activeTasks.length ? "is-live" : ""}`}><span />{activeTasks.length ? `${activeTasks.length} 个任务运行中` : "本轮调度完成"} · {liveSummary.review ?? 0} 个待审核 · {visibleProjects.length} 个项目</p></div></div>
-      <div className="workflow-header-stats" aria-label="Workflow 状态"><span><strong>{liveSummary.running ?? 0}</strong>进行中</span><span><strong>{liveSummary.review ?? 0}</strong>待审核</span><span><strong>{liveSummary.done ?? 0}</strong>已完成</span></div>
-      <div className="top-actions desktop-workflow-actions"><button onClick={() => setEditor({ mode: "import", source: "" })}><Upload size={15} />导入 Workflow</button><button onClick={() => setEditor({ mode: "edit", source: group.releases[0].sourceMarkdown ?? group.releases[0].sourceYaml })}><FilePenLine size={15} />编辑 Workflow</button><button className="primary" onClick={() => setEditor({ mode: "create", source: newWorkflowSource() })}><Plus size={15} />新建 Workflow</button></div>
-      <button className="mobile-workflow-menu-button" aria-label="Workflow 操作" aria-expanded={mobileActionsOpen} onClick={() => setMobileActionsOpen((value) => !value)}><MoreHorizontal size={19} /></button>
-      {mobileActionsOpen && <div className="mobile-workflow-menu">
-        <button onClick={() => { setMobileActionsOpen(false); setEditor({ mode: "import", source: "" }); }}><Upload size={15} />导入 Workflow</button>
-        <button onClick={() => { setMobileActionsOpen(false); setEditor({ mode: "edit", source: group.releases[0].sourceMarkdown ?? group.releases[0].sourceYaml }); }}><FilePenLine size={15} />编辑 Workflow</button>
-        <button onClick={() => { setMobileActionsOpen(false); setEditor({ mode: "create", source: newWorkflowSource() }); }}><Plus size={15} />新建 Workflow</button>
-      </div>}
-    </header>
-    {projectId !== "all" && visibleProjects.map((instance) => <ExecutionControls key={instance.id} instance={instance} cards={data.cards ?? []} refresh={refresh} />)}
-    <div className={`workflow-workspace ${libraryCollapsed ? "library-collapsed" : ""} ${selected ? "with-drawer" : ""}`}>
-      <aside className="workflow-library" aria-label="Workflow 列表" aria-hidden={libraryCollapsed} inert={libraryCollapsed ? true : undefined}>
-        <div className="library-head"><strong>Workflows</strong><span>{groups.length}</span><button aria-label="收起 Workflow 列表" title="收起 Workflow 列表" onClick={() => setLibraryCollapsed(true)}><Icons.PanelLeftClose size={15} /></button></div>
-        {groups.map((entry) => {
-          const shas = new Set(entry.releases.map((release) => release.workflowSha256));
-          const count = (data?.instances ?? []).filter((instance) => shas.has(instance.workflowSha256)).length;
-          return <button className={entry.id === group.id ? "selected" : ""} title={entry.name} key={entry.id} onClick={() => { setWorkflowId(entry.id); setProjectId("all"); }}><span className="workflow-signal" /><div><strong>{entry.name}</strong><small>{count} 个项目 · {entry.releases[0].version}</small></div></button>;
-        })}
-      </aside>
-      {libraryCollapsed && <button className="workflow-library-peek" aria-label="展开 Workflow 列表" title="展开 Workflow 列表" onClick={() => setLibraryCollapsed(false)}><Icons.PanelLeftOpen size={16} /></button>}
-      <main className="workflow-runway">
-        <div className="runway-toolbar">
-          <div className="release-identity"><span className="mono">{pinnedRelease?.version}</span><strong>{stages.length} 个阶段</strong><small>SHA {pinnedRelease?.workflowSha256.slice(0, 12)}</small></div>
-          <div className="runway-actions">
-            <label className="mobile-workflow-filter"><span>Workflow</span><select value={workflowId} onChange={(event) => { setWorkflowId(event.target.value); setProjectId("all"); }}>{groups.map((entry) => <option key={entry.id} value={entry.id}>{entry.name} · {entry.releases[0].version}</option>)}</select><ChevronDown size={14} /></label>
-            <label className="project-filter"><span>查看项目</span><select value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="all">全部项目（{projects.length}）</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><ChevronDown size={14} /></label>
-            <button className="workflow-project-shortcut" onClick={() => onNewProject(group.releases[0])}><Plus size={13} />用最新版本新建项目</button>
+  const liveCountFor = (entry) => {
+    const shas = new Set(entry.releases.map((release) => release.workflowSha256));
+    return (data?.instances ?? []).filter((instance) => shas.has(instance.workflowSha256) && projectScope(instance) === "live").length;
+  };
+  const focusedProject = projectId === "all" ? null : projects.find((project) => project.id === projectId);
+
+  return <div className="workflow-screen workflow-studio factory-studio">
+    <header className="topbar workflow-topbar factory-topbar">
+      <div className="workflow-title">
+        <span className="workflow-v-avatar"><img src="/v-avatar.jpg" alt="V" /><i /></span>
+        <button className="factory-switcher" aria-haspopup="listbox" aria-expanded={switcherOpen} aria-label={`当前 Workflow：${group.name}，点击切换`} onClick={() => setSwitcherOpen((value) => !value)}>
+          <span className="factory-switcher-label">Workflow</span>
+          <span className="factory-switcher-row"><h1>{group.name}</h1><span className="factory-switcher-hint">切换<ChevronDown size={15} /></span></span>
+        </button>
+        {switcherOpen && <>
+          <div className="factory-scrim" onClick={() => setSwitcherOpen(false)} />
+          <div className="factory-switcher-menu" role="listbox" aria-label="切换 Workflow">
+            {groups.map((entry) => ({ entry, live: liveCountFor(entry) })).sort((left, right) => (right.live > 0) - (left.live > 0)).map(({ entry, live }) => {
+              return <button role="option" aria-selected={entry.id === group.id} className={entry.id === group.id ? "selected" : ""} key={entry.id} onClick={() => { setWorkflowId(entry.id); setProjectId("all"); setSwitcherOpen(false); }}>
+                <span className={`factory-switcher-dot ${live ? "is-live" : ""}`} /><strong>{entry.name}</strong><small>{live ? `在产 ${live}` : entry.releases[0].version}</small>
+              </button>;
+            })}
           </div>
+        </>}
+      </div>
+      <FactoryStatus counts={factory} />
+      <FactoryMetrics counts={factory} doneToday={factory.doneToday} />
+      <div className="factory-actions">
+        <button className="primary" onClick={() => onNewProject(group.releases[0])}><Plus size={15} />新建项目</button>
+        <button className="factory-more" aria-label="Workflow 操作" aria-expanded={mobileActionsOpen} onClick={() => setMobileActionsOpen((value) => !value)}><MoreHorizontal size={18} /></button>
+        {mobileActionsOpen && <>
+          <div className="factory-scrim" onClick={() => setMobileActionsOpen(false)} />
+          <div className="factory-more-menu">
+            <button onClick={async () => { setMobileActionsOpen(false); try { const source = await api(`/api/workflows/${group.releases[0].workflowSha256}/source`); setEditor({ mode: "edit", source: source.sourceMarkdown ?? source.sourceYaml ?? "" }); } catch (reason) { setEditor(null); } }}><FilePenLine size={15} />编辑这个 Workflow</button>
+            <button onClick={() => { setMobileActionsOpen(false); setEditor({ mode: "import", source: "" }); }}><Upload size={15} />导入 Workflow</button>
+            <button onClick={() => { setMobileActionsOpen(false); setEditor({ mode: "create", source: newWorkflowSource() }); }}><Plus size={15} />新建 Workflow</button>
+            <small>{pinnedRelease?.version} · {runwayStages.length === stages.length ? `${stages.length} 个阶段` : `本批走 ${runwayStages.length}/${stages.length} 个阶段`} · SHA {pinnedRelease?.workflowSha256.slice(0, 12)}</small>
+          </div>
+        </>}
+      </div>
+    </header>
+    <div className={`workflow-workspace factory-workspace ${selected ? "with-drawer" : ""}`}>
+      <main className="workflow-runway">
+        <div className="runway-toolbar factory-toolbar">
+          <div className="factory-scope" role="tablist" aria-label="项目范围">{[["live", "在产"], ["delivered", "已交付"], ["shelved", "搁置"], ["all", "全部"]].map(([id, title]) => <button role="tab" aria-selected={scope === id && !focusedProject} className={scope === id && !focusedProject ? "selected" : ""} key={id} onClick={() => { setScope(id); setProjectId("all"); }}>{title}<span>{scopeCounts[id]}</span></button>)}</div>
+          {focusedProject && <button className="factory-focus" onClick={() => setProjectId("all")}><span>只看</span><strong>{focusedProject.name}</strong><X size={13} /></button>}
         </div>
+        <FactoryOverview scope={scope} stages={runwayStages} projects={visibleProjects} focused={projectId !== "all"} renderControls={(instance) => <ExecutionControls instance={instance} cards={data.cards ?? []} refresh={refresh} />} taskIndex={taskIndex} releaseBySha={releaseBySha} needsYou={needsYou} onSelect={setSelected} onOpenProject={setProjectId} />
         <nav className="mobile-stage-nav" aria-label="Workflow 阶段">
-          {stages.map((stage, index) => {
+          {runwayStages.map((stage, index) => {
             const tasks = taskIndex.get(stage.id) ?? [];
             const summary = summarizeStatuses(tasks);
             const tone = ["running", "review", "blocked", "ready", "done"].find((status) => summary[status]) ?? "empty";
             return <button className={`${mobileStageId === stage.id ? "selected" : ""} state-${tone}`} key={stage.id} onClick={() => setMobileStageId(stage.id)}><span>{String(index + 1).padStart(2, "0")}</span><strong>{stage.title}</strong><small>{tasks.length ? `${tasks.length} 个任务` : "未开始"}</small></button>;
           })}
         </nav>
-        <div className="stage-runway" style={{ "--stage-count": stages.length }}>
+        <div className="stage-runway" style={{ "--stage-count": runwayStages.length }}>
           <div className="stage-rail" />
-          {stages.map((stage, index) => <StageLane key={stage.id} stage={stage} index={index} mobileSelected={mobileStageId === stage.id} tasks={taskIndex.get(stage.id) ?? []} onSelect={setSelected} onBulkApprove={(cards) => { setBulkApproval({ cards, stage }); setBulkEvidence(""); setBulkError(""); }} />)}
+          {runwayStages.map((stage, index) => <StageLane key={stage.id} stage={stage} index={index} expected={stageExpected(stage, visibleProjects)} mobileSelected={mobileStageId === stage.id} tasks={taskIndex.get(stage.id) ?? []} onSelect={setSelected} onBulkApprove={(cards) => { setBulkApproval({ cards, stage }); setBulkEvidence(""); setBulkError(""); }} />)}
         </div>
       </main>
-      <Drawer card={selected} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onClose={() => setSelected(null)} onDecide={decide} onRetry={retry} />
+      {selected && <div className="factory-drawer-scrim" onClick={() => setSelected(null)} />}
+      <Drawer card={selected} context={drawerContextFromTask(allTasks.find((task) => task.card?.id === selected?.id), stages)} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onClose={() => setSelected(null)} onDecide={decide} onRetry={retry} />
     </div>
     {editor && <WorkflowEditor initialSource={editor.source} mode={editor.mode} onClose={() => setEditor(null)} onPublished={async () => { setEditor(null); await refresh(true); }} />}
     {bulkApproval && <div className="workflow-modal bulk-approval-modal" role="dialog" aria-modal="true" aria-label="批量审核">
@@ -338,14 +517,108 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
   </div>;
 }
 
-function StageLane({ stage, index, mobileSelected, tasks, onSelect, onBulkApprove }) {
-  const summary = summarizeStatuses(tasks);
-  const isLive = (summary.running ?? 0) > 0;
+function StageLane({ stage, index, expected, mobileSelected, tasks, onSelect, onBulkApprove }) {
+  // Finished work is the factory's output: it stays on the lane as a quiet
+  // checklist under the work still moving, newest first.
+  const [showAllDone, setShowAllDone] = useState(false);
+  const counts = countByKind(tasks);
+  const isLive = counts.running > 0;
   const reviewCards = tasks.filter((task) => task.status === "review" && task.card).map((task) => task.card);
+  const shown = tasks.filter((task) => task.attention.kind !== "done");
+  const done = tasks.filter((task) => task.attention.kind === "done").sort((left, right) => finishedAt(right) - finishedAt(left));
+  const total = Math.max(expected ?? 0, tasks.length);
+  const doneShown = showAllDone ? done : done.slice(0, DONE_PREVIEW);
   return <section className={`stage-lane ${isLive ? "is-live" : ""} ${mobileSelected ? "mobile-selected" : ""}`}>
     <header><span className="stage-index">{String(index + 1).padStart(2, "0")}</span><div><strong>{stage.title}</strong><small>{stage.scope === "content-item" ? "每条内容" : "整个项目"} · {stage.actor === "human" ? "人工" : "Agent"}</small></div></header>
-    <div className="stage-counts">{Object.entries(summary).map(([status, count]) => <span className={`state-${status}`} key={status}>{statusLabel(status)} {count}</span>)}{tasks.length === 0 && <span>尚未开始</span>}{reviewCards.length > 1 && <button className="bulk-review-button" onClick={() => onBulkApprove(reviewCards)}>批量通过 {reviewCards.length}</button>}</div>
-    <div className="stage-tasks">{tasks.map((task) => <button key={`${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}-${task.card?.id ?? task.attempt}`} className={`stage-task state-${task.status}`} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}><span className="task-state" /><div><strong>{task.contentTitle ?? task.projectName}</strong><small>{task.contentTitle ? task.projectName : task.projectId}</small></div><span className="task-action">{taskActionLabel(task)}</span></button>)}</div>
+    {total > 0 && <div className="factory-lane-progress" aria-label={`已完成 ${counts.done} / ${total}`}><div><span style={{ width: `${(counts.done / total) * 100}%` }} /></div><small>{counts.done === total ? "全部完成" : `${counts.done}/${total}`}</small></div>}
+    <div className="stage-counts">
+      {ATTENTION_KINDS.filter(([kind]) => kind !== "done" && counts[kind]).map(([kind, title]) => <span className={`attention-${kind}`} key={kind}>{title} {counts[kind]}</span>)}
+      {tasks.length === 0 && <span>尚未开始</span>}
+      {reviewCards.length > 1 && <button className="bulk-review-button" onClick={() => onBulkApprove(reviewCards)}>批量通过 {reviewCards.length}</button>}
+    </div>
+    <div className="stage-tasks">
+      {shown.map((task) => <button key={`${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}-${task.card?.id ?? task.attempt}`} className={`stage-task state-${task.status} attention-${task.attention.kind}`} title={task.contentTitle ? `${task.contentTitle}\n${task.projectName}` : task.projectName} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}><span className="task-state" /><div><strong>{task.contentTitle ?? task.projectName}</strong><small>{task.contentTitle ? task.projectName : task.projectId}</small></div><span className="task-action">{attentionLabel(task)}</span></button>)}
+      {done.length > 0 && <div className="factory-done" aria-label={`已完成 ${done.length}`}>
+        <div className="factory-done-head"><Check size={13} />已完成 {done.length}</div>
+        {doneShown.map((task) => <button className="factory-done-row" title={task.contentTitle ?? task.projectName} key={`${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}`} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}><Check size={12} /><span>{task.contentTitle ?? task.projectName}</span></button>)}
+        {done.length > DONE_PREVIEW && <button className="factory-done-more" onClick={() => setShowAllDone((value) => !value)}>{showAllDone ? "收起" : `还有 ${done.length - DONE_PREVIEW} 条`}</button>}
+      </div>}
+    </div>
+  </section>;
+}
+
+const DONE_PREVIEW = 6;
+
+function finishedAt(task) {
+  const value = task.card?.updatedAt ?? task.updatedAt;
+  return typeof value === "number" ? value : Date.parse(value ?? 0) || 0;
+}
+
+const ATTENTION_KINDS = [["needs-you", "需要你"], ["running", "进行中"], ["healing", "自愈中"], ["queued", "排队"], ["stale", "已搁置"], ["done", "已完成"]];
+
+// "备料 + Brief 编译" -> "备料"; stage titles are written for the lane header.
+function shortStageTitle(title = "") {
+  return title.split(/\s*[+＋（(|｜]\s*/)[0].trim() || title;
+}
+
+function scopeTitle(scope) {
+  return ({ live: "在产", delivered: "已交付", shelved: "搁置", all: "" })[scope] ?? "";
+}
+
+function FactoryOverview({ scope, stages, projects, focused = false, renderControls, taskIndex, releaseBySha, needsYou, onSelect, onOpenProject }) {
+  const tasksByProject = useMemo(() => {
+    const result = new Map();
+    for (const tasks of taskIndex.values()) {
+      for (const task of tasks) result.set(task.projectId, [...(result.get(task.projectId) ?? []), task]);
+    }
+    return result;
+  }, [taskIndex]);
+  return <section className="factory-overview" aria-label="工厂现场">
+    {needsYou.length > 0 && <div className="factory-inbox">
+      <header><strong>需要你</strong><span>{needsYou.length} 件</span></header>
+      {needsYou.map((task) => <button key={`${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}`} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}>
+        <span className="factory-inbox-dot" />
+        <div><strong>{task.attention.reason}</strong><small>{task.contentTitle ? `${task.contentTitle} · ` : ""}{task.projectName}</small></div>
+        <span className="factory-inbox-open">处理</span>
+      </button>)}
+    </div>}
+    {(scope === "shelved" || scope === "all") && projects.some((project) => projectScope(project) === "shelved") && <p className="factory-note">搁置的项目暂停后超过 3 天没有动静。它们剩下的卡片只供翻看，不计入「需要你」。</p>}
+    {projects.length > 0 && <div className={`factory-projects ${focused ? "is-focused" : ""}`}>
+      {projects.map((project) => {
+        const release = releaseBySha.get(project.workflowSha256);
+        const tasks = tasksByProject.get(project.id) ?? [];
+        const counts = countByKind(tasks);
+        const progress = projectProgress(release?.manifest?.spec?.stages ?? [], project);
+        const expected = Math.max(progress.expected, tasks.length, 1);
+        const share = (value) => `${(value / expected) * 100}%`;
+        const fraction = progress.splitting ? "拆单中" : `${progress.estimated ? "约 " : ""}${counts.done}/${expected}`;
+        const Tag = focused ? "div" : "button";
+        return <Tag className={`factory-project ${focused ? "is-focused" : ""}`} key={project.id} onClick={focused ? undefined : () => onOpenProject(project.id)}>
+          <div className="factory-project-head">
+            <strong>{project.name}</strong>
+            <span>{projectScope(project) === "shelved" ? "已搁置 · " : project.status === "paused" ? "已暂停 · " : ""}{counts["needs-you"] ? `${counts["needs-you"]} 件等你 · ` : ""}{fraction}</span>
+          </div>
+          <div className="factory-bar" aria-hidden="true">
+            <span className="bar-done" style={{ width: share(counts.done) }} />
+            <span className="bar-running" style={{ width: share(counts.running) }} />
+            <span className="bar-healing" style={{ width: share(counts.healing) }} />
+            <span className="bar-needs-you" style={{ width: share(counts["needs-you"]) }} />
+          </div>
+          <div className="factory-project-stages">
+            {stages.map((stage) => {
+              const planned = stageExpected(stage, [project]);
+              if (!planned) return null;
+              const stageTasks = tasks.filter((task) => task.stageId === stage.id);
+              const finished = stageTasks.filter((task) => task.attention.kind === "done").length;
+              const moving = stageTasks.some((task) => task.attention.kind === "running" || task.attention.kind === "healing");
+              return <span key={stage.id} className={finished >= planned ? "is-done" : moving ? "is-moving" : ""}>{shortStageTitle(stage.title)} <b>{finished}/{planned}</b></span>;
+            })}
+            {(counts.running + counts.healing) > 0 && <em>{counts.running + counts.healing} 个在做</em>}
+          </div>
+          {focused && renderControls?.(project)}
+        </Tag>;
+      })}
+    </div>}
   </section>;
 }
 
@@ -494,26 +767,97 @@ function ProjectInput({ name, contract, value, onChange }) {
   return <label className="project-field"><span>{labelText}{contract.required ? " *" : ""}</span><input type={contract.type === "number" ? "number" : name.toLowerCase().includes("url") ? "url" : "text"} value={value ?? ""} onChange={(event) => onChange(contract.type === "number" ? Number(event.target.value) : event.target.value)} required={contract.required === true} placeholder={projectInputPlaceholder(name)} /></label>;
 }
 
-function Projects({ data, onNewProject, onOpenProject, refresh }) {
+function Projects({ onScopeChange, data, onNewProject, onOpenProject, refresh }) {
+  const [scope, setScope] = useState("live");
+  useEffect(() => { onScopeChange(scope); }, [scope]);
   const [deleting, setDeleting] = useState(null);
   const [deleteError, setDeleteError] = useState("");
+  const rows = useMemo(() => {
+    const now = Date.now();
+    const cardsById = new Map((data?.cards ?? []).map((card) => [card.id, card]));
+    const releases = new Map((data?.workflows ?? []).map((release) => [release.workflowSha256, release]));
+    return (data?.instances ?? []).filter((instance) => instance.status !== "archived").map((instance) => {
+      const release = releases.get(instance.workflowSha256);
+      const runs = projectRuns(instance, { cardsById, now });
+      const counts = countByKind(runs);
+      const progress = projectProgress(release?.manifest?.spec?.stages ?? [], instance);
+      const doneToday = runs.filter((run) => run.attention.kind === "done" && isToday(run.card?.updatedAt ?? run.updatedAt)).length;
+      return { instance, release, counts, doneToday, progress, scope: projectScope(instance, now) };
+    }).sort((left, right) => Date.parse(right.instance.updatedAt) - Date.parse(left.instance.updatedAt));
+  }, [data]);
+  const scopeCounts = { live: 0, delivered: 0, shelved: 0, all: rows.length };
+  for (const row of rows) scopeCounts[row.scope] += 1;
+  const shown = rows.filter((row) => scope === "all" || row.scope === scope);
+  const totals = shown.reduce((sum, row) => {
+    for (const [kind, count] of Object.entries(row.counts)) sum[kind] = (sum[kind] ?? 0) + count;
+    return sum;
+  }, countByKind([]));
+  const doneToday = shown.reduce((sum, row) => sum + row.doneToday, 0);
   async function archiveProject(instance) {
     setDeleteError("");
     try {
-      await api(`/api/instances/${encodeURIComponent(instance.id)}/archive`, { method: "POST", body: JSON.stringify({ reason: "Archived from Live Board" }) });
+      await api(`/api/instances/${encodeURIComponent(instance.id)}/archive`, { method: "POST", body: JSON.stringify({ reason: "Archived from Projects" }) });
       setDeleting(null);
       await refresh(true);
     } catch (reason) { setDeleteError(reason.message); }
   }
-  return <div className="simple-screen projects-screen"><header className="topbar"><div><span className="section-label">V · Workflow instances</span><h1>Projects</h1><p className="topbar-copy">每个项目是一条由 V 驱动、锁定 Workflow 版本的生产线。</p></div><div className="top-actions"><button className="primary" onClick={onNewProject}><Plus size={15} />新建项目</button></div></header><div className="project-table"><div className="table-head"><span>Project</span><span>Workflow</span><span>视频任务</span><span>Status</span><span>Updated</span><span /></div>{(data?.instances ?? []).map((instance) => <div className="table-row" role="button" tabIndex="0" onClick={() => onOpenProject(instance.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onOpenProject(instance.id); }} key={instance.id}><strong className="project-name">{instance.name}</strong><span className="project-workflow mono">{instance.workflowSha256.slice(0, 12)}</span><span className="project-content">{instance.contentItems?.length ?? 0} 条 · {routeSummary(instance.contentItems)}</span><span className={`project-status status-${instance.status}`}>{instance.control?.fault ? "调度失败" : instance.status}</span><span className="project-updated">{new Date(instance.updatedAt).toLocaleString()}</span><button className="project-delete" aria-label={`归档项目 ${instance.name}`} title="归档项目" onClick={(event) => { event.stopPropagation(); setDeleteError(""); setDeleting(instance); }}><Trash2 size={15} /></button></div>)}</div>{deleting && <div className="confirm-scrim" role="dialog" aria-modal="true" aria-label="归档项目"><div className="confirm-dialog"><span className="confirm-icon"><Trash2 size={20} /></span><h2>归档这个项目？</h2><p><strong>{deleting.name}</strong> 将从默认视野中隐藏，卡片、Session、评论和产物保持原样，可随时恢复。运行中的项目不会被归档。</p>{deleteError && <div className="confirm-error">{deleteError}</div>}<div><button onClick={() => setDeleting(null)}>取消</button><button className="danger" onClick={() => archiveProject(deleting)}>归档项目</button></div></div></div>}</div>;
+  return <div className="simple-screen factory-studio factory-page">
+    <PageHeader eyebrow="Night Shift · 全部 Workflow" title="Projects" counts={totals} doneToday={doneToday} actions={<button className="primary" onClick={onNewProject}><Plus size={15} />新建项目</button>} />
+    <div className="runway-toolbar factory-toolbar">
+      <div className="factory-scope" role="tablist" aria-label="项目范围">{[["live", "在产"], ["delivered", "已交付"], ["shelved", "搁置"], ["all", "全部"]].map(([id, title]) => <button role="tab" aria-selected={scope === id} className={scope === id ? "selected" : ""} key={id} onClick={() => setScope(id)}>{title}<span>{scopeCounts[id]}</span></button>)}</div>
+    </div>
+    <div className="factory-project-list">
+      {shown.map(({ instance, release, counts, progress, scope: state }) => {
+        const expected = Math.max(progress.expected, counts.done + counts.running + counts.healing + counts["needs-you"] + counts.queued + counts.stale, 1);
+        const share = (value) => `${(value / expected) * 100}%`;
+        return <div className="factory-project-row" role="button" tabIndex="0" key={instance.id} onClick={() => onOpenProject(instance.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onOpenProject(instance.id); }}>
+          <div className="factory-project-row-main"><strong>{instance.name}</strong><small>{release?.name ?? instance.workflowSha256.slice(0, 12)} · {release?.version ?? ""}</small></div>
+          <div className="factory-project-row-progress">
+            <div className="factory-bar" aria-hidden="true"><span className="bar-done" style={{ width: share(counts.done) }} /><span className="bar-running" style={{ width: share(counts.running) }} /><span className="bar-healing" style={{ width: share(counts.healing) }} /><span className="bar-needs-you" style={{ width: share(counts["needs-you"]) }} /></div>
+            <span>{progress.splitting ? "拆单中" : `${progress.estimated ? "约 " : ""}${counts.done}/${expected}`}</span>
+          </div>
+          <span className={`factory-state state-${instance.control?.fault ? "fault" : counts["needs-you"] && state === "live" ? "needs-you" : state === "live" && instance.status === "paused" ? "paused" : state}`}>{instance.control?.fault ? "调度失败" : counts["needs-you"] && state === "live" ? `${counts["needs-you"]} 件等你` : state === "live" ? (instance.status === "paused" ? "已暂停" : "在产") : state === "delivered" ? "已交付" : "已搁置"}</span>
+          <time>{formatBoardAge(instance.updatedAt)}</time>
+          <button className="project-delete" aria-label={`归档项目 ${instance.name}`} title="归档项目" onClick={(event) => { event.stopPropagation(); setDeleteError(""); setDeleting(instance); }}><Trash2 size={15} /></button>
+        </div>;
+      })}
+      {shown.length === 0 && <p className="factory-empty">这里没有项目</p>}
+    </div>
+    {deleting && <div className="confirm-scrim" role="dialog" aria-modal="true" aria-label="归档项目"><div className="confirm-dialog"><span className="confirm-icon"><Trash2 size={20} /></span><h2>归档这个项目？</h2><p><strong>{deleting.name}</strong> 将从默认视野中隐藏，卡片、Session、评论和产物保持原样，可随时恢复。运行中的项目不会被归档。</p>{deleteError && <div className="confirm-error">{deleteError}</div>}<div><button onClick={() => setDeleting(null)}>取消</button><button className="danger" onClick={() => archiveProject(deleting)}>归档项目</button></div></div></div>}
+  </div>;
 }
 
-function Agents({ data }) {
-  const agents = [...new Set([
-    ...(data?.cards ?? []).map((card) => card.agentId),
-    ...(data?.instances ?? []).flatMap((instance) => Object.values(instance.agentBindings ?? {})),
-  ].filter(Boolean))];
-  return <div className="simple-screen agents-screen"><header className="topbar"><div><span className="section-label">OpenClaw workers</span><h1>Agents</h1><p className="topbar-copy">当前参与 Workflow 与原生 Workboard 的 Agent。</p></div></header><div className="agent-list">{agents.length ? agents.map((agent) => <div className="agent-row" key={agent}><span className="agent-avatar"><Icons.Bot size={18} /></span><div><strong>{agent}</strong><span>Workflow binding or native Workboard assignment</span></div><span className="live-dot" /></div>) : <p className="empty-copy">No agent binding has been declared.</p>}</div></div>;
+function Agents({ onScopeChange, data }) {
+  useEffect(() => { onScopeChange("live"); }, []);
+  const agents = useMemo(() => {
+    const now = Date.now();
+    const entries = boardEntries(data);
+    const names = [...new Set([
+      ...(data?.cards ?? []).map((card) => card.agentId),
+      ...(data?.instances ?? []).flatMap((instance) => Object.values(instance.agentBindings ?? {})),
+    ].filter(Boolean))];
+    return names.map((name) => {
+      const own = entries.filter((entry) => entry.card.agentId === name);
+      const projects = (data?.instances ?? []).filter((instance) => projectScope(instance, now) === "live" && Object.values(instance.agentBindings ?? {}).includes(name));
+      return {
+        name,
+        running: own.filter((entry) => entry.attention.kind === "running").length,
+        doneToday: data?.agentDoneToday?.[name] ?? own.filter((entry) => entry.attention.kind === "done" && isToday(entry.card.updatedAt)).length,
+        projects,
+      };
+    }).sort((left, right) => right.running - left.running || right.projects.length - left.projects.length);
+  }, [data]);
+  return <div className="simple-screen factory-studio factory-page">
+    <PageHeader eyebrow="OpenClaw workers" title="Agents" />
+    <div className="factory-agent-grid">
+      {agents.map((agent) => <div className={`factory-agent ${agent.running ? "is-live" : ""}`} key={agent.name}>
+        <div className="factory-agent-head"><span className="agent-avatar"><Icons.Bot size={20} /></span><div><strong>{agent.name}</strong><small>{agent.running ? `${agent.running} 个任务在做` : "现在空闲"}</small></div><span className="factory-agent-dot" /></div>
+        <div className="factory-agent-stats"><span><b>{agent.running}</b>进行中</span><span><b>{agent.doneToday}</b>今天完成</span><span><b>{agent.projects.length}</b>在产项目</span></div>
+        {agent.projects.length > 0 && <div className="factory-agent-projects">{agent.projects.slice(0, 6).map((project) => <span key={project.id}>{project.name}</span>)}{agent.projects.length > 6 && <span>还有 {agent.projects.length - 6} 个</span>}</div>}
+      </div>)}
+      {agents.length === 0 && <p className="factory-empty">还没有 Agent 绑定到 Workflow</p>}
+    </div>
+  </div>;
 }
 
 function label(card, prefix) { return card.labels?.find((entry) => entry.startsWith(`${prefix}:`))?.slice(prefix.length + 1); }
@@ -673,6 +1017,9 @@ function indexStageTasks(stages, projects, cards) {
   const result = new Map(stages.map((stage) => [stage.id, []]));
   const stageById = new Map(stages.map((stage) => [stage.id, stage]));
   const projectsById = new Map(projects.map((project) => [project.id, project]));
+  const operationByCard = new Map(projects.flatMap((project) => (project.operations ?? []).map((operation) => [operation.ownerCardId, operation])));
+  const now = Date.now();
+  const shelvedProjects = new Set(projects.filter((project) => projectScope(project, now) === "shelved").map((project) => project.id));
   for (const project of projects) {
     const contentById = new Map((project.contentItems ?? []).map((item) => [item.id, item]));
     const runs = [
@@ -725,14 +1072,15 @@ function indexStageTasks(stages, projects, cards) {
       const current = latest.get(key);
       if (!current || preferTask(task, current)) latest.set(key, task);
     }
-    result.set(stageId, [...latest.values()].sort((left, right) => statusOrder(left.status) - statusOrder(right.status) || left.projectName.localeCompare(right.projectName)));
+    const tasksWithAttention = [...latest.values()].map((task) => ({ ...task, attention: taskAttention(task, { operation: operationByCard.get(task.card?.id ?? task.cardId), shelved: shelvedProjects.has(task.projectId) }) }));
+    result.set(stageId, tasksWithAttention.sort((left, right) => attentionOrder(left.attention.kind) - attentionOrder(right.attention.kind) || left.projectName.localeCompare(right.projectName)));
   }
   return result;
 }
 
 function withDecisionContext(card, data) {
   if (!card || !data) return card;
-  const fresh = (data.cards ?? []).find((entry) => entry.id === card.id) ?? card;
+  const fresh = card.fullDetail ? card : (data.cards ?? []).find((entry) => entry.id === card.id) ?? card;
   const instanceId = cardLabel(fresh, "instance");
   const stageId = fresh.metadata?.automation?.stageId ?? label(fresh, "stage");
   const contentItemId = fresh.metadata?.automation?.contentItemId ?? label(fresh, "content-item") ?? null;
@@ -772,6 +1120,7 @@ function withDecisionContext(card, data) {
 
 function missingApprovalFor(instance, stage, contentItemId = null) {
   if (!stage?.approval?.before) return false;
+  if (scopeAuthorizes(instance, stage.approval.before)) return false;
   const requiredScope = stage.approval.scope ?? "stage";
   return !(instance?.approvals ?? []).some((approval) =>
     approval.status === "approved" &&
@@ -787,6 +1136,17 @@ function summarizeStatuses(tasks) {
   return tasks.reduce((summary, task) => ({ ...summary, [task.status]: (summary[task.status] ?? 0) + 1 }), {});
 }
 
+function attentionOrder(kind) { return ({ "needs-you": 0, running: 1, healing: 2, queued: 3, stale: 4, done: 5 })[kind] ?? 6; }
+
+function attentionLabel(task) {
+  const { kind, reason } = task.attention ?? {};
+  if (kind === "needs-you" || kind === "healing") return reason;
+  if (kind === "stale") return `已搁置 · ${reason}`;
+  if (kind === "running") return "Agent 在做";
+  if (kind === "done") return taskActionLabel(task);
+  return statusLabel(task.status);
+}
+
 function statusOrder(status) { return ({ running: 0, retry_wait: 1, review: 2, blocked: 3, ready: 4, done: 5 })[status] ?? 6; }
 
 function preferTask(candidate, current) {
@@ -797,7 +1157,7 @@ function preferTask(candidate, current) {
 }
 
 function statusLabel(status) {
-  return ({ ready: "待开始", running: "进行中", retry_wait: "自动恢复中", review: "待审核", blocked: "已阻塞", done: "已完成", cancelled: "已取消" })[status] ?? status;
+  return ({ ready: "待开始", todo: "待开始", planned: "待开始", backlog: "待开始", triage: "待开始", scheduled: "定时待发", running: "进行中", retry_wait: "自动恢复中", review: "待审核", blocked: "已阻塞", done: "已完成", cancelled: "已取消" })[status] ?? status;
 }
 
 function displayedTaskStatus(run, card) {
