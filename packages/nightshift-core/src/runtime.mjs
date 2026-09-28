@@ -5,7 +5,7 @@ import {
   validateWorkflow,
   WorkflowValidationError,
 } from "./workflow.mjs";
-import { actionKey, buildAgentBrief, nativeActionKey, planNextActions, requiredApproval, resolveApprovalBinding, stageTimeoutSeconds } from "./orchestrator.mjs";
+import { actionKey, buildAgentBrief, nativeActionKey, planNextActions, requiredApproval, resolveApprovalBinding, stageTimeoutSeconds, WORKBOARD_NOTES_LIMIT } from "./orchestrator.mjs";
 import { classifyTerminalFailure, infrastructureFailureSummary, scheduleAutomaticRetry } from "./failure-policy.mjs";
 import { normalizeProjectCollaboration } from "./project.mjs";
 
@@ -20,6 +20,8 @@ export class NightShiftRuntime {
     // A blocked card whose Agent Session has written nothing for this long has
     // lost its run: the Worker that carried it exited without a terminal message.
     orphanedSessionMs = 45 * 60_000,
+    // The 需要你 queue: turns a card that stopped for good into a decision request.
+    needsYou = null,
     // The clock behind the inspection budgets and the orphaned-Session age.
     now = () => Date.now(),
     store,
@@ -37,6 +39,7 @@ export class NightShiftRuntime {
     this.sessionInspectionStarts = [];
     this.deferredSessionInspections = new Set();
     this.orphanedSessionMs = positiveInteger(orphanedSessionMs, "orphanedSessionMs");
+    this.needsYou = needsYou;
     this.now = now;
     this.nextReconcileAt = 0;
     this.store = store;
@@ -206,6 +209,12 @@ export class NightShiftRuntime {
           });
         }
       }
+      if (this.needsYou) {
+        const operation = stage.sideEffects?.length
+          ? this.store.listExternalOperations(instanceId).filter((entry) => entry.ownerCardId === card.id).at(-1) ?? null
+          : null;
+        this.needsYou.observe({ card, instance, stage, stageId, contentItemId, status, failure, summary, operation });
+      }
       const run = {
         instanceId,
         stageId,
@@ -330,7 +339,8 @@ export class NightShiftRuntime {
       }
     } catch (error) {
       const reason = boundedReason(`Terminal Agent Session did not satisfy the Workflow output contract: ${error.message}`);
-      const failure = contractFailure(error);
+      // The Agent's own closing words: when it stopped on purpose, they say why.
+      const failure = { ...contractFailure(error), ...(terminalText ? { agentReport: boundedSummary(terminalText) } : {}) };
       const blocked = await this.workboard.blockCard(card.id, { reason });
       Object.assign(card, blocked);
       this.store.appendEvent({
@@ -397,6 +407,56 @@ export class NightShiftRuntime {
       payload: { cardId: card.id, contentItemId, failure, stageId, summary, terminalAt },
     });
     return { status: "blocked", summary, failure };
+  }
+
+  // A person's answer to a 需要你 request. Retry carries their choice and note
+  // into the next attempt's brief; pause stops the project and leaves the
+  // request open until someone restarts it and decides. Deciding twice returns
+  // the first decision.
+  async decide({ decisionId, optionId, note = null, actor, applyToGroup = false }) {
+    const request = this.store.getDecisionRequest(decisionId);
+    if (!request) throw Object.assign(new Error(`Unknown decision request ${decisionId}`), { statusCode: 404 });
+    if (request.status !== "open") return { request, affectedCardIds: [], alreadyDecided: true };
+    const option = request.options.find((entry) => entry.id === optionId);
+    if (!option) throw Object.assign(new Error(`Unknown option ${optionId}`), { statusCode: 400 });
+    if (!actor) throw Object.assign(new Error("actor is required"), { statusCode: 400 });
+    if (option.effect === "pause") {
+      this.store.updateInstanceStatus(request.instanceId, "paused");
+      this.store.appendEvent({
+        instanceId: request.instanceId,
+        type: "decision.paused",
+        payload: { decisionId, actor, note },
+      });
+      return { request: this.store.getDecisionRequest(decisionId), affectedCardIds: [], alreadyDecided: false };
+    }
+    if (option.effect !== "retry") throw Object.assign(new Error(`Option effect ${option.effect} is not supported yet`), { statusCode: 400 });
+    const targets = applyToGroup
+      ? this.store.listDecisionRequests({ instanceId: request.instanceId, status: "open" }).filter((entry) => entry.groupKey === request.groupKey)
+      : [request];
+    const affectedCardIds = [];
+    const errors = [];
+    for (const target of targets) {
+      const decisionNote = [`${actor} 的决定：${option.label}`, option.note, note].filter(Boolean).join("\n");
+      try {
+        await this.retry({
+          actor,
+          cardId: target.cardId,
+          contentItemId: target.contentItemId,
+          evidence: `需要你 ${target.id}：${option.label}${note ? `（${note}）` : ""}`,
+          instanceId: target.instanceId,
+          stageId: target.stageId,
+          decisionNote,
+        });
+        this.store.decideRequest(target.id, { optionId, note, actor });
+        affectedCardIds.push(target.cardId);
+      } catch (error) {
+        errors.push({ decisionId: target.id, cardId: target.cardId, error: error.message });
+      }
+    }
+    if (affectedCardIds.length === 0 && errors.length) {
+      throw Object.assign(new Error(errors[0].error), { statusCode: 409, errors });
+    }
+    return { request: this.store.getDecisionRequest(decisionId), affectedCardIds, alreadyDecided: false, errors };
   }
 
   consumeSessionInspectionBudget(now = this.now()) {
@@ -609,7 +669,7 @@ export class NightShiftRuntime {
     }
   }
 
-  async retry({ actor, cardId, contentItemId, evidence, instanceId, stageId }) {
+  async retry({ actor, cardId, contentItemId, evidence, instanceId, stageId, decisionNote = null }) {
     const instance = this.store.getInstance(instanceId);
     if (!instance) throw new Error(`Unknown instance ${instanceId}`);
     const release = this.store.getRelease(instance.workflowSha256)?.manifest;
@@ -626,7 +686,7 @@ export class NightShiftRuntime {
     if (contentItemId && !contentItem) throw new Error(`Unknown content item ${contentItemId}`);
     await this.workboard.updateCard(cardId, {
       idempotencyKey: nativeActionKey(actionKey(release, instance, stage, "run", contentItem)),
-      notes: buildAgentBrief(release, instance, stage, contentItem, this.store.listContentItems(instanceId)),
+      notes: withDecisionNote(buildAgentBrief(release, instance, stage, contentItem, this.store.listContentItems(instanceId)), decisionNote),
       maxRetries: stage.retry?.maxAttempts ?? 1,
       maxRuntimeSeconds: stageTimeoutSeconds(stage.timeout),
     });
@@ -971,6 +1031,16 @@ function inferContractFailurePhase(error) {
   if (/(artifact|deliverable|manifest|output)/.test(message)) return "outputs";
   if (/(external side effect|checkpoint|ledger)/.test(message)) return "side_effect";
   return "unknown";
+}
+
+// The person's decision goes on top of the regenerated brief, inside the
+// native Workboard note limit.
+function withDecisionNote(brief, note) {
+  if (!note) return brief;
+  const block = `## 人工决定\n${note}\n\n`;
+  const room = WORKBOARD_NOTES_LIMIT - brief.length;
+  if (room <= 40) return brief;
+  return `${block.length <= room ? block : `${block.slice(0, room - 2)}\n\n`}${brief}`;
 }
 
 function timestampMs(value) {

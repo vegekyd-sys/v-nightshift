@@ -136,6 +136,28 @@ async function run(input) {
       method: "PATCH",
     });
   }
+  // 需要你: cards that stopped and wait on a person.
+  if (resource === "decisions" && action === "list") {
+    const params = new URLSearchParams();
+    const instanceId = option(input, "--project");
+    if (instanceId) params.set("instanceId", instanceId);
+    params.set("status", option(input, "--status") ?? "open");
+    return api(`/api/decisions?${params}`);
+  }
+  if (resource === "decisions" && action === "get" && subject) return api(`/api/decisions/${encodeURIComponent(subject)}`);
+  if (resource === "decisions" && action === "decide" && subject) {
+    const optionId = option(input, "--option");
+    if (!optionId) throw new Error("decisions decide requires --option <retry|pause|…>");
+    return api(`/api/decisions/${encodeURIComponent(subject)}`, {
+      body: JSON.stringify({
+        optionId,
+        note: option(input, "--note") ?? undefined,
+        actor: option(input, "--actor") ?? "Night Shift operator",
+        applyToGroup: input.includes("--apply-to-group"),
+      }),
+      method: "POST",
+    });
+  }
   if (resource === "operations" && ["reserve", "checkpoint"].includes(action) && subject) {
     if (action === "reserve") {
       const requestHash = option(input, "--request-hash");
@@ -181,7 +203,7 @@ async function run(input) {
       method: "POST",
     });
   }
-  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|monitor|preflight|create|start|pause|archive|restore | projects inputs <id> --file <json> | projects collaboration <id> --to <oc_…|user:ou_…> [--by <ou_…>] | governance audit [--refresh] | governance archive|restore <manifest.json> [--apply] | operations reserve|checkpoint <card-id> | cards list|session|approve|changes|reject|retry");
+  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|monitor|preflight|create|start|pause|archive|restore | projects inputs <id> --file <json> | projects collaboration <id> --to <oc_…|user:ou_…> [--by <ou_…>] | decisions list [--project <id>] [--status open|decided] | decisions get <id> | decisions decide <id> --option <id> [--note <text>] [--apply-to-group] | governance audit [--refresh] | governance archive|restore <manifest.json> [--apply] | operations reserve|checkpoint <card-id> | cards list|session|approve|changes|reject|retry");
 }
 
 async function resolveWorkflow(project) {

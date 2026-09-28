@@ -20,6 +20,8 @@ import { loadPublicAuth, requiresPublicAuth, verifyPublicAuth, resolveOperatorId
 import { resolveCardDecisionContext } from "./decision-context.mjs";
 import { sendJson } from "./http-json.mjs";
 import {
+  NeedsYouTracker,
+  buildNeedsYou,
   CARD_LABEL_MAX,
   cardIsStartable,
   deliverableArtifactPaths,
@@ -108,12 +110,14 @@ const workboard = new WorkboardGatewayAdapter({
   startBurst: dispatchStartBurst,
   startIntervalMs: dispatchStartIntervalMs,
 });
+const needsYou = new NeedsYouTracker({ store });
 const runtime = new NightShiftRuntime({
   board,
   completionValidator: validateCompletion,
   dispatchMaxStarts: dispatchMaxStartsPerInstance,
   maxWorkboardActive: schedulerMaxWorkboardActive,
   orphanedSessionMs,
+  needsYou,
   store,
   workboard,
 });
@@ -308,6 +312,14 @@ async function handleApi(request, response, url) {
         cards: visibleCards(cardCache, visible).map(withCardLinks),
         releases: store.listReleases().map(withWorkflowLinks),
         operationsFor: (instanceId) => store.listExternalOperations(instanceId),
+      }),
+      // 需要你 is scope-independent: every project that is not shelved.
+      needsYou: buildNeedsYou({
+        store,
+        instances: visible,
+        cards: visibleCards(cardCache, visible),
+        releases: store.listReleases(),
+        pending: needsYou.pendingList(),
       }),
     }, { revalidate: true });
     return;
@@ -849,6 +861,45 @@ async function handleApi(request, response, url) {
     const result = await serializedTick(instanceId, { dispatch: true });
     await refreshCards({ cardIds: instanceCardIds(store, instanceId) });
     json(response, 200, result);
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/decisions") {
+    json(response, 200, {
+      decisions: store.listDecisionRequests({
+        instanceId: url.searchParams.get("instanceId") || null,
+        status: url.searchParams.get("status") ?? "open",
+      }),
+    });
+    return;
+  }
+  const decisionRequestMatch = url.pathname.match(/^\/api\/decisions\/([^/]+)$/);
+  if (decisionRequestMatch && request.method === "GET") {
+    const decision = store.getDecisionRequest(decodeURIComponent(decisionRequestMatch[1]));
+    if (!decision) {
+      json(response, 404, { error: "Decision request not found" });
+      return;
+    }
+    json(response, 200, decision);
+    return;
+  }
+  if (decisionRequestMatch && request.method === "POST") {
+    const body = await bodyJson(request);
+    try {
+      // The same identity rule as takeover and dispatch control: the signed-in
+      // operator on the public host, local:<name> on the loopback.
+      const actor = operatorIdentity(request, body);
+      const result = await serializedOperation(() => runtime.decide({
+        decisionId: decodeURIComponent(decisionRequestMatch[1]),
+        optionId: body.optionId,
+        note: body.note ?? null,
+        actor,
+        applyToGroup: body.applyToGroup === true,
+      }));
+      if (result.affectedCardIds.length) await refreshCards({ cardIds: result.affectedCardIds });
+      json(response, 200, result);
+    } catch (error) {
+      json(response, error.statusCode ?? 500, { error: error.message, errors: error.errors });
+    }
     return;
   }
   const retryMatch = url.pathname.match(/^\/api\/cards\/([^/]+)\/retry$/);
