@@ -35,6 +35,41 @@ export function normalizeDeliverablesManifest(input, { instanceId, contentItemId
   return manifest;
 }
 
+const VIDEO_ARTIFACT = /\.(mp4|webm|mov)$/i;
+
+// Workflows that stopped writing deliverables.json (星擎夜班 D 0.3.x) still
+// record the finished video in the stage handoff. Build the same manifest from
+// it, so the drawer can play what the Agent delivered. Only the recorded
+// artifact is exposed; QC is "none" because nothing here attests to it.
+export function deliverablesFromHandoffs(handoffs, { instanceId, contentItemId, title = null, asset = null }) {
+  const prefix = `content-items/${contentItemId}/`;
+  let video = null;
+  for (const handoff of handoffs) {
+    for (const output of handoff?.outputs ?? []) {
+      if (typeof output?.artifact === "string" && VIDEO_ARTIFACT.test(output.artifact)) video = output;
+    }
+  }
+  if (!video) return null;
+  const path = video.artifact.startsWith(prefix) ? video.artifact.slice(prefix.length) : video.artifact;
+  return {
+    version: 1,
+    instanceId,
+    contentItemId,
+    title: title ?? "最终成片",
+    proposal: {},
+    video: {
+      title: title ?? "最终成片",
+      path,
+      mimeType: /\.webm$/i.test(path) ? "video/webm" : "video/mp4",
+      durationSeconds: asset?.video?.durationSeconds,
+      width: asset?.video?.width,
+      height: asset?.video?.height,
+      sha256: asset?.sha256,
+    },
+    qc: { status: "none", summary: [] },
+  };
+}
+
 export function deliverableArtifactPaths(manifest) {
   const paths = new Set();
   for (const path of PATH_FIELDS) {
@@ -83,7 +118,7 @@ function normalizeVideo(value = {}) {
 
 function normalizeQc(value = {}) {
   return {
-    status: ["passed", "failed", "warning"].includes(value.status) ? value.status : "warning",
+    status: ["passed", "failed", "warning", "none"].includes(value.status) ? value.status : "warning",
     reportPath: optionalText(value.reportPath),
     duplicateCheck: normalizeDuplicateCheck(value.duplicateCheck),
     summary: Array.isArray(value.summary)

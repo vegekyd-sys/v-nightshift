@@ -504,7 +504,7 @@ function DeliveryPanel({ delivery, state, error, showPlaceholder, contextLabel =
     delivery.video.width && delivery.video.height ? `${delivery.video.width}×${delivery.video.height}` : null,
   ].filter(Boolean);
   return <section className="delivery-panel">
-    <div className="delivery-heading"><div><span>DELIVERABLE</span><h3>{contextLabel}</h3></div><span className={`qc-badge qc-${delivery.qc.status}`}><ShieldCheck size={13} />QC {delivery.qc.status === "passed" ? "通过" : delivery.qc.status}</span></div>
+    <div className="delivery-heading"><div><span>DELIVERABLE</span><h3>{contextLabel}</h3></div>{delivery.qc.status !== "none" && <span className={`qc-badge qc-${delivery.qc.status}`}><ShieldCheck size={13} />QC {delivery.qc.status === "passed" ? "通过" : delivery.qc.status}</span>}</div>
     <div className="video-frame">
       <video aria-label={delivery.video.title} controls playsInline preload="metadata" poster={delivery.video.posterUrl ?? undefined}>
         <source src={delivery.video.url} type={delivery.video.mimeType} />
@@ -516,10 +516,10 @@ function DeliveryPanel({ delivery, state, error, showPlaceholder, contextLabel =
       {delivery.video.projectUrl && <a href={delivery.video.projectUrl} target="_blank" rel="noreferrer"><Film size={15} /><span><strong>Makaron 工程</strong><small>打开可编辑项目</small></span><ExternalLink size={13} /></a>}
     </div>
     {delivery.proposal.summary && <details className="delivery-details"><summary>本轮执行摘要</summary><pre>{delivery.proposal.summary}</pre></details>}
-    <details className="delivery-details qc-details"><summary>机器 QC 与技术报告 <span>{delivery.qc.summary.length} 项</span></summary>
+    {delivery.qc.status !== "none" && <details className="delivery-details qc-details"><summary>机器 QC 与技术报告 <span>{delivery.qc.summary.length} 项</span></summary>
       {delivery.qc.summary.length > 0 && <ul>{delivery.qc.summary.map((item) => <li key={item}>{item}</li>)}</ul>}
       {delivery.qc.report && <pre>{delivery.qc.report}</pre>}
-    </details>
+    </details>}
   </section>;
 }
 

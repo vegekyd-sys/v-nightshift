@@ -718,3 +718,4 @@ body { background:radial-gradient(circle at 72% -20%,rgba(128,92,214,.14),transp
 .factory-studio .drawer .handoff-none,.handoff-note { margin:0; color:#6b7388; font-size:12px; }
 .delivery-quiet { display:flex; align-items:center; gap:8px; margin:0; color:#8b93a8; font-size:13px; }
 .factory-studio .drawer .delivery-panel { padding:0; border:0; background:transparent; }
+.factory-studio .factory-project-time { margin-top:-4px; color:#7b8499; font-size:12px; }
