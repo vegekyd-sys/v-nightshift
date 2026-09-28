@@ -240,7 +240,7 @@ export function Drawer({ card, context = null, delivery, deliveryState, delivery
         <Detail label="防重复提交" value={automation.idempotencyKey || automation.nightshiftActionKey ? "已启用" : "原生卡片"} />
       </details>
       {approval && <section className="publication-approval"><h3>执行确认</h3><p>{publicationApproval ? "本次确认包含外部发布授权；确认后任务才会进入发布步骤。" : "这个阶段需要明确授权后才能继续；确认后任务会进入执行队列。"}</p><Detail label="权限" value={publicationApproval ? "外部发布" : approval.effect} /><Detail label="范围" value={approval.scope ?? "stage"} />{Object.entries(approval.bindings ?? {}).map(([name, value]) => <Detail key={name} label={name === "publicationTarget" ? "发布目标" : name} value={presentApprovalBinding(value)} />)}{approvalIncomplete && <p className="decision-error">发布前还缺少：{approval.missingFields.join("、")}</p>}</section>}
-      {card.notes && <details className="drawer-tech"><summary>给 Agent 的任务说明</summary><pre>{card.notes}</pre></details>}
+      {card.notes && <details className="drawer-tech"><summary>给 Agent 的任务说明</summary><TaskBrief notes={card.notes} /></details>}
       </div>
       {(card.status === "review" || approval) && <div className="review-zone">
         {!reviewAction && (approval ? <div className="approval-actions approval-actions-two"><button className="primary" onClick={() => setReviewAction("approve")}>确认执行</button><button className="danger" onClick={() => setReviewAction("reject")}>暂不执行</button></div> : <div className="approval-actions"><button className="primary" onClick={() => setReviewAction("approve")}>通过</button><button onClick={() => setReviewAction("request-changes")}>要求修改</button><button className="danger" onClick={() => setReviewAction("reject")}>拒绝</button></div>)}
@@ -343,22 +343,126 @@ const EVENT_TITLES = { created: "卡片创建", dispatch: "派给 Agent", moved:
 
 function AgentSessionPanel({ attempts, data, error, expanded, onExpandedChange, onRefresh, onSelect, selected, state }) {
   return <section className="agent-session-panel"><button className="drawer-section-toggle" aria-expanded={expanded} onClick={() => onExpandedChange(!expanded)}><span>Agent 对话</span><small>{expanded ? "收起" : `查看 ${attempts.length} 次尝试的过程`}</small></button>{expanded && <>
-    <div className="attempt-tabs" role="tablist" aria-label="Session attempts">{attempts.map((attempt) => <button role="tab" aria-selected={attempt.runId === selected?.runId} className={attempt.runId === selected?.runId ? "selected" : ""} key={attempt.runId} onClick={() => onSelect(attempt.runId)}><span>第 {attempt.index} 次</span><small>{sessionStatusLabel(attempt.status)}</small></button>)}</div>
-    {selected && <div className="session-meta"><span><b>{selected.engine}</b> · {selected.model}</span><span>{formatAttemptDuration(selected)}</span><button aria-label="刷新 Agent Session" disabled={state === "loading"} onClick={onRefresh}><RefreshCw size={12} /></button></div>}
+    {attempts.length > 1 && <div className="attempt-tabs" role="tablist" aria-label="尝试记录">{attempts.map((attempt) => <button role="tab" aria-selected={attempt.runId === selected?.runId} className={attempt.runId === selected?.runId ? "selected" : ""} key={attempt.runId} onClick={() => onSelect(attempt.runId)}><span>第 {attempt.index} 次</span><small>{sessionStatusLabel(attempt.status)}</small></button>)}</div>}
+    {selected && <div className="session-meta"><span>第 {selected.index} 次尝试 · {sessionStatusLabel(selected.status)} · {selected.model} · {formatAttemptDuration(selected)}</span><button aria-label="刷新对话" title="刷新对话" disabled={state === "loading"} onClick={onRefresh}><RefreshCw size={13} /></button></div>}
     <div className={`session-transcript state-${state}`}>
-      {state === "loading" && !data && <div className="session-loading"><span className="delivery-skeleton" />正在读取 Agent Session…</div>}
+      {state === "loading" && !data && <div className="session-loading"><span className="delivery-skeleton" />正在读取对话…</div>}
       {error && <div className="session-error">{error}</div>}
-      {state !== "loading" && !error && (data?.messages?.length ?? 0) === 0 && <div className="native-empty">这个 Attempt 尚无可显示的消息。</div>}
-      {(data?.messages ?? []).map((message, index) => <SessionMessage key={`${message.timestamp ?? "message"}-${index}`} message={message} />)}
+      {state !== "loading" && !error && (data?.messages?.length ?? 0) === 0 && <div className="native-empty">这次尝试还没有可显示的对话。</div>}
+      {(data?.messages?.length ?? 0) > 0 && <SessionTranscript messages={data.messages} />}
     </div>
     {selected?.error && <details className="attempt-error"><summary>本次阻塞原因</summary><p>{selected.error}</p></details>}
   </>}</section>;
 }
 
+// A run is mostly tool calls. What the Agent said is a bubble; each call, its
+// result and its thinking are one quiet line that opens on demand.
+function transcriptRows(messages) {
+  const rows = [];
+  messages.forEach((message, index) => {
+    const parts = Array.isArray(message.content) ? message.content : [{ type: "text", text: String(message.content ?? "") }];
+    const at = message.timestamp;
+    if (message.role === "toolResult") {
+      rows.push({ key: `r${index}`, kind: message.isError ? "error" : "result", label: `${message.toolName ?? "工具"} ${message.isError ? "出错" : "返回"}`, at, body: parts.map(partText).filter(Boolean).join("\n") });
+      return;
+    }
+    parts.forEach((part, partIndex) => {
+      const key = `m${index}-${partIndex}`;
+      if (part?.type === "toolCall") rows.push({ key, kind: "call", label: `调用 ${part.name ?? "工具"}`, at, body: part.arguments ? JSON.stringify(part.arguments, null, 2) : "" });
+      else if (part?.type === "thinking") rows.push({ key, kind: "thinking", label: "思考", at, body: part.thinking ?? "" });
+      else {
+        const text = partText(part);
+        if (text.trim()) rows.push({ key, kind: message.role === "assistant" ? "say" : "task", label: message.role === "assistant" ? "Agent" : "任务", at, body: text });
+      }
+    });
+  });
+  return rows;
+}
+
+// Agents write **bold** and `code`; show them as such, and nothing else.
+function InlineMarkdown({ text }) {
+  return String(text).split(/(\*\*[^*]+\*\*|`[^`]+`)/g).map((piece, index) => {
+    if (piece.startsWith("**") && piece.endsWith("**") && piece.length > 4) return <strong key={index}>{piece.slice(2, -2)}</strong>;
+    if (piece.startsWith("`") && piece.endsWith("`") && piece.length > 2) return <code key={index}>{piece.slice(1, -1)}</code>;
+    return <React.Fragment key={index}>{piece}</React.Fragment>;
+  });
+}
+
+function partText(part) {
+  if (typeof part === "string") return part;
+  if (part?.type === "text" || part?.text) return part.text ?? "";
+  return "";
+}
+
+function SessionTranscript({ messages }) {
+  const [showAll, setShowAll] = useState(false);
+  const rows = transcriptRows(messages);
+  const limit = 20;
+  const shown = showAll ? rows : rows.slice(-limit);
+  return <div className="session-rows">
+    {rows.length > limit && <button className="session-earlier" onClick={() => setShowAll((value) => !value)}>{showAll ? "只看最近的" : `显示更早的 ${rows.length - limit} 条`}</button>}
+    {shown.map((row) => row.kind === "say" || row.kind === "task"
+      ? <article key={row.key} className={`session-say kind-${row.kind}`}><header><strong>{row.label}</strong><span>{formatTime(row.at)}</span></header><p><InlineMarkdown text={row.body} /></p></article>
+      : <details key={row.key} className={`session-step kind-${row.kind}`}><summary><Wrench size={12} /><span>{row.label}</span><time>{formatTime(row.at)}</time></summary>{row.body && <pre>{row.body}</pre>}</details>)}
+  </div>;
+}
+
 function SessionMessage({ message }) {
   const parts = Array.isArray(message.content) ? message.content : [{ type: "text", text: String(message.content ?? "") }];
-  const roleLabel = message.role === "assistant" ? "Agent" : message.role === "toolResult" ? `Tool · ${message.toolName ?? "result"}` : message.role === "user" ? "Task" : message.role;
-  return <article className={`session-message role-${message.role} ${message.isError ? "is-error" : ""}`}><header><strong>{roleLabel}</strong><span>{formatDateTime(message.timestamp)}</span></header><div>{parts.map((part, index) => <SessionPart key={`${part?.type ?? "part"}-${index}`} part={part} />)}</div></article>;
+  // Tool output is evidence, not conversation: it stays folded.
+  if (message.role === "toolResult") {
+    return <details className={`session-message role-toolResult ${message.isError ? "is-error" : ""}`}><summary><Wrench size={12} />{message.isError ? "工具出错" : "工具返回"} · {message.toolName ?? "tool"}<span>{formatTime(message.timestamp)}</span></summary><div>{parts.map((part, index) => <SessionPart key={`${part?.type ?? "part"}-${index}`} part={part} />)}</div></details>;
+  }
+  const roleLabel = message.role === "assistant" ? "Agent" : message.role === "user" ? "任务" : message.role;
+  return <article className={`session-message role-${message.role} ${message.isError ? "is-error" : ""}`}><header><strong>{roleLabel}</strong><span>{formatTime(message.timestamp)}</span></header><div>{parts.map((part, index) => <SessionPart key={`${part?.type ?? "part"}-${index}`} part={part} />)}</div></article>;
+}
+
+function formatTime(value) {
+  const timestamp = finiteNumber(value);
+  return timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+}
+
+// The card notes are the brief Night Shift wrote for the Agent: "Key: value"
+// lines, some values JSON. People need the objective and the few facts that
+// bound it; the rest is the Agent's rulebook and stays in the original.
+const BRIEF_KEY = /^([A-Z][A-Za-z ()/-]{2,60}):\s?(.*)$/;
+
+function parseBrief(notes) {
+  const fields = {};
+  let current = null;
+  for (const line of String(notes).split("\n")) {
+    const match = BRIEF_KEY.exec(line);
+    if (match) { current = match[1]; fields[current] = match[2]; } else if (current) fields[current] += `\n${line}`;
+  }
+  return fields;
+}
+
+function parseJson(value) {
+  try { return JSON.parse(value); } catch { return null; }
+}
+
+function TaskBrief({ notes }) {
+  const fields = parseBrief(notes);
+  const item = parseJson(fields["Content item"]);
+  const inputs = parseJson(fields["Input summary"]);
+  const scope = inputs?.authorizationScope;
+  const target = inputs?.publicationTarget;
+  const rows = [
+    ["Workflow", fields["Night Shift workflow"]],
+    ["项目", fields.Instance],
+    ["阶段", fields.Stage],
+    ["内容", item ? `${item.title}${item.route ? ` · ${item.route}` : ""}` : fields["Content item"]],
+    ["能力", fields["Skills likely useful here"] ?? fields["Required skills (load in order)"]],
+    ["交付方式", inputs?.deliveryMode ? ({ download: "下载交付", publish: "发布到平台" })[inputs.deliveryMode] ?? inputs.deliveryMode : null],
+    ["授权", scope ? `付费生产${scope.paidProduction ? "已授权" : "未授权"} · 对外发布${scope.externalPublication ? "已授权" : "未授权"}` : null],
+    ["发布目标", target ? [target.platform, target.market, target.language].filter(Boolean).join(" · ") : null],
+    ["要交的产物", fields["Required outputs"]],
+  ].filter(([, value]) => value);
+  return <div className="task-brief">
+    {fields.Objective && <p className="task-brief-objective">{fields.Objective}</p>}
+    {rows.length > 0 && <dl>{rows.map(([label, value]) => <React.Fragment key={label}><dt>{label}</dt><dd>{value}</dd></React.Fragment>)}</dl>}
+    <details className="task-brief-raw"><summary>查看原文</summary><pre>{notes}</pre></details>
+  </div>;
 }
 
 function SessionPart({ part }) {

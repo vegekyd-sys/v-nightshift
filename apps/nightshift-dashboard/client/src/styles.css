@@ -660,3 +660,43 @@ body { background:radial-gradient(circle at 72% -20%,rgba(128,92,214,.14),transp
 .factory-studio .drawer section.drawer-now.attention-needs-you { background:rgba(255,143,128,.11); }
 .factory-studio .drawer section.drawer-now.attention-healing { background:rgba(128,147,179,.14); }
 .factory-studio .drawer section.drawer-now.attention-done { background:rgba(187,169,255,.1); }
+/* Agent conversation, as a conversation. */
+.factory-studio .drawer .attempt-tabs { display:flex; flex-wrap:wrap; gap:6px; margin:4px 14px 10px; }
+.factory-studio .drawer .attempt-tabs button { display:flex; align-items:center; gap:6px; height:30px; padding:0 12px; border:0!important; border-radius:9px; background:rgba(255,255,255,.05); color:#aab2c4; box-shadow:none!important; font-size:12px; }
+.factory-studio .drawer .attempt-tabs button small { color:#6b7388; font-size:11px; }
+.factory-studio .drawer .attempt-tabs button.selected { background:rgba(169,140,255,.16); color:#e6e1ff; }
+.factory-studio .drawer .session-meta { display:flex; align-items:center; gap:10px; margin:2px 14px 10px; padding:0; border:0; color:#8b93a8; font-size:12px; }
+.factory-studio .drawer .session-meta button { width:28px; height:28px; margin-left:auto; display:grid; place-items:center; border:0; border-radius:8px; background:transparent; color:#8b93a8; cursor:pointer; }.factory-studio .drawer .session-meta button:hover { background:rgba(255,255,255,.06); color:#e6e1ff; }
+.factory-studio .drawer .session-transcript { display:flex; flex-direction:column; gap:10px; max-height:none; margin:0 14px 10px; padding:0; border:0; background:transparent; }
+.factory-studio .drawer .session-message { margin:0; padding:12px 14px; border:0; border-radius:12px; background:rgba(255,255,255,.04); }
+.factory-studio .drawer .session-message.role-assistant { background:rgba(125,141,255,.1); }
+.factory-studio .drawer .session-message.role-user { background:rgba(255,255,255,.03); }
+.factory-studio .drawer .session-message header { display:flex; justify-content:space-between; margin-bottom:6px; }.factory-studio .drawer .session-message header strong { color:#cfc5ff; font-size:12px; }.factory-studio .drawer .session-message header span { color:#6b7388; font-size:11px; }
+.factory-studio .drawer .session-message p { margin:0 0 6px; color:#dfe3ec; font-size:14px; line-height:1.6; white-space:pre-wrap; word-break:break-word; }
+.factory-studio .drawer details.session-message { padding:0; background:transparent; }
+.factory-studio .drawer details.session-message>summary { display:flex; align-items:center; gap:6px; padding:8px 12px; border-radius:10px; color:#8b93a8; font-size:12px; cursor:pointer; list-style:none; }.factory-studio .drawer details.session-message>summary::-webkit-details-marker { display:none; }
+.factory-studio .drawer details.session-message>summary:hover { background:rgba(255,255,255,.04); }.factory-studio .drawer details.session-message>summary span { margin-left:auto; color:#6b7388; font-size:11px; }
+.factory-studio .drawer details.session-message[open]>div { padding:4px 12px 10px; }
+.factory-studio .drawer details.session-message.is-error>summary { color:#ffb4a9; }
+.factory-studio .drawer .session-tool-call>summary { color:#8b93a8; font-size:12px; }
+.factory-studio .drawer .session-transcript pre,.factory-studio .drawer .task-brief pre { max-height:280px; overflow:auto; padding:12px; border:0; border-radius:10px; background:rgba(0,0,0,.25); color:#aab2c4; font-size:12px; line-height:1.55; white-space:pre-wrap; word-break:break-word; }
+.factory-studio .drawer .session-error { margin:0; padding:10px 12px; border:0; border-radius:10px; background:rgba(255,255,255,.04); color:#8b93a8; font-size:13px; }
+.factory-studio .drawer .attempt-error { margin:0 14px 10px; color:#ffb4a9; font-size:13px; }
+/* The Agent's brief, readable. */
+.task-brief { display:flex; flex-direction:column; gap:14px; margin:0 14px 12px; }
+.task-brief-objective { margin:0; padding:14px 16px; border-radius:12px; background:rgba(169,140,255,.08); color:#e6e1ff; font-size:14px; line-height:1.7; white-space:pre-wrap; }
+.task-brief dl { display:grid; grid-template-columns:84px minmax(0,1fr); gap:10px 14px; margin:0; }
+.task-brief dt { color:#8b93a8; font-size:13px; }.task-brief dd { margin:0; color:#dfe3ec; font-size:13px; line-height:1.55; white-space:pre-wrap; word-break:break-word; }
+.task-brief-raw>summary { color:#8b93a8; font-size:12px; cursor:pointer; }.task-brief-raw[open]>summary { margin-bottom:8px; }
+.session-rows { display:flex; flex-direction:column; gap:4px; }
+.session-earlier { align-self:flex-start; margin-bottom:6px; padding:4px 10px; border:0; border-radius:8px; background:rgba(255,255,255,.05); color:#aab2c4; font-size:12px; cursor:pointer; }.session-earlier:hover { background:rgba(169,140,255,.14); }
+.session-say { margin:6px 0; padding:12px 14px; border-radius:12px; background:rgba(125,141,255,.1); }
+.session-say.kind-task { background:rgba(255,255,255,.04); }
+.session-say header { display:flex; justify-content:space-between; margin-bottom:6px; }.session-say header strong { color:#cfc5ff; font-size:12px; }.session-say header span { color:#6b7388; font-size:11px; }
+.session-say p { margin:0; color:#dfe3ec; font-size:14px; line-height:1.6; white-space:pre-wrap; word-break:break-word; }
+.session-step>summary { display:flex; align-items:center; gap:7px; padding:5px 8px; border-radius:8px; color:#7d8599; font-size:12px; cursor:pointer; list-style:none; }.session-step>summary::-webkit-details-marker { display:none; }
+.session-step>summary:hover { background:rgba(255,255,255,.04); color:#b8bfcf; }.session-step>summary time { margin-left:auto; color:#5d6577; font-size:11px; }
+.session-step.kind-thinking>summary { color:#9f8fd0; }.session-step.kind-error>summary { color:#ffb4a9; }
+.session-step[open]>pre { margin:4px 0 8px 26px; }
+.session-say p strong { color:#fff; font-weight:650; }
+.session-say p code { padding:1px 5px; border-radius:5px; background:rgba(0,0,0,.28); color:#cfc5ff; font:12px ui-monospace,SFMono-Regular,Menlo,monospace; }
