@@ -1,4 +1,5 @@
 import { activeCardCount } from "./active-card-count.mjs";
+import { buildOverview } from "./overview.mjs";
 import { runSchedulerPass, instanceCardIds, visibleCardIds } from "../../../packages/nightshift-core/src/scheduler-pass.mjs";
 import { tickWithFaultProjection } from "../../../packages/nightshift-core/src/scheduler-state.mjs";
 import { createCompletionUrlChecker } from "./completion-url.mjs";
@@ -284,6 +285,50 @@ async function handleApi(request, response, url) {
       links: dashboardLinks(),
       workflows: store.listReleases().map(withWorkflowLinks),
     }, { revalidate: true });
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/overview") {
+    if (url.searchParams.get("refresh") === "1") await refreshVisibleCards();
+    const instances = store.listInstances().map((instance) => instance.status === "archived" ? instance : withInstanceLinks({
+      ...instance,
+      contentItems: store.listContentItems(instance.id),
+      contentItemRuns: store.listContentItemRuns(instance.id),
+      stageRuns: store.listStageRuns(instance.id),
+    }));
+    const visible = instances.filter((instance) => instance.status !== "archived");
+    json(response, 200, {
+      board,
+      cardsUpdatedAt,
+      ...buildOverview({
+        scope: url.searchParams.get("scope") ?? "live",
+        instances,
+        cards: visibleCards(cardCache, visible).map(withCardLinks),
+        releases: store.listReleases().map(withWorkflowLinks),
+        operationsFor: (instanceId) => store.listExternalOperations(instanceId),
+      }),
+    }, { revalidate: true });
+    return;
+  }
+  const fullCardMatch = url.pathname.match(/^\/api\/cards\/([^/]+)$/);
+  if (request.method === "GET" && fullCardMatch) {
+    // The overview carries a lean card; the drawer asks for the whole one.
+    const cardId = decodeURIComponent(fullCardMatch[1]);
+    const card = cardCache.find((entry) => entry.id === cardId) ?? (await refreshCards({ cardIds: [cardId] })).find((entry) => entry.id === cardId);
+    if (!card) {
+      json(response, 404, { error: "Workboard card not found" });
+      return;
+    }
+    json(response, 200, { card: withCardLinks(card) });
+    return;
+  }
+  const workflowSourceMatch = url.pathname.match(/^\/api\/workflows\/([a-f0-9]{64})\/source$/);
+  if (request.method === "GET" && workflowSourceMatch) {
+    const release = store.getRelease(workflowSourceMatch[1]);
+    if (!release) {
+      json(response, 404, { error: "Workflow release not found" });
+      return;
+    }
+    json(response, 200, { workflowSha256: release.workflowSha256, sourceMarkdown: release.sourceMarkdown ?? null, sourceYaml: release.sourceYaml ?? null });
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/workflows") {

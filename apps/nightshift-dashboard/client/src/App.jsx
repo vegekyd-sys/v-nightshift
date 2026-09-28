@@ -43,18 +43,40 @@ export function App() {
   // written as "false" on every visit and would keep everyone expanded.
   const [navigationCollapsed, setNavigationCollapsed] = useState(() => typeof window === "undefined" || window.localStorage.getItem(NAVIGATION_KEY) !== "expanded");
   const refreshInFlight = useRef(null);
-  const selectedForDecision = useMemo(() => withDecisionContext(selected, data), [selected, data]);
+  // The poll asks only for the scope a page is showing: projects in production
+  // by default, others when a page switches to them. Cards arrive lean; the
+  // drawer fetches the one it opens in full.
+  const scopeRef = useRef("live");
+  const [fullCard, setFullCard] = useState(null);
+  const detailCard = fullCard && fullCard.id === selected?.id ? fullCard : selected;
+  const selectedForDecision = useMemo(() => withDecisionContext(detailCard, data), [detailCard, data]);
 
   function refresh(force = false) {
-    if (refreshInFlight.current) return refreshInFlight.current;
+    const scope = scopeRef.current;
+    if (refreshInFlight.current?.scope === scope) return refreshInFlight.current.request;
     setRefreshing(true);
-    const request = api(force ? "/api/bootstrap?refresh=1" : "/api/bootstrap")
-      .then((result) => { setData(result); setError(""); return result; })
+    const request = api(`/api/overview?scope=${scope}${force ? "&refresh=1" : ""}`)
+      .then((result) => { if (scopeRef.current === scope) { setData(result); setError(""); } return result; })
       .catch((reason) => { setError(reason.message); throw reason; })
-      .finally(() => { setRefreshing(false); refreshInFlight.current = null; });
-    refreshInFlight.current = request;
+      .finally(() => { if (refreshInFlight.current?.request === request) { setRefreshing(false); refreshInFlight.current = null; } });
+    refreshInFlight.current = { request, scope };
     return request;
   }
+
+  function requestScope(scope) {
+    if (scopeRef.current === scope) return;
+    scopeRef.current = scope;
+    refresh(false).catch(() => undefined);
+  }
+
+  useEffect(() => {
+    if (!selected?.id) { setFullCard(null); return undefined; }
+    let current = true;
+    api(`/api/cards/${encodeURIComponent(selected.id)}`)
+      .then((result) => { if (current) setFullCard({ ...result.card, fullDetail: true }); })
+      .catch(() => undefined);
+    return () => { current = false; };
+  }, [selected?.id, data?.cardsUpdatedAt]);
 
   useEffect(() => {
     refresh(false).catch(() => undefined);
@@ -89,6 +111,7 @@ export function App() {
     if (initialLocation.card) {
       const card = (data.cards ?? []).find((entry) => entry.id === initialLocation.card);
       if (card) setSelected(card);
+      else api(`/api/cards/${encodeURIComponent(initialLocation.card)}`).then((result) => setSelected(result.card)).catch(() => undefined);
     }
     deepLinkApplied.current = true;
   }, [data, initialLocation.card]);
@@ -185,10 +208,10 @@ export function App() {
       <Sidebar active={active} collapsed={navigationCollapsed} onChange={setActive} onToggle={() => setNavigationCollapsed((value) => !value)} />
       <main className="main-shell">
         {error && <div className="error-banner">{error}</div>}
-        {active === "board" && <LiveBoard data={data} query={query} setQuery={setQuery} selected={selectedForDecision} setSelected={setSelected} refreshing={refreshing} refresh={refresh} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} />}
-        {active === "workflows" && <WorkflowStudio data={data} refresh={refresh} initialProjectId={workflowProjectId} initialWorkflowId={initialLocation.workflow} setSelected={setSelected} selected={selectedForDecision} decide={decide} approveMany={approveMany} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onNewProject={(release) => setProjectReleaseSha(release?.workflowSha256 ?? data?.workflows?.[0]?.workflowSha256)} />}
-        {active === "projects" && <Projects data={data} refresh={refresh} onNewProject={() => setProjectReleaseSha(data?.workflows?.[0]?.workflowSha256)} onOpenProject={(projectId) => { setWorkflowProjectId(projectId); updateDashboardLocation({ project: projectId, view: "workflows" }); setActive("workflows"); }} />}
-        {active === "agents" && <Agents data={data} />}
+        {active === "board" && <LiveBoard onScopeChange={requestScope} data={data} query={query} setQuery={setQuery} selected={selectedForDecision} setSelected={setSelected} refreshing={refreshing} refresh={refresh} decide={decide} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} />}
+        {active === "workflows" && <WorkflowStudio onScopeChange={requestScope} data={data} refresh={refresh} initialProjectId={workflowProjectId} initialWorkflowId={initialLocation.workflow} setSelected={setSelected} selected={selectedForDecision} decide={decide} approveMany={approveMany} retry={retry} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onNewProject={(release) => setProjectReleaseSha(release?.workflowSha256 ?? data?.workflows?.[0]?.workflowSha256)} />}
+        {active === "projects" && <Projects onScopeChange={requestScope} data={data} refresh={refresh} onNewProject={() => setProjectReleaseSha(data?.workflows?.[0]?.workflowSha256)} onOpenProject={(projectId) => { setWorkflowProjectId(projectId); updateDashboardLocation({ project: projectId, view: "workflows" }); setActive("workflows"); }} />}
+        {active === "agents" && <Agents onScopeChange={requestScope} data={data} />}
       </main>
       {projectReleaseSha && <ProjectEditor releases={data?.workflows ?? []} initialReleaseSha={projectReleaseSha} onClose={() => setProjectReleaseSha(null)} onCreated={(result) => { setProjectReleaseSha(null); setActive("projects"); if (result.initialScheduleError) setError(`项目已创建，首次调度将在下一轮重试：${result.initialScheduleError}`); refresh(true).catch((reason) => setError(reason.message)); }} />}
     </div>
@@ -205,13 +228,14 @@ export function App() {
   }
 }
 
-function LiveBoard({ data, query, setQuery, selected, setSelected, refreshing, refresh, decide, retry, delivery, deliveryState, deliveryError, handoff, handoffState, handoffError }) {
+function LiveBoard({ onScopeChange, data, query, setQuery, selected, setSelected, refreshing, refresh, decide, retry, delivery, deliveryState, deliveryError, handoff, handoffState, handoffError }) {
   // Every workflow's cards on one floor, sorted by who has to move next rather
   // than by raw board status.
   const [scope, setScope] = useState("live");
+  useEffect(() => { onScopeChange(scope); }, [scope]);
   const [mobileColumn, setMobileColumn] = useState("running");
   const entries = useMemo(() => boardEntries(data), [data]);
-  const scopeCounts = useMemo(() => ({ live: entries.filter((entry) => entry.scope === "live").length, all: entries.length }), [entries]);
+  const scopeCounts = useMemo(() => ({ live: data?.cardCounts?.live ?? entries.filter((entry) => entry.scope === "live").length, all: data?.cardCounts?.all ?? entries.length }), [data, entries]);
   const shown = useMemo(() => entries.filter((entry) => (scope === "all" || entry.scope === "live") && (!query || entry.card.title.toLowerCase().includes(query.toLowerCase()) || (entry.projectName ?? "").toLowerCase().includes(query.toLowerCase()))), [entries, scope, query]);
   const counts = countByKind(shown);
   const doneToday = shown.filter((entry) => entry.attention.kind === "done" && isToday(entry.card.updatedAt)).length;
@@ -336,7 +360,7 @@ function FactoryMetrics({ counts, doneToday }) {
   </div>;
 }
 
-function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, setSelected, selected, decide, approveMany, retry, delivery, deliveryState, deliveryError, handoff, handoffState, handoffError, onNewProject }) {
+function WorkflowStudio({ onScopeChange, data, refresh, initialProjectId, initialWorkflowId, setSelected, selected, decide, approveMany, retry, delivery, deliveryState, deliveryError, handoff, handoffState, handoffError, onNewProject }) {
   const groups = useMemo(() => groupWorkflowReleases(data?.workflows ?? []), [data?.workflows]);
   const deepLinkApplied = useRef(false);
   const [workflowId, setWorkflowId] = useState(initialWorkflowId ?? "");
@@ -344,6 +368,7 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
   // The factory floor shows what is being made now; delivered and shelved
   // projects are one click away instead of mixed into it.
   const [scope, setScope] = useState("live");
+  useEffect(() => { onScopeChange(scope); }, [scope]);
   const [mobileStageId, setMobileStageId] = useState("");
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
   const [bulkApproval, setBulkApproval] = useState(null);
@@ -454,7 +479,7 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
         {mobileActionsOpen && <>
           <div className="factory-scrim" onClick={() => setMobileActionsOpen(false)} />
           <div className="factory-more-menu">
-            <button onClick={() => { setMobileActionsOpen(false); setEditor({ mode: "edit", source: group.releases[0].sourceMarkdown ?? group.releases[0].sourceYaml }); }}><FilePenLine size={15} />编辑这个 Workflow</button>
+            <button onClick={async () => { setMobileActionsOpen(false); try { const source = await api(`/api/workflows/${group.releases[0].workflowSha256}/source`); setEditor({ mode: "edit", source: source.sourceMarkdown ?? source.sourceYaml ?? "" }); } catch (reason) { setEditor(null); } }}><FilePenLine size={15} />编辑这个 Workflow</button>
             <button onClick={() => { setMobileActionsOpen(false); setEditor({ mode: "import", source: "" }); }}><Upload size={15} />导入 Workflow</button>
             <button onClick={() => { setMobileActionsOpen(false); setEditor({ mode: "create", source: newWorkflowSource() }); }}><Plus size={15} />新建 Workflow</button>
             <small>{pinnedRelease?.version} · {runwayStages.length === stages.length ? `${stages.length} 个阶段` : `本批走 ${runwayStages.length}/${stages.length} 个阶段`} · SHA {pinnedRelease?.workflowSha256.slice(0, 12)}</small>
@@ -742,8 +767,9 @@ function ProjectInput({ name, contract, value, onChange }) {
   return <label className="project-field"><span>{labelText}{contract.required ? " *" : ""}</span><input type={contract.type === "number" ? "number" : name.toLowerCase().includes("url") ? "url" : "text"} value={value ?? ""} onChange={(event) => onChange(contract.type === "number" ? Number(event.target.value) : event.target.value)} required={contract.required === true} placeholder={projectInputPlaceholder(name)} /></label>;
 }
 
-function Projects({ data, onNewProject, onOpenProject, refresh }) {
+function Projects({ onScopeChange, data, onNewProject, onOpenProject, refresh }) {
   const [scope, setScope] = useState("live");
+  useEffect(() => { onScopeChange(scope); }, [scope]);
   const [deleting, setDeleting] = useState(null);
   const [deleteError, setDeleteError] = useState("");
   const rows = useMemo(() => {
@@ -801,7 +827,8 @@ function Projects({ data, onNewProject, onOpenProject, refresh }) {
   </div>;
 }
 
-function Agents({ data }) {
+function Agents({ onScopeChange, data }) {
+  useEffect(() => { onScopeChange("live"); }, []);
   const agents = useMemo(() => {
     const now = Date.now();
     const entries = boardEntries(data);
@@ -815,7 +842,7 @@ function Agents({ data }) {
       return {
         name,
         running: own.filter((entry) => entry.attention.kind === "running").length,
-        doneToday: own.filter((entry) => entry.attention.kind === "done" && isToday(entry.card.updatedAt)).length,
+        doneToday: data?.agentDoneToday?.[name] ?? own.filter((entry) => entry.attention.kind === "done" && isToday(entry.card.updatedAt)).length,
         projects,
       };
     }).sort((left, right) => right.running - left.running || right.projects.length - left.projects.length);
@@ -1053,7 +1080,7 @@ function indexStageTasks(stages, projects, cards) {
 
 function withDecisionContext(card, data) {
   if (!card || !data) return card;
-  const fresh = (data.cards ?? []).find((entry) => entry.id === card.id) ?? card;
+  const fresh = card.fullDetail ? card : (data.cards ?? []).find((entry) => entry.id === card.id) ?? card;
   const instanceId = cardLabel(fresh, "instance");
   const stageId = fresh.metadata?.automation?.stageId ?? label(fresh, "stage");
   const contentItemId = fresh.metadata?.automation?.contentItemId ?? label(fresh, "content-item") ?? null;
