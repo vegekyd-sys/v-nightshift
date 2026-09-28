@@ -292,17 +292,38 @@ function StageHandoffPanel({ handoff, state, error, delivery, deliveryState, del
   const previous = handoff.previous?.length ? handoff.previous.map((entry) => entry.title).join("、") : "项目输入";
   const next = handoff.next?.length ? handoff.next.map((entry) => entry.title).join("、") : "流程结束";
   return <section className="handoff-panel">
-    <div className="handoff-flow" aria-label="阶段流转"><span>{previous}</span><ChevronRight size={13} /><strong>{handoff.stage.title}</strong><ChevronRight size={13} /><span>{next}</span></div>
-    {!handoff.recorded && <div className="handoff-legacy">历史任务：按 Workflow 推导输入与输出；新任务会记录实际交接摘要。</div>}
+    <p className="handoff-flow" aria-label="阶段流转"><span>{previous}</span><ChevronRight size={12} /><strong>{handoff.stage.title}</strong><ChevronRight size={12} /><span>{next}</span></p>
     <HandoffGroup title="上一步交来的" entries={handoff.inputs} />
     {handoff.deliveryPlacement === "input" && <DeliveryPanel delivery={delivery} state={deliveryState} error={deliveryError} showPlaceholder contextLabel="本阶段输入" />}
     <HandoffGroup title="这一步产出的" entries={handoff.outputs} />
     {handoff.deliveryPlacement === "output" && <DeliveryPanel delivery={delivery} state={deliveryState} error={deliveryError} showPlaceholder contextLabel="本阶段输出" />}
+    {!handoff.recorded && <p className="handoff-note">这是较早的任务：上面按 Workflow 推导，没有实际交接记录。</p>}
   </section>;
 }
 
+// One row per artifact: a dot, its name, where it stands, and the summary
+// folded to two lines until asked for.
 function HandoffGroup({ entries = [], title }) {
-  return <div className="handoff-group"><h3>{title}</h3>{entries.length > 0 ? <div className="handoff-items">{entries.map((entry) => <article key={`${entry.sourceStage}:${entry.name}`} className={`handoff-item state-${entry.status}`}><div><strong>{humanArtifactName(entry.name)}</strong><span>{entry.sourceStage}</span></div>{entry.summary && <p>{entry.summary}</p>}{entry.artifactUrl ? <a className="handoff-artifact-link" href={entry.artifactUrl} target="_blank" rel="noreferrer"><span>{entry.name === "publicUrl" ? "打开发布页面" : "查看交付证据"}</span><ExternalLink size={12} /></a> : <small className={entry.name === "publicUrl" && entry.status === "completed-unregistered" ? "missing-publication-link" : ""}>{entry.artifact ? entry.artifact.split("/").at(-1) : entry.name === "publicUrl" && entry.status === "completed-unregistered" ? "未登记实际发布链接" : entry.status === "completed-unregistered" ? "阶段已完成 · 未登记交接摘要" : "等待阶段产出"}</small>}</article>)}</div> : <p className="handoff-none">没有上一步；本阶段直接使用项目输入。</p>}</div>;
+  return <div className="handoff-group"><h3>{title}</h3>{entries.length > 0 ? <ul className="handoff-items">{entries.map((entry) => <HandoffRow key={`${entry.sourceStage}:${entry.name}`} entry={entry} />)}</ul> : <p className="handoff-none">没有上一步，直接用项目输入。</p>}</div>;
+}
+
+function HandoffRow({ entry }) {
+  const [open, setOpen] = useState(false);
+  const state = handoffState(entry);
+  return <li className={`handoff-row state-${state.tone}`} title={entry.artifact ?? entry.sourceStage}>
+    <span className="handoff-dot" />
+    <div>
+      <div className="handoff-row-head"><strong>{humanArtifactName(entry.name)}</strong><span>{state.label}</span>{entry.artifactUrl && <a href={entry.artifactUrl} target="_blank" rel="noreferrer">{entry.name === "publicUrl" ? "打开" : "查看"}<ExternalLink size={11} /></a>}</div>
+      {entry.summary && <p className={open ? "is-open" : ""} onClick={() => setOpen((value) => !value)}>{entry.summary}</p>}
+    </div>
+  </li>;
+}
+
+function handoffState(entry) {
+  if (entry.name === "publicUrl" && entry.status === "completed-unregistered") return { tone: "missing", label: "未登记发布链接" };
+  if (entry.status === "recorded" || entry.artifact || entry.artifactUrl) return { tone: "done", label: "已产出" };
+  if (entry.status === "completed-unregistered") return { tone: "done", label: "已完成" };
+  return { tone: "waiting", label: "等待产出" };
 }
 
 function humanArtifactName(name) {
@@ -476,7 +497,7 @@ function DeliveryPanel({ delivery, state, error, showPlaceholder, contextLabel =
   if (state === "loading") return <section className="delivery-panel delivery-loading"><div className="delivery-skeleton" /><span>正在载入交付内容…</span></section>;
   if (!delivery) {
     if (!showPlaceholder) return null;
-    return <section className="delivery-panel delivery-empty"><Film size={20} /><div><strong>交付包尚未发布</strong><span>{error || "Agent 完成交付后，视频、提案与 QC 会显示在这里。"}</span></div></section>;
+    return <p className="delivery-quiet"><Film size={14} />成片还没交付，完成后会在这里播放和下载。</p>;
   }
   const videoMeta = [
     delivery.video.durationSeconds ? `${formatDuration(delivery.video.durationSeconds)}` : null,
