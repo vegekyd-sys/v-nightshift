@@ -5,7 +5,7 @@
 // else; detail is fetched when a card or workflow is opened.
 import { projectScope } from "../client/src/attention.js";
 
-export const OVERVIEW_SCOPES = ["live", "delivered", "shelved", "all"];
+export const OVERVIEW_SCOPES = ["live", "paused", "delivered", "shelved", "all"];
 
 const CARD_LABEL_PREFIXES = ["instance:", "stage:", "content-item:", "route:", "nightshift:"];
 const AUTOMATION_FIELDS = ["instanceId", "stageId", "contentItemId", "scheduledAt", "contentRoute", "agentRole", "attempt", "workflowSha256"];
@@ -21,7 +21,7 @@ export function buildOverview({ scope = "live", instances, cards, releases, oper
   // Counts the pages show for scopes they did not load: a tab's size, and each
   // agent's finished work today across every project.
   const scopeOf = new Map(visible.map((instance) => [instance.id, projectScope(instance, now)]));
-  const cardCounts = { live: 0, delivered: 0, shelved: 0, all: 0 };
+  const cardCounts = { live: 0, paused: 0, delivered: 0, shelved: 0, all: 0 };
   const agentDoneToday = {};
   for (const card of cards) {
     const state = scopeOf.get(cardInstanceId(card));

@@ -10,14 +10,16 @@ const DAY_MS = 86_400_000;
 // cards, so the live view showed red everywhere while nothing needed anyone.
 export const SHELVE_AFTER_MS = 3 * DAY_MS;
 
-export const PROJECT_SCOPES = ["live", "delivered", "shelved", "all"];
+export const PROJECT_SCOPES = ["live", "paused", "delivered", "shelved", "all"];
 
+// 在产 is what runs by itself. A paused project does not move, so it has its
+// own tab while recent and becomes shelved once it has sat for days.
 export function projectScope(instance, now = Date.now()) {
   if (instance.status === "archived") return "archived";
   if (instance.status === "done") return "delivered";
   if (instance.status === "active") return "live";
   const idle = now - Date.parse(instance.updatedAt ?? instance.createdAt ?? 0);
-  return idle > SHELVE_AFTER_MS ? "shelved" : "live";
+  return idle > SHELVE_AFTER_MS ? "shelved" : "paused";
 }
 
 export function inScope(instance, scope, now = Date.now()) {

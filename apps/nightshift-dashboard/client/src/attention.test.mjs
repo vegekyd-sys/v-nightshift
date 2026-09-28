@@ -7,7 +7,7 @@ const daysAgo = (days) => new Date(NOW - days * 86_400_000).toISOString();
 
 test("only projects that are moving count as live; old paused ones are shelved", () => {
   assert.equal(projectScope({ status: "active", updatedAt: daysAgo(10) }, NOW), "live");
-  assert.equal(projectScope({ status: "paused", updatedAt: daysAgo(1) }, NOW), "live", "a pause from today is still work in progress");
+  assert.equal(projectScope({ status: "paused", updatedAt: daysAgo(1) }, NOW), "paused", "a paused project does not run by itself, so it is not 在产");
   assert.equal(projectScope({ status: "paused", updatedAt: daysAgo(5) }, NOW), "shelved");
   assert.equal(projectScope({ status: "done", updatedAt: daysAgo(1) }, NOW), "delivered");
   assert.equal(projectScope({ status: "archived", updatedAt: daysAgo(1) }, NOW), "archived");
