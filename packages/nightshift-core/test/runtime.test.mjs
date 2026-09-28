@@ -1677,9 +1677,14 @@ test("an orphaned paid card whose provider task is on the ledger resumes automat
 });
 
 test("blocked-card inspection has its own budget and a deferred card is read on the next ordinary pass", async () => {
+  // An injected clock: a 1 ms real-time window let a slow machine reset the
+  // budget between the two cards of one pass and read both (flaky on CI).
+  let clock = Date.now();
   const store = new NightShiftStore();
   const workboard = new FakeWorkboard();
-  const runtime = new NightShiftRuntime({ store, workboard, terminalInspectionMaxStarts: 1, terminalInspectionWindowMs: 1 });
+  const runtime = new NightShiftRuntime({
+    store, workboard, terminalInspectionMaxStarts: 1, terminalInspectionWindowMs: 30_000, now: () => clock,
+  });
   const release = runtime.publish(await readFile(workflowPath, "utf8"));
   runtime.startInstance({ id: "NS-ORPHAN-BUDGET", workflowSha256: release.workflowSha256 });
   for (const suffix of ["a", "b"]) {
@@ -1691,7 +1696,7 @@ test("blocked-card inspection has its own budget and a deferred card is read on 
   runtime.consumeTerminalInspectionBudget();
   await runtime.reconcile("NS-ORPHAN-BUDGET", null, { inspectSessions: true });
   assert.equal(workboard.sessionCalls.length, 1);
-  await new Promise((resolve) => setTimeout(resolve, 5));
+  clock += 31_000;
   await runtime.reconcile("NS-ORPHAN-BUDGET", null, { inspectSessions: false });
   assert.equal(workboard.sessionCalls.length, 2, "the deferred card is read without waiting for a repair pass");
   assert.equal(attemptFailures(store, "NS-ORPHAN-BUDGET").length, 2);
