@@ -236,7 +236,7 @@ function LiveBoard({ data, query, setQuery, selected, setSelected, refreshing, r
         </div>;
       })}
       {selected && <div className="factory-drawer-scrim" onClick={() => setSelected(null)} />}
-      <Drawer card={selected} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onClose={() => setSelected(null)} onDecide={decide} onRetry={retry} />
+      <Drawer card={selected} context={drawerContextFromEntry(entries.find((entry) => entry.card.id === selected?.id))} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onClose={() => setSelected(null)} onDecide={decide} onRetry={retry} />
     </section>
   </div>;
 }
@@ -248,6 +248,7 @@ function boardEntries(data) {
   const now = Date.now();
   const instances = new Map((data?.instances ?? []).map((instance) => [instance.id, instance]));
   const workflowName = new Map((data?.workflows ?? []).map((release) => [release.workflowSha256, release.name]));
+  const stageTitles = new Map((data?.workflows ?? []).map((release) => [release.workflowSha256, new Map((release.manifest?.spec?.stages ?? []).map((stage) => [stage.id, stage.title]))]));
   const runByCard = new Map();
   const operationByCard = new Map();
   for (const instance of instances.values()) {
@@ -266,16 +267,27 @@ function boardEntries(data) {
       workflowName: instance ? workflowName.get(instance.workflowSha256) : null,
       contentTitle: content?.title ?? null,
       stageId: card.metadata?.automation?.stageId ?? label(card, "stage"),
+      stageTitle: instance ? stageTitles.get(instance.workflowSha256)?.get(card.metadata?.automation?.stageId ?? label(card, "stage")) ?? null : null,
       attention: cardAttention(card, { run: runByCard.get(card.id), operation: operationByCard.get(card.id), shelved: projectState === "shelved", approval }),
     };
   });
+}
+
+function drawerContextFromEntry(entry) {
+  if (!entry) return null;
+  return { projectName: entry.projectName, stageTitle: entry.stageTitle ?? entry.stageId, contentTitle: entry.contentTitle, attention: entry.attention };
+}
+
+function drawerContextFromTask(task, stages = []) {
+  if (!task) return null;
+  return { projectName: task.projectName, stageTitle: stages.find((stage) => stage.id === task.stageId)?.title ?? task.stageId, contentTitle: task.contentTitle, attention: task.attention };
 }
 
 function FactoryCard({ entry, onClick }) {
   const { card, attention } = entry;
   const detail = attention.reason ?? (attention.kind === "running" ? "Agent 在做" : card.status === "scheduled" && card.metadata?.automation?.scheduledAt ? `定时 ${new Date(card.metadata.automation.scheduledAt).toLocaleString()}` : statusLabel(card.status));
   return <button className={`factory-card attention-${attention.kind}`} title={[entry.contentTitle ?? card.title, entry.projectName].filter(Boolean).join("\n")} onClick={onClick}>
-    <div className="factory-card-top"><span>{entry.stageId ?? "task"}</span>{entry.workflowName && <em>{entry.workflowName}</em>}</div>
+    <div className="factory-card-top"><span>{entry.stageTitle ?? entry.stageId ?? "task"}</span>{entry.workflowName && <em>{entry.workflowName}</em>}</div>
     <strong>{entry.contentTitle ?? card.title}</strong>
     {entry.projectName && <small>{entry.projectName}</small>}
     <div className="factory-card-foot"><span>{detail}</span><time>{formatBoardAge(card.updatedAt)}</time></div>
@@ -471,7 +483,7 @@ function WorkflowStudio({ data, refresh, initialProjectId, initialWorkflowId, se
         </div>
       </main>
       {selected && <div className="factory-drawer-scrim" onClick={() => setSelected(null)} />}
-      <Drawer card={selected} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onClose={() => setSelected(null)} onDecide={decide} onRetry={retry} />
+      <Drawer card={selected} context={drawerContextFromTask(allTasks.find((task) => task.card?.id === selected?.id), stages)} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onClose={() => setSelected(null)} onDecide={decide} onRetry={retry} />
     </div>
     {editor && <WorkflowEditor initialSource={editor.source} mode={editor.mode} onClose={() => setEditor(null)} onPublished={async () => { setEditor(null); await refresh(true); }} />}
     {bulkApproval && <div className="workflow-modal bulk-approval-modal" role="dialog" aria-modal="true" aria-label="批量审核">
