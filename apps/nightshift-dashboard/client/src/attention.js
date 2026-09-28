@@ -42,10 +42,46 @@ const OPERATION_UNDER_WAY = new Set(["reserved", "executing"]);
 // agent's paid work is still running. running / queued / done: ordinary flow.
 // stale: a shelved project's leftovers, kept for reference and never counted
 // as work waiting on someone.
-export function taskAttention(task, { operation = null, shelved = false } = {}) {
-  const attention = liveAttention(task, operation);
+//
+// When the engine serves its 需要你 queue (overview.needsYou), that queue alone
+// decides what needs a person; the board only adds healing and flow. Without
+// it (an older server) the board falls back to judging blocked cards itself.
+export function taskAttention(task, { operation = null, shelved = false, queue = null } = {}) {
+  const attention = queue ? queuedAttention(task, operation, queue) : liveAttention(task, operation);
   if (shelved && attention.kind !== "done") return { kind: "stale", reason: attention.reason ?? "项目已搁置" };
   return attention;
+}
+
+// The engine's queue, indexed by card: open requests and approvals, and the
+// blocked cards it is still giving a grace period before deciding.
+export function needsYouQueue(needsYou) {
+  if (!needsYou || !Array.isArray(needsYou.items)) return null;
+  return {
+    byCard: new Map(needsYou.items.map((item) => [item.cardId, item])),
+    pending: new Map((needsYou.pending ?? []).map((entry) => [entry.cardId, entry])),
+  };
+}
+
+function queuedAttention(task, operation, queue) {
+  const cardId = task.card?.id ?? task.cardId;
+  const status = task.card?.status ?? task.status;
+  if (status === "done") return { kind: "done" };
+  if (status === "running") return { kind: "running" };
+  const request = cardId ? queue.byCard.get(cardId) : null;
+  if (request) {
+    const reason = request.kind === "decision"
+      ? request.problem
+      : task.requiresApproval || request.kind === "approval" ? `等你确认${effectLabel(task.guardedEffect) ?? "执行"}` : "等你审核";
+    return { kind: "needs-you", reason, request };
+  }
+  if (task.status === "retry_wait" || task.failure?.automaticRetry) return { kind: "healing", reason: "故障后自动重试中" };
+  if (status === "blocked" && operation && OPERATION_UNDER_WAY.has(operation.status)) {
+    return { kind: "healing", reason: "付费任务仍在执行，完成后自动恢复" };
+  }
+  // In its grace period, or blocked since the engine's last pass: the engine
+  // either queues it or it moves on within minutes.
+  if (status === "blocked") return { kind: "healing", reason: "正在判定是否需要你", judging: true };
+  return { kind: "queued" };
 }
 
 function liveAttention(task, operation) {
@@ -152,7 +188,7 @@ function truncate(value, max) {
 
 // The latest run of each (stage, item) in a project, classed like the lanes.
 // Pages that list projects or cards use it without building the lane index.
-export function projectRuns(instance, { cardsById = new Map(), now = Date.now() } = {}) {
+export function projectRuns(instance, { cardsById = new Map(), now = Date.now(), queue = null } = {}) {
   const shelved = projectScope(instance, now) === "shelved";
   const operationByCard = new Map((instance.operations ?? []).map((operation) => [operation.ownerCardId, operation]));
   const latest = new Map();
@@ -169,13 +205,13 @@ export function projectRuns(instance, { cardsById = new Map(), now = Date.now() 
     const card = run.cardId ? cardsById.get(run.cardId) : undefined;
     const status = run.status === "blocked" && run.failure?.automaticRetry && run.failure?.nextRetryAt ? "retry_wait" : (card?.status ?? run.status);
     const task = { ...run, card, status };
-    return { ...task, attention: taskAttention(task, { operation: operationByCard.get(run.cardId), shelved }) };
+    return { ...task, attention: taskAttention(task, { operation: operationByCard.get(run.cardId), shelved, queue }) };
   });
 }
 
 // Attention for a native card on its own (Live Board), using the run and the
 // paid operation behind it when the card belongs to a Night Shift project.
-export function cardAttention(card, { run = null, operation = null, shelved = false, approval = false } = {}) {
+export function cardAttention(card, { run = null, operation = null, shelved = false, approval = false, queue = null } = {}) {
   const status = run?.status === "blocked" && run.failure?.automaticRetry && run.failure?.nextRetryAt ? "retry_wait" : card.status;
-  return taskAttention({ ...(run ?? {}), card: { ...card, status: status === "retry_wait" ? "blocked" : card.status }, status, requiresApproval: approval }, { operation, shelved });
+  return taskAttention({ ...(run ?? {}), card: { ...card, status: status === "retry_wait" ? "blocked" : card.status }, status, requiresApproval: approval }, { operation, shelved, queue });
 }

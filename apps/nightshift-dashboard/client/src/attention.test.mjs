@@ -125,3 +125,31 @@ test("an approval card waiting on review needs a person; a retrying card heals",
   assert.equal(cardAttention({ status: "blocked" }, { run: { status: "blocked", failure: { automaticRetry: true, nextRetryAt: "2026-09-28T10:00:00Z" } } }).kind, "healing");
   assert.equal(cardAttention({ status: "blocked" }, { shelved: true }).kind, "stale");
 });
+
+test("with the engine's queue, only its requests need a person", async () => {
+  const { cardAttention, needsYouQueue } = await import("./attention.js");
+  const queue = needsYouQueue({
+    items: [
+      { id: "dr-1", kind: "decision", cardId: "stop", problem: "GeeLark 返回 20206" },
+      { id: "approval:gate", kind: "approval", cardId: "gate" },
+    ],
+    pending: [{ cardId: "fresh", until: "2026-09-28T10:02:00Z" }],
+  });
+  const stop = cardAttention({ id: "stop", status: "blocked" }, { queue });
+  assert.equal(stop.kind, "needs-you");
+  assert.equal(stop.reason, "GeeLark 返回 20206");
+  assert.equal(stop.request.id, "dr-1");
+  assert.equal(cardAttention({ id: "gate", status: "review" }, { queue, approval: true }).kind, "needs-you");
+  assert.deepEqual(cardAttention({ id: "fresh", status: "blocked" }, { queue }), { kind: "healing", reason: "正在判定是否需要你", judging: true });
+  assert.equal(cardAttention({ id: "old", status: "blocked" }, { queue }).kind, "healing", "a stop the engine has not judged yet is not counted");
+  assert.equal(cardAttention({ id: "agent-review", status: "review" }, { queue }).kind, "queued", "a review nobody is asked for waits in the flow");
+  assert.equal(cardAttention({ id: "old", status: "blocked" }, { queue: null }).kind, "needs-you", "without a queue the board still judges for itself");
+  assert.equal(cardAttention({ id: "paid", status: "blocked" }, { queue, operation: { status: "executing" } }).kind, "healing");
+  assert.equal(cardAttention({ id: "stop", status: "blocked" }, { queue, shelved: true }).kind, "stale");
+});
+
+test("an overview without the queue field means no queue", async () => {
+  const { needsYouQueue } = await import("./attention.js");
+  assert.equal(needsYouQueue(undefined), null);
+  assert.equal(needsYouQueue({}), null);
+});
