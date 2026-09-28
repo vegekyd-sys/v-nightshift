@@ -242,11 +242,12 @@ test("throttles repeated Session inspection and artifact recovery for a blocked 
     status: "blocked",
     sessionKey: "agent:main:subagent:review-nonterminal",
     runId: "run-review-nonterminal",
-    execution: { status: "running", startedAt: 100 },
+    // Recent activity: the Agent is still working, not orphaned.
+    execution: { status: "running", startedAt: Date.now() - 60_000 },
     labels: ["instance:NS-REVIEW-NONTERMINAL", "stage:plan"],
   });
   workboard.sessions.set("agent:main:subagent:review-nonterminal", {
-    messages: [{ role: "assistant", content: "Still working", timestamp: 200 }],
+    messages: [{ role: "assistant", content: "Still working", timestamp: Date.now() - 1_000 }],
   });
 
   await runtime.reconcile("NS-REVIEW-NONTERMINAL");
@@ -1589,5 +1590,110 @@ test("a human stage cannot be given a release time it would never come back from
   // is the only thing that promotes a held card. A human stage with a release
   // time would sit in scheduled forever, so refuse it at publish time.
   assert.throws(() => runtime.publish(source), (error) => (error.issues ?? []).some((issue) => issue.code === "stage.releaseAt.actor"));
+  store.close();
+});
+
+// On V (2026-09-28) two paid produce cards sat blocked for two hours: their
+// Worker exited while the Agent was polling Makaron, so the Session never got a
+// terminal message and every inspection read "not terminal".
+function orphanedCard({ id, instanceId, stageId, contentItemId, silentMinutes }) {
+  const now = Date.now();
+  return {
+    card: {
+      id,
+      status: "blocked",
+      sessionKey: `agent:main:subagent:${id}`,
+      runId: `run-${id}`,
+      execution: { status: "running", startedAt: now - (silentMinutes + 10) * 60_000 },
+      labels: [`instance:${instanceId}`, `stage:${stageId}`, ...(contentItemId ? [`content-item:${contentItemId}`] : [])],
+    },
+    session: { messages: [{ role: "toolResult", content: "still running", timestamp: now - silentMinutes * 60_000 }] },
+  };
+}
+
+async function orphanFixture({ id, stageId, contentItemId = "video-1", silentMinutes = 50, runtimeOptions = {} }) {
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard, ...runtimeOptions });
+  const release = runtime.publish(await readFile(workflowPath, "utf8"));
+  runtime.startInstance({ id, workflowSha256: release.workflowSha256, agentBindings: { "content-operator": "main" } });
+  const item = stageId === "plan" ? null : contentItemId;
+  if (item) runtime.setContentItems(id, [{ id: item, title: "Orphaned video", route: "SCENE_EDIT" }]);
+  const { card, session } = orphanedCard({ id: `card-${id}`, instanceId: id, stageId, contentItemId: item, silentMinutes });
+  workboard.cards.push(card);
+  workboard.sessions.set(card.sessionKey, session);
+  return { card, runtime, store, workboard };
+}
+
+function attemptFailures(store, instanceId) {
+  return store.listEvents(instanceId).filter((event) => event.type === "stage.attempt.failed");
+}
+
+test("a blocked card whose Session has gone silent is failed as interrupted and scheduled for retry", async () => {
+  const { runtime, store } = await orphanFixture({ id: "NS-ORPHAN-PLAN", stageId: "plan" });
+  await runtime.reconcile("NS-ORPHAN-PLAN");
+  const [event] = attemptFailures(store, "NS-ORPHAN-PLAN");
+  assert.equal(event.payload.failure.kind, "agent_interrupted");
+  assert.match(event.payload.failure.rawError, /silent for 50 min/);
+  assert.equal(event.payload.failure.automaticRetry, true);
+  assert.ok(event.payload.failure.nextRetryAt);
+  store.close();
+});
+
+test("a recently active blocked Session is left alone", async () => {
+  const { runtime, store, workboard } = await orphanFixture({ id: "NS-ORPHAN-RECENT", stageId: "plan", silentMinutes: 10 });
+  await runtime.reconcile("NS-ORPHAN-RECENT");
+  assert.equal(attemptFailures(store, "NS-ORPHAN-RECENT").length, 0);
+  assert.equal(workboard.cards[0].status, "blocked");
+  store.close();
+});
+
+test("an orphaned paid card is not retried automatically without a ledger entry", async () => {
+  const { runtime, store } = await orphanFixture({ id: "NS-ORPHAN-UNPAID", stageId: "produce" });
+  await runtime.reconcile("NS-ORPHAN-UNPAID");
+  const [event] = attemptFailures(store, "NS-ORPHAN-UNPAID");
+  assert.equal(event.payload.failure.kind, "agent_interrupted");
+  assert.equal(event.payload.failure.automaticRetry, false);
+  assert.match(event.payload.summary, /需要人工检查后重试/);
+  store.close();
+});
+
+test("an orphaned paid card whose provider task is on the ledger resumes automatically", async () => {
+  const { card, runtime, store } = await orphanFixture({ id: "NS-ORPHAN-PAID", stageId: "produce" });
+  const operation = {
+    idempotencyKey: "NS-ORPHAN-PAID:video-1:produce",
+    instanceId: "NS-ORPHAN-PAID",
+    contentItemId: "video-1",
+    stageId: "produce",
+    ownerCardId: card.id,
+    requestHash: "request-sha",
+  };
+  store.reserveExternalOperation(operation);
+  store.checkpointExternalOperation(operation.idempotencyKey, { status: "executing", externalTaskId: "makaron-task-1" });
+  await runtime.reconcile("NS-ORPHAN-PAID");
+  const [event] = attemptFailures(store, "NS-ORPHAN-PAID");
+  assert.equal(event.payload.failure.automaticRetry, true);
+  store.close();
+});
+
+test("blocked-card inspection has its own budget and a deferred card is read on the next ordinary pass", async () => {
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard, terminalInspectionMaxStarts: 1, terminalInspectionWindowMs: 1 });
+  const release = runtime.publish(await readFile(workflowPath, "utf8"));
+  runtime.startInstance({ id: "NS-ORPHAN-BUDGET", workflowSha256: release.workflowSha256 });
+  for (const suffix of ["a", "b"]) {
+    const { card, session } = orphanedCard({ id: `budget-${suffix}`, instanceId: "NS-ORPHAN-BUDGET", stageId: "plan", silentMinutes: 50 });
+    workboard.cards.push(card);
+    workboard.sessions.set(card.sessionKey, session);
+  }
+  // Completion validation exhausting its budget does not touch this one.
+  runtime.consumeTerminalInspectionBudget();
+  await runtime.reconcile("NS-ORPHAN-BUDGET", null, { inspectSessions: true });
+  assert.equal(workboard.sessionCalls.length, 1);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await runtime.reconcile("NS-ORPHAN-BUDGET", null, { inspectSessions: false });
+  assert.equal(workboard.sessionCalls.length, 2, "the deferred card is read without waiting for a repair pass");
+  assert.equal(attemptFailures(store, "NS-ORPHAN-BUDGET").length, 2);
   store.close();
 });

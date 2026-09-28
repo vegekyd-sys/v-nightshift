@@ -17,6 +17,9 @@ export class NightShiftRuntime {
     maxWorkboardActive = 36,
     terminalInspectionMaxStarts = 3,
     terminalInspectionWindowMs = 30_000,
+    // A blocked card whose Agent Session has written nothing for this long has
+    // lost its run: the Worker that carried it exited without a terminal message.
+    orphanedSessionMs = 45 * 60_000,
     store,
     workboard,
   }) {
@@ -29,6 +32,9 @@ export class NightShiftRuntime {
     this.terminalInspectionMaxStarts = positiveDispatchLimit(terminalInspectionMaxStarts, "terminalInspectionMaxStarts");
     this.terminalInspectionWindowMs = positiveInteger(terminalInspectionWindowMs, "terminalInspectionWindowMs");
     this.terminalInspectionStarts = [];
+    this.sessionInspectionStarts = [];
+    this.deferredSessionInspections = new Set();
+    this.orphanedSessionMs = positiveInteger(orphanedSessionMs, "orphanedSessionMs");
     this.nextReconcileAt = 0;
     this.store = store;
     this.workboard = workboard;
@@ -131,7 +137,7 @@ export class NightShiftRuntime {
       }
       const hasNativeTerminalEvidence = nativeAttemptIsTerminal(card);
       if (!failure && ["running", "review", "blocked"].includes(status) && stage.actor === "agent" && card.sessionKey &&
-        (inspectSessions || hasNativeTerminalEvidence)) {
+        (inspectSessions || hasNativeTerminalEvidence || this.deferredSessionInspections.has(card.id))) {
         const recovered = await this.recoverTerminalCard({ card, contentItemId, instance, release, stageId });
         if (recovered?.deferred) {
           terminalReconciliationDeferred = true;
@@ -248,7 +254,15 @@ export class NightShiftRuntime {
       ? null
       : terminalInspectionEventId(card, attempt);
     if (inspectionEventId && this.store.getEvent?.(inspectionEventId)) return { deferred: true };
-    if (inspectionEventId && !this.consumeTerminalInspectionBudget()) return { deferred: true };
+    // Blocked-card Sessions have their own budget. Sharing one with completion
+    // validation starved them on V (2026-09-28): 70 validations in two hours
+    // used every repair pass's budget, and no blocked card was read at all.
+    // A card deferred here is read on the next pass, not the next repair tick.
+    if (inspectionEventId && !this.consumeSessionInspectionBudget()) {
+      this.deferredSessionInspections.add(card.id);
+      return { deferred: true };
+    }
+    this.deferredSessionInspections.delete(card.id);
     let session;
     try {
       session = await this.workboard.getSession(card.sessionKey, { limit: 12 });
@@ -268,6 +282,29 @@ export class NightShiftRuntime {
     const startedAt = timestampMs(card.execution?.startedAt ?? card.metadata?.attempts?.at(-1)?.startedAt ?? 0);
     const terminalAt = timestampMs(latest?.timestamp ?? latest?.__openclaw?.recordTimestampMs ?? 0);
     const stopReason = String(latest?.stopReason ?? "").toLowerCase();
+    const silentMs = Date.now() - Math.max(terminalAt, startedAt);
+    if (card.status === "blocked" && startedAt > 0 && silentMs >= this.orphanedSessionMs &&
+      (latest?.role !== "assistant" || !["stop", "error", "aborted"].includes(stopReason) || terminalAt < startedAt)) {
+      // On V two paid produce cards sat blocked for two hours after their Worker
+      // exited mid-poll: no terminal message ever arrives for such a run, so it
+      // is failed here as interrupted and handed to the ordinary retry policy.
+      // A paid stage still retries only when its ledger holds an external task.
+      return this.failTerminalAttempt({
+        attempt,
+        card,
+        contentItemId,
+        failure: {
+          kind: "agent_interrupted",
+          source: "runtime",
+          rawError: `Agent Session silent for ${Math.round(silentMs / 60_000)} min while its card is blocked`,
+          retryable: true,
+        },
+        instance,
+        release,
+        stageId,
+        terminalAt: Date.now(),
+      });
+    }
     if (latest?.role !== "assistant" || !["stop", "error", "aborted"].includes(stopReason) || terminalAt < startedAt) {
       if (inspectionEventId) {
         this.store.appendEvent({
@@ -281,32 +318,7 @@ export class NightShiftRuntime {
     }
     const terminalFailure = classifyTerminalFailure({ message: latest, session });
     if (terminalFailure) {
-      const eventId = `attempt-failure:${card.id}:${attempt}`;
-      const previousFailures = this.store.listEvents(instance.id, 1000).filter((event) =>
-        event.type === "stage.attempt.failed" && event.payload?.cardId === card.id);
-      const safeToRetry = this.safeToAutomaticallyRetry({ card, contentItemId, instance, release, stageId });
-      const retry = scheduleAutomaticRetry({
-        failure: terminalFailure,
-        failureCount: previousFailures.length + 1,
-        maxAttempts: release.spec.stages.find((entry) => entry.id === stageId)?.retry?.maxAttempts ?? 1,
-        safeToRetry,
-      });
-      const failure = {
-        ...terminalFailure,
-        ...retry,
-        attempt,
-        occurredAt: new Date(terminalAt || Date.now()).toISOString(),
-      };
-      const summary = boundedReason(infrastructureFailureSummary(failure));
-      const blocked = await this.workboard.blockCard(card.id, { reason: summary });
-      Object.assign(card, blocked);
-      this.store.appendEvent({
-        eventId,
-        instanceId: instance.id,
-        type: "stage.attempt.failed",
-        payload: { cardId: card.id, contentItemId, failure, stageId, summary, terminalAt },
-      });
-      return { status: "blocked", summary, failure };
+      return this.failTerminalAttempt({ attempt, card, contentItemId, failure: terminalFailure, instance, release, stageId, terminalAt });
     }
     const terminalText = messageText(latest);
     try {
@@ -353,6 +365,46 @@ export class NightShiftRuntime {
       });
       return null;
     }
+  }
+
+  async failTerminalAttempt({ attempt, card, contentItemId, failure: terminalFailure, instance, release, stageId, terminalAt }) {
+    const eventId = `attempt-failure:${card.id}:${attempt}`;
+    const previousFailures = this.store.listEvents(instance.id, 1000).filter((event) =>
+      event.type === "stage.attempt.failed" && event.payload?.cardId === card.id);
+    const safeToRetry = this.safeToAutomaticallyRetry({ card, contentItemId, instance, release, stageId });
+    const retry = scheduleAutomaticRetry({
+      failure: terminalFailure,
+      failureCount: previousFailures.length + 1,
+      maxAttempts: release.spec.stages.find((entry) => entry.id === stageId)?.retry?.maxAttempts ?? 1,
+      safeToRetry,
+    });
+    const failure = {
+      ...terminalFailure,
+      ...retry,
+      attempt,
+      occurredAt: new Date(terminalAt || Date.now()).toISOString(),
+    };
+    const summary = boundedReason(infrastructureFailureSummary(failure));
+    const blocked = await this.workboard.blockCard(card.id, { reason: summary });
+    Object.assign(card, blocked);
+    this.store.appendEvent({
+      eventId,
+      instanceId: instance.id,
+      type: "stage.attempt.failed",
+      payload: { cardId: card.id, contentItemId, failure, stageId, summary, terminalAt },
+    });
+    return { status: "blocked", summary, failure };
+  }
+
+  consumeSessionInspectionBudget(now = Date.now()) {
+    const cutoff = now - this.terminalInspectionWindowMs;
+    this.sessionInspectionStarts = this.sessionInspectionStarts.filter((startedAt) => startedAt > cutoff);
+    if (this.sessionInspectionStarts.length >= this.terminalInspectionMaxStarts) {
+      this.nextReconcileAt = this.sessionInspectionStarts[0] + this.terminalInspectionWindowMs;
+      return false;
+    }
+    this.sessionInspectionStarts.push(now);
+    return true;
   }
 
   consumeTerminalInspectionBudget(now = Date.now()) {
