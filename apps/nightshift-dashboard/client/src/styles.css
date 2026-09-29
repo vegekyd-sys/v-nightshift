@@ -857,3 +857,39 @@ body { background:radial-gradient(circle at 72% -20%,rgba(128,92,214,.14),transp
   .decision-facts dd { margin-bottom:8px; }
   .decision-submit { align-self:stretch; }
 }
+/* A project's queue place and concurrency: a quiet ⋯ on the card. */
+.factory-studio div.factory-project[role="button"] { cursor:pointer; }
+.factory-studio div.factory-project[role="button"]:focus-visible { outline:none; box-shadow:inset 0 0 0 1px rgba(169,140,255,.5); }
+.factory-studio .factory-project:has(.project-tune-menu) { position:relative; z-index:130; }
+.project-tune-badges { display:inline-flex; gap:6px; margin-right:10px; vertical-align:1px; }
+.project-tune-badges em { padding:1px 8px; border-radius:7px; background:rgba(169,140,255,.12); color:#cfc5ff; font-size:12px; font-style:normal; font-weight:500; }
+.project-tune { position:relative; flex:0 0 auto; align-self:center; margin:-6px -8px -6px 0; }
+.project-tune-trigger { width:30px; height:30px; display:grid; place-items:center; border:0; border-radius:9px; background:transparent; color:#6b7388; cursor:pointer; }
+.project-tune-trigger:hover,.project-tune-trigger[aria-expanded="true"] { background:rgba(255,255,255,.06); color:#dfe3ec; }
+.project-tune-menu { position:absolute; z-index:131; top:calc(100% + 6px); right:0; width:340px; display:flex; flex-direction:column; gap:16px; padding:18px; border-radius:16px; background:#11131d; box-shadow:0 0 0 1px rgba(169,140,255,.18),0 24px 60px rgba(0,0,0,.5); cursor:default; text-align:left; }
+.project-tune-menu section { display:flex; flex-direction:column; gap:10px; }
+.project-tune-head { display:flex; align-items:baseline; justify-content:space-between; gap:12px; }
+.project-tune-head strong { color:#eef0f7; font-size:14px; font-weight:620; }
+.project-tune-head span { color:#8b93a8; font-size:12px; }
+.project-tune-menu p { margin:0; color:#6b7388; font-size:12px; line-height:1.5; }
+.project-tune-choices { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; }
+.project-tune-steps { display:grid; grid-template-columns:auto repeat(8,1fr); gap:4px; }
+.project-tune-choices button,.project-tune-steps button { min-height:34px; padding:0 8px; border:0; border-radius:9px; background:rgba(255,255,255,.05); color:#cbd2df; font-size:13px; cursor:pointer; white-space:nowrap; }
+.project-tune-choices button:hover:not(:disabled),.project-tune-steps button:hover:not(:disabled) { background:rgba(255,255,255,.09); }
+.project-tune-choices button.selected,.project-tune-steps button.selected { background:rgba(169,140,255,.18); color:#ece6ff; box-shadow:inset 0 0 0 1px rgba(169,140,255,.45); }
+.project-tune-choices button:disabled,.project-tune-steps button:disabled { cursor:default; }
+.project-tune-choices button:disabled:not(.selected),.project-tune-steps button:disabled:not(.selected) { opacity:.55; }
+.project-tune-reason { width:100%; height:38px; padding:0 12px; border:0; border-radius:10px; background:rgba(0,0,0,.25); color:#e6e8f0; font-size:13px; }
+.project-tune-reason:focus { outline:none; box-shadow:inset 0 0 0 1px rgba(169,140,255,.5); }
+.project-tune-note { color:#6b7388; font-size:12px; line-height:1.5; }
+.factory-studio .factory-project .project-tune .factory-scrim { z-index:130; }
+@media (max-width:700px) {
+  .factory-studio .factory-project .project-tune .factory-scrim { background:rgba(5,6,12,.62); backdrop-filter:blur(2px); }
+  .project-tune-menu { position:fixed; top:auto; right:0; bottom:0; left:0; width:auto; max-height:80vh; overflow-y:auto; gap:18px; padding:14px 16px calc(20px + env(safe-area-inset-bottom)); border-radius:22px 22px 0 0; }
+  .project-tune-menu::before { content:""; flex:0 0 auto; width:38px; height:4px; margin:0 auto -6px; border-radius:2px; background:rgba(255,255,255,.18); }
+  .project-tune-steps { grid-template-columns:repeat(4,1fr); }
+  .factory-studio .project-tune-menu .factory-sheet-title { padding:6px 0 0; }
+  .project-tune-steps button:first-child { grid-column:1 / -1; }
+  .project-tune-choices button,.project-tune-steps button { min-height:42px; font-size:14px; }
+  .project-tune-reason { height:44px; font-size:14px; }
+}
