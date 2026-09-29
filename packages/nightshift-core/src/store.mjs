@@ -206,6 +206,12 @@ export class NightShiftStore {
     if (!approvalColumns.some((column) => column.name === "binding_hash")) {
       this.db.exec("ALTER TABLE approvals ADD COLUMN binding_hash TEXT");
     }
+    // A project's own session limit, set by an operator or an Agent while it
+    // runs; null keeps the Workflow's perInstance.
+    const controlColumns = this.db.prepare("PRAGMA table_info(instance_controls)").all();
+    if (!controlColumns.some((column) => column.name === "per_instance_limit")) {
+      this.db.exec("ALTER TABLE instance_controls ADD COLUMN per_instance_limit INTEGER");
+    }
     for (const table of ["stage_runs", "content_item_runs"]) {
       const columns = this.db.prepare(`PRAGMA table_info(${table})`).all();
       if (!columns.some((column) => column.name === "failure_json")) {
@@ -314,15 +320,21 @@ export class NightShiftStore {
 
   getInstanceControl(instanceId) {
     const row = this.db.prepare("SELECT * FROM instance_controls WHERE instance_id = ?").get(instanceId);
-    return { automaticDispatch: row ? Boolean(row.automatic_dispatch) : true, fault: row?.fault_json ? JSON.parse(row.fault_json) : null };
+    return {
+      automaticDispatch: row ? Boolean(row.automatic_dispatch) : true,
+      fault: row?.fault_json ? JSON.parse(row.fault_json) : null,
+      perInstanceLimit: Number.isSafeInteger(row?.per_instance_limit) ? row.per_instance_limit : null,
+    };
   }
 
   setInstanceControl(instanceId, patch) {
     const control = { ...this.getInstanceControl(instanceId), ...patch };
-    this.db.prepare(`INSERT INTO instance_controls VALUES (?, ?, ?, ?)
+    this.db.prepare(`INSERT INTO instance_controls (instance_id, automatic_dispatch, fault_json, updated_at, per_instance_limit)
+      VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(instance_id) DO UPDATE SET automatic_dispatch=excluded.automatic_dispatch,
-      fault_json=excluded.fault_json, updated_at=excluded.updated_at`).run(
-      instanceId, control.automaticDispatch ? 1 : 0, control.fault ? JSON.stringify(control.fault) : null, new Date().toISOString());
+      fault_json=excluded.fault_json, updated_at=excluded.updated_at, per_instance_limit=excluded.per_instance_limit`).run(
+      instanceId, control.automaticDispatch ? 1 : 0, control.fault ? JSON.stringify(control.fault) : null, new Date().toISOString(),
+      Number.isSafeInteger(control.perInstanceLimit) ? control.perInstanceLimit : null);
     return control;
   }
 

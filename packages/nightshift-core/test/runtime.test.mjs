@@ -1924,3 +1924,41 @@ test("a run that ended normally is judged on its outputs even when the transcrip
   assert.equal(attemptFailures(store, "NS-RUN-DONE-MIDTOOL").length, 0);
   store.close();
 });
+
+// A project's own session limit, set while it runs (nightshiftctl projects
+// concurrency). Unset, the Workflow's perInstance applies as before.
+async function limitedProject({ id, workflowLimit, running }) {
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard });
+  const source = (await readFile(workflowPath, "utf8")).replace("concurrency: {perInstance: 8}", `concurrency: {perInstance: ${workflowLimit}}`);
+  const release = runtime.publish(source);
+  runtime.startInstance({ id, workflowSha256: release.workflowSha256, agentBindings: { "content-operator": "main" } });
+  for (let index = 0; index < running; index++) {
+    workboard.cards.push({ id: `${id}-running-${index}`, status: "running", labels: [`instance:${id}`] });
+  }
+  return { runtime, store, workboard };
+}
+
+test("a project's own limit lowers its concurrency below the Workflow's", async () => {
+  const { runtime, store, workboard } = await limitedProject({ id: "NS-LIMIT-LOW", workflowLimit: 8, running: 1 });
+  store.setInstanceControl("NS-LIMIT-LOW", { perInstanceLimit: 1 });
+  await runtime.tick("NS-LIMIT-LOW", { dispatch: true });
+  assert.deepEqual(workboard.dispatchCalls, [], "one card already runs and the project allows one");
+  store.close();
+});
+
+test("a project's own limit raises its concurrency above the Workflow's, and default restores it", async () => {
+  const { runtime, store, workboard } = await limitedProject({ id: "NS-LIMIT-HIGH", workflowLimit: 1, running: 1 });
+  await runtime.tick("NS-LIMIT-HIGH", { dispatch: true });
+  assert.deepEqual(workboard.dispatchCalls, [], "the Workflow allows one");
+  store.setInstanceControl("NS-LIMIT-HIGH", { perInstanceLimit: 3 });
+  await runtime.tick("NS-LIMIT-HIGH", { dispatch: true });
+  assert.equal(workboard.dispatchCalls.length, 1);
+  assert.ok(workboard.dispatchCalls[0].maxStarts >= 1 && workboard.dispatchCalls[0].maxStarts <= 2);
+  store.setInstanceControl("NS-LIMIT-HIGH", { perInstanceLimit: null });
+  workboard.dispatchCalls.length = 0;
+  await runtime.tick("NS-LIMIT-HIGH", { dispatch: true });
+  assert.deepEqual(workboard.dispatchCalls, [], "back to the Workflow's one");
+  store.close();
+});

@@ -67,6 +67,22 @@ async function run(input) {
       method: "POST",
     });
   }
+  // How many cards of one project may run at once. Without a value, shows the
+  // current limit; <n> sets the project's own (1–8); "default" returns it to
+  // the Workflow's perInstance.
+  if (resource === "projects" && action === "concurrency" && subject) {
+    const value = input[3];
+    if (!value || value.startsWith("--")) {
+      const project = await api(`/api/instances/${encodeURIComponent(subject)}`);
+      return { instanceId: subject, concurrency: (project.instance ?? project).control?.concurrency ?? null };
+    }
+    const perInstance = value === "default" ? null : Number(value);
+    if (perInstance !== null && !Number.isSafeInteger(perInstance)) throw new Error("projects concurrency <id> <1-8|default> [--reason <text>]");
+    return api(`/api/instances/${encodeURIComponent(subject)}/concurrency`, {
+      body: JSON.stringify({ perInstance, reason: option(input, "--reason") ?? null, actor: option(input, "--actor") ?? "Night Shift operator" }),
+      method: "POST",
+    });
+  }
   if (resource === "projects" && action === "start" && subject) {
     return api(`/api/instances/${encodeURIComponent(subject)}/start`, { body: "{}", method: "POST" });
   }
@@ -203,7 +219,7 @@ async function run(input) {
       method: "POST",
     });
   }
-  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|monitor|preflight|create|start|pause|archive|restore | projects inputs <id> --file <json> | projects collaboration <id> --to <oc_…|user:ou_…> [--by <ou_…>] | decisions list [--project <id>] [--status open|decided] | decisions get <id> | decisions decide <id> --option <id> [--note <text>] [--apply-to-group] | governance audit [--refresh] | governance archive|restore <manifest.json> [--apply] | operations reserve|checkpoint <card-id> | cards list|session|approve|changes|reject|retry");
+  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|monitor|preflight|create|start|pause|archive|restore | projects concurrency <id> [<1-8>|default] [--reason <text>] | projects inputs <id> --file <json> | projects collaboration <id> --to <oc_…|user:ou_…> [--by <ou_…>] | decisions list [--project <id>] [--status open|decided] | decisions get <id> | decisions decide <id> --option <id> [--note <text>] [--apply-to-group] | governance audit [--refresh] | governance archive|restore <manifest.json> [--apply] | operations reserve|checkpoint <card-id> | cards list|session|approve|changes|reject|retry");
 }
 
 async function resolveWorkflow(project) {

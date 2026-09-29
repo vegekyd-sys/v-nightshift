@@ -85,6 +85,22 @@ Each project's place is reported as `control.queue` in `/api/overview`:
 
 Before this, the scheduler visited projects by last update. On 2026-09-29 that gave the few free starts to the newest batches: DL-0929-01, started at 11:49, sat queued behind projects that arrived four hours later, and all seven batches were heading to finish together late at night.
 
+### A project's own session limit
+
+How many cards one project may run at once can be set while it runs, by an operator or by an Agent. V sets it through the CLI:
+
+```bash
+nightshiftctl projects concurrency <project>                                 # show
+nightshiftctl projects concurrency <project> 6 --actor V --reason "机器空闲，加快"
+nightshiftctl projects concurrency <project> default --reason "高峰结束"
+```
+
+- The limit is 1 to 8 (`PROJECT_CONCURRENCY_MAX`). `default` clears it, and the project runs by its Workflow's `concurrency.perInstance` again. A project nobody set runs exactly as before.
+- It is stored in `instance_controls.per_instance_limit`. The column is added at startup; a database from before it is upgraded in place, and an older release ignores it.
+- It only changes that project's share. The board-wide brakes still cap every start: Agent DB pressure, host memory, `maxActive`, and the first-come queue. Raising one project while the host is braking starts nothing new.
+- Every change is an audit event `concurrency.control.changed` with the actor, the reason and the limits before and after. `/api/instances/:id` and `/api/overview` report `control.concurrency { effective, project, workflow, max }`.
+- API: `POST /api/instances/:id/concurrency { perInstance: 1–8 | null | "default", reason, actor }`.
+
 ## Why a blocked card stopped
 
 A blocked card is first explained by how its run ended, as the Gateway records it (`tasks.list` for the card's Session, matched by run id). The Workboard keeps no reason for a blocked attempt; the Gateway's task registry does.

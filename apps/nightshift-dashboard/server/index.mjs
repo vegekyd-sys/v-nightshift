@@ -35,6 +35,8 @@ import {
   instanceRelativeArtifactPath,
   normalizeArtifactPath,
   normalizeProjectGovernance,
+  PROJECT_CONCURRENCY_MAX,
+  projectConcurrencyLimit,
   normalizeDeliverablesManifest,
   deliverablesFromHandoffs,
   normalizeStageHandoff,
@@ -844,6 +846,33 @@ async function handleApi(request, response, url) {
       store.appendEvent({ instanceId, type: "dispatch.control.changed", payload: { actor, automaticDispatch: body.automaticDispatch } });
       return control;
     });
+    json(response, 200, result);
+    return;
+  }
+  // A project's own session limit, for an operator or an Agent to raise when
+  // the host is quiet and lower when it is busy. null (or "default") returns
+  // the project to its Workflow's perInstance. The board-wide brakes (Agent DB
+  // pressure, host memory, maxActive) still cap every start.
+  const concurrencyMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/concurrency$/);
+  if (request.method === "POST" && concurrencyMatch) {
+    const instanceId = decodeURIComponent(concurrencyMatch[1]);
+    const body = await bodyJson(request);
+    const actor = operatorIdentity(request, body);
+    const instance = store.getInstance(instanceId);
+    if (!instance) throw new Error(`Unknown project ${instanceId}`);
+    const requested = body.perInstance === "default" ? null : body.perInstance ?? null;
+    if (requested !== null && (!Number.isSafeInteger(requested) || requested < 1 || requested > PROJECT_CONCURRENCY_MAX)) {
+      throw new Error(`perInstance must be an integer from 1 to ${PROJECT_CONCURRENCY_MAX}, or null / "default" for the Workflow's own limit`);
+    }
+    const reason = typeof body.reason === "string" ? body.reason.slice(0, 500) : null;
+    const result = await serializedOperation(async () => {
+      const before = projectConcurrency(instance);
+      store.setInstanceControl(instanceId, { perInstanceLimit: requested });
+      const after = projectConcurrency(instance);
+      store.appendEvent({ instanceId, type: "concurrency.control.changed", payload: { actor, reason, from: before, to: after } });
+      return { instanceId, concurrency: after };
+    });
+    if (store.getInstanceControl(instanceId).automaticDispatch) changeScheduler.enqueue("concurrency.changed");
     json(response, 200, result);
     return;
   }
@@ -1729,8 +1758,19 @@ function withWorkflowLinks(release) {
   return { ...release, links: workflowLinks(release) };
 }
 
+function projectConcurrency(instance) {
+  const release = store.getRelease(instance.workflowSha256)?.manifest;
+  const own = store.getInstanceControl(instance.id).perInstanceLimit;
+  return {
+    effective: projectConcurrencyLimit(release, { perInstanceLimit: own }),
+    project: own,
+    workflow: release?.spec?.concurrency?.perInstance ?? 1,
+    max: PROJECT_CONCURRENCY_MAX,
+  };
+}
+
 function withInstanceLinks(instance) {
-  const control = { ...store.getInstanceControl(instance.id), queue: projectQueue.get(instance.id) ?? null };
+  const control = { ...store.getInstanceControl(instance.id), queue: projectQueue.get(instance.id) ?? null, concurrency: projectConcurrency(instance) };
   return { ...instance, governance: normalizeProjectGovernance(instance), control, links: projectLinks(instance.id) };
 }
 
