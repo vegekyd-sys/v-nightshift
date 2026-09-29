@@ -547,7 +547,7 @@ function WorkflowStudio({ onScopeChange, data, refresh, initialProjectId, initia
           <div className="factory-scope" role="tablist" aria-label="项目范围">{PROJECT_TABS.filter(([id]) => id !== "paused" || scopeCounts.paused > 0 || scope === "paused").map(([id, title]) => <button role="tab" aria-selected={scope === id && !focusedProject} className={scope === id && !focusedProject ? "selected" : ""} key={id} onClick={() => { setScope(id); setProjectId("all"); }}>{title}<span>{scopeCounts[id]}</span></button>)}</div>
           {focusedProject && <button className="factory-focus" onClick={() => setProjectId("all")}><span>只看</span><strong>{focusedProject.name}</strong><X size={13} /></button>}
         </div>
-        <FactoryOverview scope={scope} stages={runwayStages} projects={visibleProjects} focused={projectId !== "all"} renderControls={(instance) => <ExecutionControls instance={instance} cards={data.cards ?? []} refresh={refresh} />} taskIndex={taskIndex} releaseBySha={releaseBySha} needsYou={needsYou} onSelect={setSelected} onOpenProject={setProjectId} />
+        <FactoryOverview onTuned={() => refresh(true)} scope={scope} stages={runwayStages} projects={visibleProjects} focused={projectId !== "all"} renderControls={(instance) => <ExecutionControls instance={instance} cards={data.cards ?? []} refresh={refresh} />} taskIndex={taskIndex} releaseBySha={releaseBySha} needsYou={needsYou} onSelect={setSelected} onOpenProject={setProjectId} />
         <nav className="mobile-stage-nav" aria-label="Workflow 阶段">
           {runwayStages.map((stage, index) => {
             const tasks = taskIndex.get(stage.id) ?? [];
@@ -615,6 +615,76 @@ function shortStageTitle(title = "") {
   return title.split(/\s*[+＋（(|｜]\s*/)[0].trim() || title;
 }
 
+// What someone changed about a project's place in line or its concurrency;
+// a project nobody touched shows nothing.
+function ProjectTuneBadges({ control }) {
+  const priority = control?.priority ?? 0;
+  const own = control?.concurrency?.project;
+  const badges = [priority > 0 ? "优先" : priority < 0 ? "靠后" : null, Number.isSafeInteger(own) ? `并发 ${own}` : null].filter(Boolean);
+  if (!badges.length) return null;
+  return <span className="project-tune-badges">{badges.map((badge) => <em key={badge}>{badge}</em>)}</span>;
+}
+
+// A project's place in line and how many of its cards may run at once, kept
+// out of the way in a ⋯ menu. Each choice applies at once and only to cards
+// dispatched after it; running cards are never stopped.
+function ProjectTuneMenu({ project, onTuned }) {
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(null);
+  const [error, setError] = useState("");
+  const control = project.control ?? {};
+  const concurrency = control.concurrency;
+  const priority = control.priority ?? 0;
+  const queue = control.queue;
+  const own = Number.isSafeInteger(concurrency?.project) ? concurrency.project : null;
+  async function send(kind, body, key) {
+    if (busy) return;
+    setBusy(key);
+    setError("");
+    try {
+      await api(`/api/instances/${encodeURIComponent(project.id)}/${kind}`, { method: "POST", body: JSON.stringify({ ...body, reason: reason.trim() || undefined }) });
+      await onTuned?.();
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setBusy(null);
+    }
+  }
+  const place = queue?.state === "queued" ? `排第 ${queue.position} 位` : queue?.state === "running" ? "正在派卡" : "暂时没有可派的卡";
+  const order = priority > 0 ? "已排到前面" : priority < 0 ? "已排到后面" : "按到达顺序";
+  const stop = (event) => event.stopPropagation();
+  return <div className="project-tune" onClick={stop} onKeyDown={stop}>
+    <button className="project-tune-trigger" aria-label="调整排队和并发" aria-expanded={open} onClick={() => setOpen((value) => !value)}><MoreHorizontal size={16} /></button>
+    {open && <>
+      <div className="factory-scrim" onClick={() => setOpen(false)} />
+      <div className="project-tune-menu" role="dialog" aria-label={`${project.name}：排队和并发`}>
+        <header className="factory-sheet-title">{project.name}</header>
+        <section>
+          <div className="project-tune-head"><strong>排队</strong><span>{place} · {order}</span></div>
+          <div className="project-tune-choices">
+            <button className={priority > 0 ? "selected" : ""} disabled={Boolean(busy)} onClick={() => send("priority", { priority: "first" }, "first")}>{busy === "first" ? "…" : "排到最前"}</button>
+            <button className={priority < 0 ? "selected" : ""} disabled={Boolean(busy)} onClick={() => send("priority", { priority: "last" }, "last")}>{busy === "last" ? "…" : "排到最后"}</button>
+            <button className={priority === 0 ? "selected" : ""} disabled={Boolean(busy) || priority === 0} onClick={() => send("priority", { priority: "default" }, "order-default")}>{busy === "order-default" ? "…" : "恢复默认"}</button>
+          </div>
+          <p>优先的先拿名额；一样时先到先交付。</p>
+        </section>
+        <section>
+          <div className="project-tune-head"><strong>同时最多</strong><span>现在 {concurrency.effective} 张卡</span></div>
+          <div className="project-tune-steps">
+            <button className={own === null ? "selected" : ""} disabled={Boolean(busy)} onClick={() => send("concurrency", { perInstance: "default" }, "c-default")}>默认 {concurrency.workflow}</button>
+            {Array.from({ length: concurrency.max ?? 8 }, (_, index) => index + 1).map((value) => <button key={value} className={own === value ? "selected" : ""} disabled={Boolean(busy)} onClick={() => send("concurrency", { perInstance: value }, `c-${value}`)}>{busy === `c-${value}` ? "…" : value}</button>)}
+          </div>
+          <p>这个项目同时最多跑几张卡；默认用 Workflow 的设置。</p>
+        </section>
+        <input className="project-tune-reason" aria-label="原因" value={reason} onChange={(event) => setReason(event.target.value)} placeholder="原因（可选，会记入审计）" />
+        {error && <p className="decision-error">{error}</p>}
+        <small className="project-tune-note">只影响之后派出的卡，正在跑的不会停；机器在刹车时，调高也不会多派。</small>
+      </div>
+    </>}
+  </div>;
+}
+
 function defaultScope(counts) {
   return counts.live === 0 && counts.delivered > 0 ? "delivered" : "live";
 }
@@ -625,7 +695,7 @@ function scopeTitle(scope) {
   return ({ live: "在产", paused: "已暂停", delivered: "已交付", shelved: "搁置", all: "" })[scope] ?? "";
 }
 
-function FactoryOverview({ scope, stages, projects, focused = false, renderControls, taskIndex, releaseBySha, needsYou, onSelect, onOpenProject }) {
+function FactoryOverview({ scope, stages, projects, focused = false, renderControls, taskIndex, releaseBySha, needsYou, onSelect, onOpenProject, onTuned }) {
   const tasksByProject = useMemo(() => {
     const result = new Map();
     for (const tasks of taskIndex.values()) {
@@ -652,11 +722,13 @@ function FactoryOverview({ scope, stages, projects, focused = false, renderContr
         const expected = Math.max(progress.expected, tasks.length, 1);
         const share = (value) => `${(value / expected) * 100}%`;
         const fraction = progress.splitting ? "拆单中" : `${progress.estimated ? "约 " : ""}${counts.done}/${expected}`;
-        const Tag = focused ? "div" : "button";
-        return <Tag className={`factory-project ${focused ? "is-focused" : ""}`} key={project.id} onClick={focused ? undefined : () => onOpenProject(project.id)}>
+        const open = focused ? undefined : () => onOpenProject(project.id);
+        const tunable = projectScope(project) === "live" && project.control?.concurrency;
+        return <div className={`factory-project ${focused ? "is-focused" : ""}`} key={project.id} role={focused ? undefined : "button"} tabIndex={focused ? undefined : 0} onClick={open} onKeyDown={focused ? undefined : (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); } }}>
           <div className="factory-project-head">
             <strong>{project.name}</strong>
-            <span>{projectScope(project) === "shelved" ? "已搁置 · " : project.status === "paused" ? "已暂停 · " : ""}{counts["needs-you"] ? `${counts["needs-you"]} 件等你 · ` : ""}{fraction}</span>
+            <span><ProjectTuneBadges control={project.control} />{projectScope(project) === "shelved" ? "已搁置 · " : project.status === "paused" ? "已暂停 · " : ""}{counts["needs-you"] ? `${counts["needs-you"]} 件等你 · ` : ""}{fraction}</span>
+            {tunable && <ProjectTuneMenu project={project} onTuned={onTuned} />}
           </div>
           <div className="factory-bar" aria-hidden="true">
             <span className="bar-done" style={{ width: share(counts.done) }} />
@@ -677,7 +749,7 @@ function FactoryOverview({ scope, stages, projects, focused = false, renderContr
           </div>
           <small className="factory-project-time">{projectTiming(project)}</small>
           {focused && renderControls?.(project)}
-        </Tag>;
+        </div>;
       })}
     </div>}
   </section>;
