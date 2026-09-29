@@ -32,6 +32,7 @@ import {
   NightShiftRuntime,
   NightShiftStore,
   OpenClawFeishuNotificationSender,
+  instanceRelativeArtifactPath,
   normalizeArtifactPath,
   normalizeProjectGovernance,
   normalizeDeliverablesManifest,
@@ -1270,6 +1271,13 @@ async function deliverablesFromItemHandoffs(instanceId, contentItemId) {
   for (const name of names) {
     try { handoffs.push(JSON.parse(await readFile(resolve(itemRoot, "handoffs", name), "utf8"))); } catch { /* an unreadable handoff is skipped */ }
   }
+  // Completion accepts an absolute path inside the instance; the video link must too.
+  const instanceRoot = resolve(dataDir, "instances", instanceId);
+  for (const handoff of handoffs) {
+    for (const output of handoff?.outputs ?? []) {
+      if (output && typeof output.artifact === "string") output.artifact = instanceRelativeArtifactPath(output.artifact, [instanceRoot]);
+    }
+  }
   const item = store.listContentItems(instanceId).find((entry) => entry.id === contentItemId);
   const draft = deliverablesFromHandoffs(handoffs, { instanceId, contentItemId, title: item?.title ?? null });
   if (!draft) return null;
@@ -1416,9 +1424,9 @@ async function validateDuplicateCheck(manifest, contentItemId) {
 }
 
 async function loadInstanceArtifact({ artifact, contentItemId = null, instance, hash = false }) {
-  const normalizedPath = normalizeArtifactPath(artifact);
   const configuredRoot = instance.inputs?.nightshift?.instanceDir ?? resolve(dataDir, "instances", instance.id);
   const instanceRoot = await realpath(configuredRoot);
+  const normalizedPath = normalizeArtifactPath(instanceRelativeArtifactPath(artifact, [configuredRoot, instanceRoot]));
   const roots = contentItemId ? [resolve(instanceRoot, "content-items", contentItemId), instanceRoot] : [instanceRoot];
   let candidate = null;
   for (const root of roots) {

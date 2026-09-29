@@ -85,6 +85,18 @@ Each project's place is reported as `control.queue` in `/api/overview`:
 
 Before this, the scheduler visited projects by last update. On 2026-09-29 that gave the few free starts to the newest batches: DL-0929-01, started at 11:49, sat queued behind projects that arrived four hours later, and all seven batches were heading to finish together late at night.
 
+## Why a blocked card stopped
+
+A blocked card is first explained by how its run ended, as the Gateway records it (`tasks.list` for the card's Session, matched by run id). The Workboard keeps no reason for a blocked attempt; the Gateway's task registry does.
+- **Still `running` or `queued`**: the Agent is alive. The card is not failed, not salvaged and not announced; it is asked again in the next five-minute window. On 2026-09-29 a produce card blocked at 16:38 while its Agent kept working reached a person, and the Agent finished the video at 16:41.
+- **`failed`, `timed_out`**: the substrate stopped the run (Agent DB lease timeouts, provider errors, timeouts). It records `stage.attempt.failed` with the kind the error names (`database_lock`, `connection_reset`, …, otherwise `agent_interrupted`) and retries by the stage's policy. A paid stage retries too, unless its ledger holds an operation this card left `reserved`, or `executing` without an external task id: that may have been charged, so it goes to a person. Agents reserve on the ledger before any paid call.
+- **`cancelled`**: recorded as `run_cancelled`, not retried.
+- **Ended normally**: the Agent's own transcript and outputs decide, as below. Every stop that needed a person on V from 2026-09-26 to 09-29 had a run that ended normally.
+
+When the Gateway has no entry for the run, the transcript rules below apply.
+
+**Written outputs are salvaged, never judged.** A blocked card with no recorded failure is checked for outputs a finished attempt may have left behind; when they satisfy the contract the card completes. When they do not, nothing is recorded: the board shows "Outputs not found yet: …" and the card waits. Before this, a failed salvage became a contract failure, and eight stopped runs on 2026-09-28/29 reached 需要你 as missing handoffs and unrecorded payments.
+
 ## Orphaned runs
 
 A card can sit blocked after its Agent is gone. Usually its Worker exited mid-run, for example while polling a provider, and the Session never gets a terminal message. The scheduler checks blocked cards' Sessions on repair passes. When a blocked card's Session has written nothing for `NIGHTSHIFT_ORPHANED_SESSION_MS` (45 minutes), it records `stage.attempt.failed` with kind `agent_interrupted`, and the stage's ordinary retry policy takes over:
@@ -101,9 +113,16 @@ Running cards are never stopped by this guard. A retried card also gets its nati
 
 A card that stops and will not recover by itself becomes a decision request (`decision_requests`), owned by the engine. The design is in `docs/nightshift-needs-human-design.md`.
 
+**Only what a person can act on is announced.** A card may block for many reasons; a request says what someone has to do. A stop of the substrate (a failed, timed-out or interrupted run) is retried, never announced. Only these open a request:
+- the Agent stopped on purpose and said why (a filed problem or its closing words);
+- the Agent finished and its outputs fail the contract;
+- a paid or external operation failed, or may have been charged and cannot be retried safely;
+- automatic retries are used up;
+- approvals and reviews.
+
 **What opens a request**
 - A blocked card with a recorded failure and no automatic retry due opens a request on the same pass.
-- A blocked card with no failure waits out a 2-minute grace period first. The board shows it as pending.
+- A blocked card with no failure has no verdict yet. It waits 60 minutes, longer than the orphan rule below (45 minutes), so the engine's own verdict always comes first. The board shows it as pending (「正在判定是否需要你」).
 - The problem text is the Agent's own closing words (`failure.agentReport`) when the Agent stopped on purpose, otherwise the engine's reason.
 
 **What never opens one**

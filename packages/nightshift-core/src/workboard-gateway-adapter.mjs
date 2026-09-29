@@ -211,6 +211,17 @@ export class WorkboardGatewayAdapter {
     return this.call("sessions.get", { key: sessionKey, limit });
   }
 
+  // How the Gateway says one run of a card's Session ended. The Workboard keeps
+  // no reason for a blocked attempt; the Gateway's task registry does. Returns
+  // null when the Gateway holds no entry for that run.
+  async getRunOutcome({ sessionKey, runId }) {
+    if (!sessionKey || !runId) return null;
+    const result = await this.call("tasks.list", { sessionKey, limit: 20 });
+    const task = (result?.tasks ?? []).find((entry) => entry?.runId === runId || entry?.sourceId === runId);
+    if (!task) return null;
+    return { status: task.status ?? null, error: task.error ?? null, endedAt: task.endedAt ?? null };
+  }
+
   async completeCard(id, input = {}) {
     const result = await this.call("workboard.cards.complete", { id, ...input });
     return result.card;

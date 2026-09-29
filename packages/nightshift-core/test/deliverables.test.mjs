@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   deliverableArtifactPaths,
+  instanceRelativeArtifactPath,
   normalizeArtifactPath,
   normalizeDeliverablesManifest,
 } from "../src/deliverables.mjs";
@@ -49,6 +50,24 @@ test("rejects cross-instance and traversal paths", () => {
   );
   assert.throws(() => normalizeArtifactPath("../secret"), /inside the instance directory/);
   assert.throws(() => normalizeArtifactPath("/etc/passwd"), /inside the instance directory/);
+});
+
+test("an absolute path inside the instance directory is read as relative to it", () => {
+  // On V (2026-09-29) a plan-route handoff listed its four files, all inside
+  // DL-0929-02, by absolute path and was rejected as outside the instance.
+  const root = "/srv/nightshift/instances/DL-0929-02";
+  assert.equal(instanceRelativeArtifactPath(`${root}/content-items.json`, [root]), "content-items.json");
+  assert.equal(instanceRelativeArtifactPath(`${root}/content-items/a/brief.md`, ["/elsewhere", root]), "content-items/a/brief.md");
+  assert.equal(normalizeArtifactPath(instanceRelativeArtifactPath(`${root}/content-items.json`, [root])), "content-items.json");
+});
+
+test("an absolute path outside every instance root is still refused", () => {
+  const root = "/srv/nightshift/instances/DL-0929-02";
+  for (const path of ["/etc/passwd", "/srv/nightshift/instances/DL-0929-03/content-items.json", `${root}/../DL-0929-03/x.json`, root]) {
+    assert.throws(() => normalizeArtifactPath(instanceRelativeArtifactPath(path, [root])), /inside the instance directory/, path);
+  }
+  assert.equal(instanceRelativeArtifactPath("content-items.json", [root]), "content-items.json");
+  assert.equal(instanceRelativeArtifactPath("https://example.com/x", [root]), "https://example.com/x");
 });
 
 test("drops non-https links instead of exposing them", () => {

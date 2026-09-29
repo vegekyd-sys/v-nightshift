@@ -31,6 +31,26 @@ The queue holds everything only a person can move:
 - Choices are generic. Every request offers **retry** (with a note for the Agent), **skip this item** and **pause the project**. An Agent may add choices specific to the problem. Each of those is a retry that carries a note.
 - A decision flows back into the run. A retry carries the person's note into the Agent's brief. A skip makes the item terminal, so the project can still finish. A pause stops dispatch.
 
+## What reaches a person (2026-09-29)
+
+A card may block for many reasons. A notice exists to tell someone what they have to handle, so only stops a person can act on are announced. A stop of the substrate, such as a Gateway error, a Worker failure, an Agent DB lease timeout or a run that timed out, is the engine's to retry. It may block the card; it is never announced.
+
+From 2026-09-28 to 09-29 V opened ten requests. Two needed a person: Makaron failed twice on 中纺, and a GeeLark publication failed. Eight did not:
+
+| Cause | Requests | Announced as |
+|---|---|---|
+| The run failed or timed out before the Agent's first turn | 2 | the handoff is missing |
+| The run failed or timed out mid-work | 3 | the handoff is missing; the payment is unrecorded |
+| The run was still going; the card was blocked anyway | 1 | the payment is unrecorded |
+| Outputs cited by absolute path inside the instance | 2 | files delivered outside the project |
+
+Six of the eight took one path. The engine read the transcript to learn why a run stopped, found no terminal message, tried to salvage written outputs and, finding none, recorded a contract failure. A contract failure skips the grace period and the paid-work guard, so it was announced at once. Absence of evidence became a verdict. Meanwhile the Gateway's task registry held the answer for every one of them: `failed` with "Agent DB process coordinator wait exceeded", `failed` with "Agent run failed", `timed_out`, or still `running`.
+
+The rules:
+- **Facts before inference.** A blocked card is explained first by how the Gateway says its run ended. A run still going is left alone. A failed or timed-out run is the substrate's stop and follows the retry policy. Only a run that ended normally is judged by the Agent's transcript and outputs.
+- **Salvage is not judgement.** Recovering written outputs completes a card when they pass; when they do not, nothing is recorded.
+- **Only positive evidence is announced.** A request opens when the Agent stopped on purpose, when its finished outputs fail the contract, when a paid operation failed or may have been charged, or when retries are used up. A card nobody can explain waits an hour, longer than the engine's 45-minute orphan rule, before it reaches a person.
+
 ## Model
 
 A new table, `decision_requests`, holds one row per card attempt that needs a person:
@@ -51,7 +71,7 @@ created_at, decided_at
 ### How a request is opened
 
 1. **The Agent files it** (step 2). The stage cannot proceed because a condition is not met, for example missing footage, a provider refusal, or an input that is wrong. The Agent runs `nightshiftctl cards needs-decision <card> --file problem.json` instead of only blocking. `problem.json` carries `problem`, `detail`, `scope`, an optional `groupKey` and optional extra `options`. The engine records the request and blocks the card.
-2. **The engine opens it** (step 1). A card sits blocked, no automatic retry is due, no request exists, and it has sat for a short grace period. The engine then opens one itself.
+2. **The engine opens it** (step 1). A card sits blocked with a recorded failure, no automatic retry is due and no request exists. A card with no recorded failure waits an hour first (see *What reaches a person*). The engine then opens one itself.
    - The problem text comes from the recorded failure: completion rejection, attempt failure or failed operation. Failing that, it comes from the Agent's last comment or final message.
    - It is the safety net. Every stop reaches a person, even when the Agent did not file anything.
    - A card whose paid operation is still `executing` is included once its Agent Session is terminal or silent (#80). A stale ledger must not hide a stop.

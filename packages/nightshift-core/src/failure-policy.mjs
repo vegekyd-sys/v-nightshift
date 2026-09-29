@@ -13,6 +13,38 @@ export function classifyTerminalFailure({ message, session } = {}) {
     errorText(session?.errorMessage),
     messageText(message),
   ].filter(Boolean).join("\n")) || `Agent Session ended with ${stopReason}`;
+  return classifyFailureText(rawError, stopReason);
+}
+
+// How the Gateway says a run ended (tasks.list, one entry per run). Only a run
+// that failed, timed out or was cancelled yields a failure: a run that ended
+// normally is judged by what the Agent left behind, never by this. On V
+// (2026-09-26 to 09-29) every stop that needed a person — Makaron failing
+// twice, a publication that failed, an output delivered by absolute path — had
+// a run that ended normally; every failed or timed-out run was the substrate.
+export function classifyRunOutcome(outcome) {
+  const status = String(outcome?.status ?? "").toLowerCase();
+  if (!["failed", "timed_out", "cancelled", "error"].includes(status)) return null;
+  const rawError = boundedFailureText(errorText(outcome?.error)) || `Agent run ${status}`;
+  // The Session finished; only the registry lagged. The transcript decides.
+  if (/session completed before registry settled/i.test(rawError)) return null;
+  if (status === "cancelled") return { kind: "run_cancelled", source: "gateway", rawError, retryable: false };
+  const failure = classifyFailureText(rawError, status === "timed_out" ? "timeout" : "error");
+  // A failed run is never the Agent's own verdict: an Agent that cannot go on
+  // blocks its card and ends its turn normally.
+  if (failure.kind === "agent_error") return { kind: "agent_interrupted", source: "gateway", rawError, retryable: true };
+  return failure;
+}
+
+// The Gateway saw the run end on its own: the Agent took its turns and
+// stopped. Its outputs and closing words decide, whatever the transcript shows.
+export function runEndedNormally(outcome) {
+  const status = String(outcome?.status ?? "").toLowerCase();
+  if (["completed", "succeeded"].includes(status)) return true;
+  return status === "failed" && /session completed before registry settled/i.test(errorText(outcome?.error));
+}
+
+function classifyFailureText(rawError, stopReason) {
   const normalized = rawError.toLowerCase();
 
   // The coordinator wait is the same SQLite contention as an outright lock: the
@@ -62,6 +94,7 @@ export function infrastructureFailureSummary(failure) {
     upstream_unavailable: "上游服务返回 5xx",
     agent_interrupted: "Agent 运行被中断",
     agent_not_started: "Agent 没能启动",
+    run_cancelled: "Agent 运行被取消",
     agent_error: "Agent 运行失败",
   }[failure?.kind] ?? "Agent 运行失败";
   const recovery = failure?.automaticRetry && failure?.nextRetryAt
