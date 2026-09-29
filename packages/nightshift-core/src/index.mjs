@@ -24,6 +24,7 @@ export {
 export { NightShiftRuntime, cardIsStartable } from "./runtime.mjs";
 export { byQueueOrder, PRIORITY_MAX, PRIORITY_MIN, projectPriority } from "./project-queue.mjs";
 export {
+  artifactFromHandoffDirectory,
   deliverableArtifactPaths,
   deliverablesFromHandoffs,
   instanceRelativeArtifactPath,

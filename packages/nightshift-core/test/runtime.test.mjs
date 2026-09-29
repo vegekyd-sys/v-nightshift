@@ -2038,3 +2038,54 @@ test("an Agent error read from the transcript is not a substrate fault: a paid c
   assert.equal(event.payload.failure.automaticRetry, false);
   store.close();
 });
+
+test("a transcript that ends on an error is read against the Gateway's run record when the card still shows running", async () => {
+  // V, 2026-09-29 21:05: the transcript said "incomplete or malformed tool call",
+  // the Gateway said the provider request failed; either way a substrate fault.
+  const { card, runtime, store, workboard } = await stoppedRun({
+    id: "NS-RUNNING-ERROR", stageId: "plan",
+    outcome: { status: "failed", error: "⚠️ deepseek/deepseek-flash request failed." },
+    session: { messages: [{ role: "assistant", stopReason: "error", errorMessage: "Provider returned an incomplete or malformed tool call", timestamp: Date.now() - 60_000, content: [] }] },
+  });
+  card.status = "running";
+  card.execution.status = "running";
+  await runtime.reconcile("NS-RUNNING-ERROR", null, { inspectSessions: true });
+  const [event] = attemptFailures(store, "NS-RUNNING-ERROR");
+  assert.equal(event.payload.failure.kind, "provider_error");
+  assert.equal(event.payload.failure.source, "provider");
+  assert.equal(event.payload.failure.automaticRetry, true);
+  assert.ok(workboard.runOutcomeCalls.includes(card.runId));
+  assert.equal(openRequests(store, "NS-RUNNING-ERROR").length, 0);
+  store.close();
+});
+
+test("an error in the transcript of a run the Gateway still has running is left alone", async () => {
+  const { card, runtime, store } = await stoppedRun({
+    id: "NS-RUNNING-RETRYING", stageId: "plan", outcome: { status: "running" },
+    session: { messages: [{ role: "assistant", stopReason: "error", errorMessage: "Connection error.", timestamp: Date.now() - 60_000, content: [] }] },
+  });
+  card.status = "running";
+  card.execution.status = "running";
+  await runtime.reconcile("NS-RUNNING-RETRYING", null, { inspectSessions: true });
+  assert.equal(attemptFailures(store, "NS-RUNNING-RETRYING").length, 0);
+  store.close();
+});
+
+test("faults of the substrate do not use up a stage's own retries", async () => {
+  // V, 2026-09-29: e3f71162's third interruption (a Gateway restart) exhausted
+  // produce's three attempts and opened a request.
+  const { card, runtime, store } = await stoppedRun({
+    id: "NS-SUBSTRATE-BUDGET", stageId: "produce",
+    outcome: { status: "failed", error: "subagent run lost active execution context" },
+  });
+  for (const n of [1, 2, 3]) {
+    store.appendEvent({ instanceId: "NS-SUBSTRATE-BUDGET", type: "stage.attempt.failed",
+      payload: { cardId: card.id, stageId: "produce", failure: { kind: "database_lock", retryable: true, attempt: `old-${n}` } } });
+  }
+  await runtime.reconcile("NS-SUBSTRATE-BUDGET", null, { inspectSessions: true });
+  const failures = attemptFailures(store, "NS-SUBSTRATE-BUDGET");
+  const latest = failures.find((event) => event.payload.failure.attempt === card.runId);
+  assert.equal(latest.payload.failure.automaticRetry, true, "a fourth substrate fault still retries");
+  assert.equal(openRequests(store, "NS-SUBSTRATE-BUDGET").length, 0);
+  store.close();
+});

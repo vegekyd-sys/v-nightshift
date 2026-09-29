@@ -136,6 +136,10 @@ A blocked card is first explained by how its run ended, as the Gateway records i
 - **`cancelled`**: recorded as `run_cancelled`, not retried.
 - **Ended normally**: the Agent's own transcript and outputs decide, as below. Every stop that needed a person on V from 2026-09-26 to 09-29 had a run that ended normally.
 
+A card still shown `running` is asked too when its transcript ends on an error (`stopReason` error or aborted): a run the Gateway still has running is left alone, and a failed run is classified from the Gateway's record. On 2026-09-29 a transcript ending on "incomplete or malformed tool call", from a run the Gateway recorded as a failed provider request, had been classified as the Agent's own error.
+
+Faults of the substrate have their own retry allowance: up to 5 attempts (backoff 1, 5, 15, 15, 30 minutes) or the stage's `retry.maxAttempts`, whichever is larger. Before, lease timeouts and a Gateway restart could use up a produce card's three attempts and open a request.
+
 When the Gateway has no entry for the run, the transcript rules below apply.
 
 **Written outputs are salvaged, never judged.** A blocked card with no recorded failure is checked for outputs a finished attempt may have left behind; when they satisfy the contract the card completes. When they do not, nothing is recorded: the board shows "Outputs not found yet: …" and the card waits. Before this, a failed salvage became a contract failure, and eight stopped runs on 2026-09-28/29 reached 需要你 as missing handoffs and unrecorded payments.

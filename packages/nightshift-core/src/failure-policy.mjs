@@ -1,4 +1,4 @@
-const RETRY_BACKOFF_MS = [60_000, 300_000, 900_000];
+const RETRY_BACKOFF_MS = [60_000, 300_000, 900_000, 900_000, 1_800_000];
 
 export function classifyTerminalFailure({ message, session } = {}) {
   const stopReason = String(message?.stopReason ?? "").toLowerCase();
@@ -67,6 +67,11 @@ function classifyFailureText(rawError, stopReason) {
   if (/econnreset|connection reset|connection error|socket hang up|fetch failed|network error|timed? out/.test(normalized)) {
     return { kind: "connection_reset", source: "provider", rawError, retryable: true };
   }
+  // The model produced a broken tool call or no usable response; another
+  // attempt is a fresh request (V, 2026-09-29 21:05).
+  if (/incomplete or malformed tool call|malformed tool call|request failed\.?$/.test(normalized)) {
+    return { kind: "provider_error", source: "provider", rawError, retryable: true };
+  }
   if (/\b(50[0234])\b|bad gateway|service unavailable|gateway time-?out|internal server error/.test(normalized)) {
     return { kind: "upstream_unavailable", source: "provider", rawError, retryable: true };
   }
@@ -92,6 +97,7 @@ export function infrastructureFailureSummary(failure) {
     gateway_unavailable: "Gateway 暂时不可用",
     connection_reset: "模型或网络连接中断",
     upstream_unavailable: "上游服务返回 5xx",
+    provider_error: "模型返回异常",
     agent_interrupted: "Agent 运行被中断",
     agent_not_started: "Agent 没能启动",
     run_cancelled: "Agent 运行被取消",
