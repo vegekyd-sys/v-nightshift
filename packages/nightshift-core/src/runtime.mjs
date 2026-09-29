@@ -6,7 +6,7 @@ import {
   WorkflowValidationError,
 } from "./workflow.mjs";
 import { actionKey, buildAgentBrief, nativeActionKey, planNextActions, requiredApproval, resolveApprovalBinding, stageTimeoutSeconds, WORKBOARD_NOTES_LIMIT } from "./orchestrator.mjs";
-import { classifyRunOutcome, classifyTerminalFailure, infrastructureFailureSummary, scheduleAutomaticRetry } from "./failure-policy.mjs";
+import { classifyRunOutcome, classifyTerminalFailure, infrastructureFailureSummary, runEndedNormally, scheduleAutomaticRetry } from "./failure-policy.mjs";
 import { normalizeProjectCollaboration } from "./project.mjs";
 
 // A blocked card with an empty Session is read as never started only after this
@@ -305,6 +305,8 @@ export class NightShiftRuntime {
     // (Agent DB lease timeouts) left transcripts with no terminal message; read
     // as unfinished, they reached a person as missing handoffs, and one whose
     // run was still going reached a person while its Agent finished the video.
+    let endedNormally = false;
+    let runEndedAt = 0;
     if (card.status === "blocked" && typeof this.workboard.getRunOutcome === "function") {
       const runId = card.runId ?? card.execution?.runId;
       let outcome = null;
@@ -338,6 +340,8 @@ export class NightShiftRuntime {
           terminalAt: timestampMs(outcome.endedAt ?? 0) || this.now(),
         });
       }
+      endedNormally = runEndedNormally(outcome);
+      runEndedAt = timestampMs(outcome?.endedAt ?? 0);
     }
     let session;
     try {
@@ -356,10 +360,15 @@ export class NightShiftRuntime {
     const messages = Array.isArray(session?.messages) ? session.messages : [];
     const latest = messages.at(-1);
     const startedAt = timestampMs(card.execution?.startedAt ?? card.metadata?.attempts?.at(-1)?.startedAt ?? 0);
-    const terminalAt = timestampMs(latest?.timestamp ?? latest?.__openclaw?.recordTimestampMs ?? 0);
+    let terminalAt = timestampMs(latest?.timestamp ?? latest?.__openclaw?.recordTimestampMs ?? 0);
     const stopReason = String(latest?.stopReason ?? "").toLowerCase();
     const silentMs = this.now() - Math.max(terminalAt, startedAt);
-    if (card.status === "blocked" && startedAt > 0 && messages.length === 0 && silentMs >= NOT_STARTED_GRACE_MS) {
+    // The rules below infer a stopped run from the transcript. They apply only
+    // when the Gateway has not said the run ended normally: on the shared VLab
+    // (2026-09-29) a completed run's transcript read back empty and the first
+    // rule failed it as never started, sending the Agent's own stop to a person
+    // as a start failure.
+    if (!endedNormally && card.status === "blocked" && startedAt > 0 && messages.length === 0 && silentMs >= NOT_STARTED_GRACE_MS) {
       // On V (2026-09-29) a brief card was blocked 7 s after dispatch, during
       // Agent DB lease contention, with an empty Session. Read as "not terminal",
       // it fell through to artifact recovery and reached a person as "the handoff
@@ -381,7 +390,7 @@ export class NightShiftRuntime {
         terminalAt: this.now(),
       });
     }
-    if (card.status === "blocked" && startedAt > 0 && silentMs >= this.orphanedSessionMs &&
+    if (!endedNormally && card.status === "blocked" && startedAt > 0 && silentMs >= this.orphanedSessionMs &&
       (latest?.role !== "assistant" || !["stop", "error", "aborted"].includes(stopReason) || terminalAt < startedAt)) {
       // On V two paid produce cards sat blocked for two hours after their Worker
       // exited mid-poll: no terminal message ever arrives for such a run, so it
@@ -403,7 +412,7 @@ export class NightShiftRuntime {
         terminalAt: this.now(),
       });
     }
-    if (latest?.role !== "assistant" || !["stop", "error", "aborted"].includes(stopReason) || terminalAt < startedAt) {
+    if (!endedNormally && (latest?.role !== "assistant" || !["stop", "error", "aborted"].includes(stopReason) || terminalAt < startedAt)) {
       if (inspectionEventId) {
         this.store.appendEvent({
           eventId: inspectionEventId,
@@ -414,11 +423,12 @@ export class NightShiftRuntime {
       }
       return inspectionEventId ? { deferred: true, terminalSession: session } : null;
     }
-    const terminalFailure = classifyTerminalFailure({ message: latest, session });
+    const terminalFailure = endedNormally ? null : classifyTerminalFailure({ message: latest, session });
     if (terminalFailure) {
       return this.failTerminalAttempt({ attempt, card, contentItemId, failure: terminalFailure, instance, release, stageId, terminalAt });
     }
-    const terminalText = messageText(latest);
+    if (endedNormally) terminalAt = runEndedAt || terminalAt;
+    const terminalText = endedNormally ? lastAssistantText(session) : messageText(latest);
     try {
       if (this.completionValidator) {
         await this.completionValidator({ card, contentItemId, instance, release, stageId, terminalSession: session });

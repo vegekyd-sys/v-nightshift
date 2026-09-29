@@ -36,6 +36,14 @@ export function classifyRunOutcome(outcome) {
   return failure;
 }
 
+// The Gateway saw the run end on its own: the Agent took its turns and
+// stopped. Its outputs and closing words decide, whatever the transcript shows.
+export function runEndedNormally(outcome) {
+  const status = String(outcome?.status ?? "").toLowerCase();
+  if (["completed", "succeeded"].includes(status)) return true;
+  return status === "failed" && /session completed before registry settled/i.test(errorText(outcome?.error));
+}
+
 function classifyFailureText(rawError, stopReason) {
   const normalized = rawError.toLowerCase();
 

@@ -1896,3 +1896,31 @@ test("without the Gateway's answer, outputs that are not there are no verdict: t
   assert.equal(openRequests(store, "NS-RUN-UNKNOWN").length, 0, "no request while the engine can still explain it");
   store.close();
 });
+
+test("a run the Gateway saw end normally is never read as a start failure, even with an empty transcript", async () => {
+  // Shared VLab, 2026-09-29 (NS-S4-STOP-0929): the run completed at 09:40:13
+  // after three model calls, the transcript read back empty, and the empty-Session
+  // rule failed it as never started. The Agent had stopped on purpose.
+  const { runtime, store } = await stoppedRun({
+    id: "NS-RUN-EMPTY-DONE", stageId: "plan", outcome: { status: "completed", endedAt: Date.now() - 4 * 60_000 },
+    session: { messages: [] },
+  });
+  await runtime.reconcile("NS-RUN-EMPTY-DONE", null, { inspectSessions: true });
+  assert.equal(attemptFailures(store, "NS-RUN-EMPTY-DONE").length, 0, "not a failure of the substrate");
+  assert.ok(store.listEvents("NS-RUN-EMPTY-DONE").some((entry) => entry.type === "stage.terminal.blocked"));
+  const [request] = openRequests(store, "NS-RUN-EMPTY-DONE");
+  assert.equal(request?.evidence.failure.kind, "contract_error");
+  store.close();
+});
+
+test("a run that ended normally is judged on its outputs even when the transcript stops mid-tool", async () => {
+  let complete = true;
+  const { runtime, store, workboard } = await stoppedRun({
+    id: "NS-RUN-DONE-MIDTOOL", stageId: "plan", outcome: { status: "succeeded" },
+    validator: async () => { if (!complete) throw new Error("Stage handoff is required: plan"); },
+  });
+  await runtime.reconcile("NS-RUN-DONE-MIDTOOL", null, { inspectSessions: true });
+  assert.equal(workboard.cards[0].status, "done");
+  assert.equal(attemptFailures(store, "NS-RUN-DONE-MIDTOOL").length, 0);
+  store.close();
+});

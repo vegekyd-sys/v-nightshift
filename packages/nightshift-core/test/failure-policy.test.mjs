@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyRunOutcome, classifyTerminalFailure, scheduleAutomaticRetry } from "../src/failure-policy.mjs";
+import { classifyRunOutcome, classifyTerminalFailure, runEndedNormally, scheduleAutomaticRetry } from "../src/failure-policy.mjs";
 
 test("classifies Gateway SQLite lock failures as retryable infrastructure failures", () => {
   assert.deepEqual(classifyTerminalFailure({
@@ -110,4 +110,13 @@ test("a cancelled run is not retried by itself", () => {
   const failure = classifyRunOutcome({ status: "cancelled", error: "cancelled by operator" });
   assert.equal(failure.kind, "run_cancelled");
   assert.equal(failure.retryable, false);
+});
+
+test("a run ended normally when the Gateway completed it, or only its registry lagged", () => {
+  assert.equal(runEndedNormally({ status: "completed" }), true);
+  assert.equal(runEndedNormally({ status: "succeeded" }), true);
+  assert.equal(runEndedNormally({ status: "failed", error: "session completed before registry settled" }), true);
+  for (const outcome of [{ status: "failed", error: "Agent run failed" }, { status: "timed_out" }, { status: "running" }, null]) {
+    assert.equal(runEndedNormally(outcome), false, JSON.stringify(outcome));
+  }
 });
