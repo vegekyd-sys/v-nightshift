@@ -445,6 +445,15 @@ function WorkflowStudio({ onScopeChange, data, refresh, initialProjectId, initia
     return counts;
   }, [projects]);
   const scopedProjects = useMemo(() => projects.filter((project) => inScope(project, scope)), [projects, scope]);
+  // Each Workflow opens on what it is making; one with nothing in production
+  // opens on what it delivered instead of an empty floor.
+  const scopeChosenFor = useRef(null);
+  useEffect(() => {
+    if (!data || !group || scopeChosenFor.current === group.id) return;
+    scopeChosenFor.current = group.id;
+    if (projectId !== "all") return;
+    setScope(defaultScope(scopeCounts));
+  }, [data, group, projectId, scopeCounts]);
   useEffect(() => {
     // A deep link to a delivered or shelved project must still open it.
     if (projectId !== "all" && !scopedProjects.some((project) => project.id === projectId) && projects.some((project) => project.id === projectId)) setScope("all");
@@ -604,6 +613,10 @@ const ATTENTION_KINDS = [["needs-you", "需要你"], ["running", "进行中"], [
 // "备料 + Brief 编译" -> "备料"; stage titles are written for the lane header.
 function shortStageTitle(title = "") {
   return title.split(/\s*[+＋（(|｜]\s*/)[0].trim() || title;
+}
+
+function defaultScope(counts) {
+  return counts.live === 0 && counts.delivered > 0 ? "delivered" : "live";
 }
 
 const PROJECT_TABS = [["live", "在产"], ["paused", "已暂停"], ["delivered", "已交付"], ["shelved", "搁置"], ["all", "全部"]];
@@ -836,6 +849,12 @@ function Projects({ onScopeChange, data, onNewProject, onOpenProject, refresh })
   }, [data]);
   const scopeCounts = { live: 0, paused: 0, delivered: 0, shelved: 0, all: rows.length };
   for (const row of rows) scopeCounts[row.scope] += 1;
+  const scopeChosen = useRef(false);
+  useEffect(() => {
+    if (!data || scopeChosen.current) return;
+    scopeChosen.current = true;
+    setScope(defaultScope(scopeCounts));
+  }, [data]);
   const shown = rows.filter((row) => scope === "all" || row.scope === scope);
   const totals = shown.reduce((sum, row) => {
     for (const [kind, count] of Object.entries(row.counts)) sum[kind] = (sum[kind] ?? 0) + count;
@@ -1015,9 +1034,10 @@ function parseJsonValue(value) {
 }
 
 function readDashboardLocation() {
-  if (typeof window === "undefined") return { card: null, project: null, view: "board", workflow: null };
+  // The Workflow floor is the front page; Live Board is one click away.
+  if (typeof window === "undefined") return { card: null, project: null, view: "workflows", workflow: null };
   const parameters = new URLSearchParams(window.location.search);
-  const view = ["board", "workflows", "projects", "agents"].includes(parameters.get("view")) ? parameters.get("view") : "board";
+  const view = ["board", "workflows", "projects", "agents"].includes(parameters.get("view")) ? parameters.get("view") : "workflows";
   return {
     card: parameters.get("card"),
     project: parameters.get("project"),
