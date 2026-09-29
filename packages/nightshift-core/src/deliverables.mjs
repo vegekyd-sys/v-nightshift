@@ -1,4 +1,4 @@
-import { isAbsolute, normalize, relative, sep } from "node:path";
+import { isAbsolute, normalize, relative, resolve, sep } from "node:path";
 
 const PATH_FIELDS = [
   ["proposal", "summaryPath"],
@@ -107,6 +107,21 @@ export function instanceRelativeArtifactPath(value, roots = []) {
     if (path && path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path)) return path;
   }
   return value;
+}
+
+// A handoff lives in <root>/handoffs/<stage>.json, and an Agent sometimes cites
+// an output relative to that file: on the shared VLab (2026-09-29) two handoffs
+// listed "../result.json" for content-items/wN/result.json and were refused as
+// outside the project. A path that climbs out of the handoff directory is read
+// from there and returned absolute; instanceRelativeArtifactPath and the
+// resolved-file check still refuse anything that leaves the instance.
+export function artifactFromHandoffDirectory(value, handoffDir) {
+  if (typeof value !== "string" || !handoffDir) return value;
+  const trimmed = value.trim();
+  if (!trimmed || isAbsolute(trimmed) || /^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return value;
+  const normalized = normalize(trimmed);
+  if (normalized !== ".." && !normalized.startsWith(`..${sep}`)) return value;
+  return resolve(handoffDir, normalized);
 }
 
 function normalizeProposal(value = {}) {

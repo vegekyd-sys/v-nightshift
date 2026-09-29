@@ -12,6 +12,8 @@ import { normalizeProjectCollaboration } from "./project.mjs";
 // A blocked card with an empty Session is read as never started only after this
 // long, so a transcript still being written is not mistaken for one.
 const NOT_STARTED_GRACE_MS = 2 * 60_000;
+// Attempts a card may spend on faults of the substrate before a person hears.
+const SUBSTRATE_MAX_ATTEMPTS = 5;
 
 export class NightShiftRuntime {
   constructor({
@@ -307,6 +309,7 @@ export class NightShiftRuntime {
     // run was still going reached a person while its Agent finished the video.
     let endedNormally = false;
     let runEndedAt = 0;
+    let runOutcomeRead = false;
     if (card.status === "blocked" && typeof this.workboard.getRunOutcome === "function") {
       const runId = card.runId ?? card.execution?.runId;
       let outcome = null;
@@ -342,6 +345,7 @@ export class NightShiftRuntime {
       }
       endedNormally = runEndedNormally(outcome);
       runEndedAt = timestampMs(outcome?.endedAt ?? 0);
+      runOutcomeRead = true;
     }
     let session;
     try {
@@ -423,7 +427,30 @@ export class NightShiftRuntime {
       }
       return inspectionEventId ? { deferred: true, terminalSession: session } : null;
     }
-    const terminalFailure = endedNormally ? null : classifyTerminalFailure({ message: latest, session });
+    // A transcript that ends on an error is read against the Gateway's run
+    // record too when the card was still shown running, so the check above did
+    // not run. On V (2026-09-29 21:05) a run the Gateway recorded as a failed
+    // provider request ended its transcript on "incomplete or malformed tool
+    // call", was classified as the Agent's own error and reached a person.
+    let runFailure = null;
+    if (!endedNormally && !runOutcomeRead && ["error", "aborted"].includes(stopReason) &&
+      typeof this.workboard.getRunOutcome === "function") {
+      const runId = card.runId ?? card.execution?.runId;
+      let outcome = null;
+      try {
+        outcome = runId ? await this.workboard.getRunOutcome({ sessionKey: card.sessionKey, runId }) : null;
+      } catch {
+        // The transcript's own error is the fallback.
+      }
+      if (outcome && ["queued", "running"].includes(String(outcome.status).toLowerCase())) return null;
+      if (runEndedNormally(outcome)) {
+        endedNormally = true;
+        runEndedAt = timestampMs(outcome?.endedAt ?? 0);
+      } else {
+        runFailure = classifyRunOutcome(outcome);
+      }
+    }
+    const terminalFailure = endedNormally ? null : runFailure ?? classifyTerminalFailure({ message: latest, session });
     if (terminalFailure) {
       // A retryable kind is a fault of the substrate read from the transcript
       // (a lease timeout, a lost connection), the same fault the Gateway's run
@@ -498,7 +525,13 @@ export class NightShiftRuntime {
     const retry = scheduleAutomaticRetry({
       failure: terminalFailure,
       failureCount: previousFailures.length + 1,
-      maxAttempts: release.spec.stages.find((entry) => entry.id === stageId)?.retry?.maxAttempts ?? 1,
+      // A fault of the substrate is not the stage failing: it gets its own,
+      // larger allowance, so a card is not handed to a person because lease
+      // timeouts and a Gateway restart used up its ordinary retries (V,
+      // 2026-09-29: e3f71162's third interruption opened a request).
+      maxAttempts: terminalFailure.retryable
+        ? Math.max(SUBSTRATE_MAX_ATTEMPTS, release.spec.stages.find((entry) => entry.id === stageId)?.retry?.maxAttempts ?? 1)
+        : release.spec.stages.find((entry) => entry.id === stageId)?.retry?.maxAttempts ?? 1,
       safeToRetry,
     });
     const failure = {

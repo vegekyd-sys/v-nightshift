@@ -32,6 +32,7 @@ import {
   NightShiftRuntime,
   NightShiftStore,
   OpenClawFeishuNotificationSender,
+  artifactFromHandoffDirectory,
   instanceRelativeArtifactPath,
   normalizeArtifactPath,
   normalizeProjectGovernance,
@@ -1449,12 +1450,15 @@ async function validateCompletion({ card, contentItemId, instance, release, reus
     }
   }
   if (release?.spec?.completion?.mode === "strict-v1") {
+    const handoffDir = handoff
+      ? dirname(stageHandoffPath({ instanceDir: instance.inputs?.nightshift?.instanceDir ?? resolve(dataDir, "instances", instance.id), contentItemId, release, stageId }))
+      : null;
     try {
       evidence.outputs = (await validateDeclaredCompletion({
         checkUrl: checkCompletionUrl,
         instanceCreatedAt: instance.createdAt,
         loadArtifact: async (artifact) => {
-          const loaded = await loadInstanceArtifact({ artifact, contentItemId, instance, hash: Boolean(human) });
+          const loaded = await loadInstanceArtifact({ artifact, contentItemId, instance, hash: Boolean(human), handoffDir });
           if (human) (evidence.artifacts ??= []).push({ artifact, sha256: loaded.sha256 });
           return loaded;
         },
@@ -1521,10 +1525,10 @@ async function validateDuplicateCheck(manifest, contentItemId) {
   };
 }
 
-async function loadInstanceArtifact({ artifact, contentItemId = null, instance, hash = false }) {
+async function loadInstanceArtifact({ artifact, contentItemId = null, instance, hash = false, handoffDir = null }) {
   const configuredRoot = instance.inputs?.nightshift?.instanceDir ?? resolve(dataDir, "instances", instance.id);
   const instanceRoot = await realpath(configuredRoot);
-  const normalizedPath = normalizeArtifactPath(instanceRelativeArtifactPath(artifact, [configuredRoot, instanceRoot]));
+  const normalizedPath = normalizeArtifactPath(instanceRelativeArtifactPath(artifactFromHandoffDirectory(artifact, handoffDir), [configuredRoot, instanceRoot]));
   const roots = contentItemId ? [resolve(instanceRoot, "content-items", contentItemId), instanceRoot] : [instanceRoot];
   let candidate = null;
   for (const root of roots) {

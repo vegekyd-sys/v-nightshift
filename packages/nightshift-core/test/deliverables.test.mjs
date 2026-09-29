@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  artifactFromHandoffDirectory,
   deliverableArtifactPaths,
   instanceRelativeArtifactPath,
   normalizeArtifactPath,
@@ -125,4 +126,21 @@ test("a finished video recorded only in the stage handoff still becomes a playab
   assert.equal(manifest.qc.status, "none", "nothing here attests QC");
   assert.deepEqual([...deliverableArtifactPaths(manifest)], ["produce/final.mp4"], "only the recorded video is served");
   assert.equal(deliverablesFromHandoffs([handoffs[0]], { instanceId: "DL-1", contentItemId: "yq-01" }), null, "no video, no delivery");
+});
+
+test("an output cited relative to the handoff file is read from there, and still must stay in the instance", () => {
+  // Shared VLab, 2026-09-29: handoffs listed "../result.json" for
+  // content-items/wN/result.json and were refused as outside the project.
+  const root = "/srv/nightshift/instances/NS-WARMUP";
+  const handoffDir = `${root}/content-items/w3/handoffs`;
+  const cited = artifactFromHandoffDirectory("../result.json", handoffDir);
+  assert.equal(cited, `${root}/content-items/w3/result.json`);
+  assert.equal(normalizeArtifactPath(instanceRelativeArtifactPath(cited, [root])), "content-items/w3/result.json");
+  // Ordinary relative paths and URLs are left for the usual roots.
+  assert.equal(artifactFromHandoffDirectory("result.json", handoffDir), "result.json");
+  assert.equal(artifactFromHandoffDirectory("https://example.com/x", handoffDir), "https://example.com/x");
+  assert.equal(artifactFromHandoffDirectory("../result.json", null), "../result.json");
+  // Climbing out of the instance is still refused.
+  const escape = artifactFromHandoffDirectory("../../../../other/secret.json", handoffDir);
+  assert.throws(() => normalizeArtifactPath(instanceRelativeArtifactPath(escape, [root])), /inside the instance directory/);
 });
