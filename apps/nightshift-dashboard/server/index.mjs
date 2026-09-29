@@ -136,6 +136,8 @@ let lastNotificationError = null;
 let lastNotificationAt = null;
 let lastSchedulerTrigger = null;
 let schedulerPromise = null;
+// Each project's place in its Workflow's queue, as of the last scheduler pass.
+let projectQueue = new Map();
 const notificationCoordinator = notificationsEnabled
   ? new NightShiftNotificationCoordinator({
       baseUrl: publicBaseUrl || `http://${host}:${port}`,
@@ -958,6 +960,7 @@ function runScheduler({ trigger = "manual" } = {}) {
       store, runtime, workboard, refreshCards, syncContentItemsManifest,
     }));
     dispatchPressureGuard.consumeStarts(result.dispatched);
+    projectQueue = result.queue ?? new Map();
     schedulerRetryMs = 0;
     lastSchedulerAt = new Date().toISOString();
     lastSchedulerDurationMs = Date.now() - started;
@@ -1716,7 +1719,8 @@ function withWorkflowLinks(release) {
 }
 
 function withInstanceLinks(instance) {
-  return { ...instance, governance: normalizeProjectGovernance(instance), control: store.getInstanceControl(instance.id), links: projectLinks(instance.id) };
+  const control = { ...store.getInstanceControl(instance.id), queue: projectQueue.get(instance.id) ?? null };
+  return { ...instance, governance: normalizeProjectGovernance(instance), control, links: projectLinks(instance.id) };
 }
 
 function countCardsByStatus(cards) {

@@ -884,7 +884,7 @@ function Projects({ onScopeChange, data, onNewProject, onOpenProject, refresh })
             <div className="factory-bar" aria-hidden="true"><span className="bar-done" style={{ width: share(counts.done) }} /><span className="bar-running" style={{ width: share(counts.running) }} /><span className="bar-healing" style={{ width: share(counts.healing) }} /><span className="bar-needs-you" style={{ width: share(counts["needs-you"]) }} /></div>
             <span>{progress.splitting ? "拆单中" : `${progress.estimated ? "约 " : ""}${counts.done}/${expected}`}</span>
           </div>
-          <span className={`factory-state state-${instance.control?.fault ? "fault" : counts["needs-you"] && state === "live" ? "needs-you" : state}`}>{instance.control?.fault ? "调度失败" : counts["needs-you"] && state === "live" ? `${counts["needs-you"]} 件等你` : ({ live: "在产", paused: "已暂停", delivered: "已交付", shelved: "已搁置" })[state] ?? state}</span>
+          <span className={`factory-state state-${instance.control?.fault ? "fault" : counts["needs-you"] && state === "live" ? "needs-you" : state}`}>{instance.control?.fault ? "调度失败" : counts["needs-you"] && state === "live" ? `${counts["needs-you"]} 件等你` : state === "live" && instance.control?.queue?.state === "queued" ? `排队第 ${instance.control.queue.position} 位` : ({ live: "在产", paused: "已暂停", delivered: "已交付", shelved: "已搁置" })[state] ?? state}</span>
           <time>{formatBoardAge(instance.updatedAt)}</time>
           <button className="project-delete" aria-label={`归档项目 ${instance.name}`} title="归档项目" onClick={(event) => { event.stopPropagation(); setDeleteError(""); setDeleting(instance); }}><Trash2 size={15} /></button>
         </div>;
