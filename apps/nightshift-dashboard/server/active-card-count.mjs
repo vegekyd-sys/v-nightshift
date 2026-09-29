@@ -21,7 +21,7 @@ export function activeCardCount(cards, now = Date.now()) {
 // their first 5 minutes, and the worst clusters followed 5 to 7 starts in 5
 // minutes, while a start budget of 3 per 15 s allowed that. Starts therefore
 // wait while too many cards are still warming up.
-export function warmupAdmission(cards, { now = Date.now(), windowMs = 180_000, maxWarming = 3 } = {}) {
+export function warmupAdmission(cards, { now = Date.now(), windowMs = 90_000, maxWarming = 3 } = {}) {
   const warmingSince = [];
   for (const card of cards) {
     if (!(card.status === "running" || card.execution?.status === "running")) continue;

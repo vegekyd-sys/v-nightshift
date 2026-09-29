@@ -45,7 +45,7 @@ Night Shift starts new native cards only while the Gateway host has headroom, an
 | `NIGHTSHIFT_AGENT_DB_SLOW_ADMISSION_YELLOW` | 3 | Slow lease admissions in the window that stop new starts. |
 | `NIGHTSHIFT_USER_HARM_COOLDOWN_MS` | 900000 | Hold after a lease timeout cut a person's reply. Quiet probes cannot end it early. |
 | `NIGHTSHIFT_ORPHANED_SESSION_MS` | 2700000 | A blocked card whose Agent Session has written nothing for this long is failed as `agent_interrupted` and handed to the stage's retry policy. |
-| `NIGHTSHIFT_WARMUP_WINDOW_MS` / `NIGHTSHIFT_WARMUP_MAX_CARDS` | 180000 / 3 | At most this many Night Shift cards in their first minutes at once; a start waits until one leaves its window (see below). |
+| `NIGHTSHIFT_WARMUP_WINDOW_MS` / `NIGHTSHIFT_WARMUP_MAX_CARDS` | 90000 / 3 | At most this many Night Shift cards in their first minutes at once; a start waits until one leaves its window (see below). |
 | `NIGHTSHIFT_DISPATCH_INITIAL_MAX_ACTIVE` | 3 | Concurrency the ramp starts from after a restart or a red probe. |
 | `NIGHTSHIFT_GATEWAY_GREEN_LATENCY_MS` / `_RED_LATENCY_MS` | 250 / 1000 | Worker status RPC latency that pauses growth or halves the target. |
 | `NIGHTSHIFT_CARD_REFRESH_MIN_INTERVAL_MS` | 30000 | An explicit `refresh=1` read younger than this is served from the cache. |
@@ -59,6 +59,8 @@ Night Shift starts new native cards only while the Gateway host has headroom, an
 A card's first minutes are its heaviest on the agent database: its Session is built, context and Skills load, and the first turns are written. On V on 2026-09-29, 10 of the 14 Night Shift runs cut by Agent DB lease timeouts were in their first 5 minutes, and the worst clusters followed 5 to 7 starts within 5 minutes. The start budget (3 per 15 s) allowed that, because it spaces starts but does not see how many new cards are still warming up.
 
 A scheduler pass therefore starts at most `NIGHTSHIFT_WARMUP_MAX_CARDS` minus the running cards started within `NIGHTSHIFT_WARMUP_WINDOW_MS`. When that is zero, the next pass is scheduled for the moment the oldest warming card leaves its window. `/api/health` reports it as `dispatchWarmup { warming, maxWarming, windowMs, available, retryAfterMs }`. The other brakes apply on top; this one only spreads starts out.
+
+The default, 3 cards per 90 s, is Tianyi's choice for throughput (2026-09-29). Most cut runs were 2 to 5 minutes into their run, so a longer window protects more; if lease timeouts stay frequent, lengthen `NIGHTSHIFT_WARMUP_WINDOW_MS` in the drop-in and restart only Night Shift.
 
 ### Agent DB lease pressure
 

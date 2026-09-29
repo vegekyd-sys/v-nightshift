@@ -102,7 +102,7 @@ const orphanedSessionMs = positiveInteger(process.env.NIGHTSHIFT_ORPHANED_SESSIO
 // How soon to retry after a scheduler pass fails, doubling up to the ceiling.
 // New cards still in their first minutes, the heaviest on the agent database.
 // At most this many at once; a start waits for one to leave its window.
-const warmupWindowMs = positiveInteger(process.env.NIGHTSHIFT_WARMUP_WINDOW_MS, 180_000, 1_800_000);
+const warmupWindowMs = positiveInteger(process.env.NIGHTSHIFT_WARMUP_WINDOW_MS, 90_000, 1_800_000);
 const warmupMaxStarts = positiveInteger(process.env.NIGHTSHIFT_WARMUP_MAX_CARDS, 3, 36);
 const schedulerRetryMinMs = positiveInteger(process.env.NIGHTSHIFT_SCHEDULER_RETRY_MIN_MS, 10_000, 600_000);
 const schedulerRetryMaxMs = positiveInteger(process.env.NIGHTSHIFT_SCHEDULER_RETRY_MAX_MS, 120_000, 600_000);
