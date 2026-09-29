@@ -61,6 +61,7 @@ export function infrastructureFailureSummary(failure) {
     connection_reset: "模型或网络连接中断",
     upstream_unavailable: "上游服务返回 5xx",
     agent_interrupted: "Agent 运行被中断",
+    agent_not_started: "Agent 没能启动",
     agent_error: "Agent 运行失败",
   }[failure?.kind] ?? "Agent 运行失败";
   const recovery = failure?.automaticRetry && failure?.nextRetryAt

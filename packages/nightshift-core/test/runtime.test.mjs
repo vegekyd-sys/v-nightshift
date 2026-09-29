@@ -1676,6 +1676,60 @@ test("an orphaned paid card whose provider task is on the ledger resumes automat
   store.close();
 });
 
+// On V (2026-09-29) a brief card was blocked 7 s after dispatch with an empty
+// Session, and reached a person as "the handoff is missing".
+async function notStartedFixture({ id, stageId, startedMinutesAgo = 5 }) {
+  const fixture = await orphanFixture({ id, stageId });
+  fixture.card.execution.startedAt = Date.now() - startedMinutesAgo * 60_000;
+  fixture.workboard.sessions.set(fixture.card.sessionKey, { messages: [] });
+  return fixture;
+}
+
+test("a blocked card whose Agent never took a turn is retried as a start failure, not sent to a person", async () => {
+  const { runtime, store, workboard } = await notStartedFixture({ id: "NS-NOT-STARTED", stageId: "plan" });
+  await runtime.reconcile("NS-NOT-STARTED");
+  const [event] = attemptFailures(store, "NS-NOT-STARTED");
+  assert.equal(event.payload.failure.kind, "agent_not_started");
+  assert.equal(event.payload.failure.automaticRetry, true);
+  assert.match(event.payload.summary, /Agent 没能启动/);
+  assert.equal(store.listEvents("NS-NOT-STARTED").some((entry) => entry.type === "stage.completion.rejected"), false);
+  assert.equal(workboard.cards[0].status, "blocked");
+  store.close();
+});
+
+test("an empty Session is not read as a start failure while its transcript may still be arriving", async () => {
+  const { runtime, store } = await notStartedFixture({ id: "NS-NOT-STARTED-FRESH", stageId: "plan", startedMinutesAgo: 1 });
+  await runtime.reconcile("NS-NOT-STARTED-FRESH");
+  assert.equal(attemptFailures(store, "NS-NOT-STARTED-FRESH").length, 0);
+  store.close();
+});
+
+test("a paid card that never started retries without a ledger entry: it cannot have spent anything", async () => {
+  const { runtime, store } = await notStartedFixture({ id: "NS-NOT-STARTED-PAID", stageId: "produce" });
+  await runtime.reconcile("NS-NOT-STARTED-PAID");
+  const [event] = attemptFailures(store, "NS-NOT-STARTED-PAID");
+  assert.equal(event.payload.failure.kind, "agent_not_started");
+  assert.equal(event.payload.failure.automaticRetry, true);
+  store.close();
+});
+
+test("a paid card that never started still waits for a person when an earlier attempt left a reservation open", async () => {
+  const { card, runtime, store } = await notStartedFixture({ id: "NS-NOT-STARTED-RESERVED", stageId: "produce" });
+  store.reserveExternalOperation({
+    idempotencyKey: "NS-NOT-STARTED-RESERVED:video-1:produce",
+    instanceId: "NS-NOT-STARTED-RESERVED",
+    contentItemId: "video-1",
+    stageId: "produce",
+    ownerCardId: card.id,
+    requestHash: "request-sha",
+  });
+  await runtime.reconcile("NS-NOT-STARTED-RESERVED");
+  const [event] = attemptFailures(store, "NS-NOT-STARTED-RESERVED");
+  assert.equal(event.payload.failure.automaticRetry, false);
+  assert.match(event.payload.summary, /需要人工检查后重试/);
+  store.close();
+});
+
 test("blocked-card inspection has its own budget and a deferred card is read on the next ordinary pass", async () => {
   // An injected clock: a 1 ms real-time window let a slow machine reset the
   // budget between the two cards of one pass and read both (flaky on CI).

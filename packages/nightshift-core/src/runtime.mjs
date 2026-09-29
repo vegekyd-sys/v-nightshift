@@ -9,6 +9,10 @@ import { actionKey, buildAgentBrief, nativeActionKey, planNextActions, requiredA
 import { classifyTerminalFailure, infrastructureFailureSummary, scheduleAutomaticRetry } from "./failure-policy.mjs";
 import { normalizeProjectCollaboration } from "./project.mjs";
 
+// A blocked card with an empty Session is read as never started only after this
+// long, so a transcript still being written is not mistaken for one.
+const NOT_STARTED_GRACE_MS = 2 * 60_000;
+
 export class NightShiftRuntime {
   constructor({
     board = "nightshift",
@@ -311,6 +315,28 @@ export class NightShiftRuntime {
     const terminalAt = timestampMs(latest?.timestamp ?? latest?.__openclaw?.recordTimestampMs ?? 0);
     const stopReason = String(latest?.stopReason ?? "").toLowerCase();
     const silentMs = this.now() - Math.max(terminalAt, startedAt);
+    if (card.status === "blocked" && startedAt > 0 && messages.length === 0 && silentMs >= NOT_STARTED_GRACE_MS) {
+      // On V (2026-09-29) a brief card was blocked 7 s after dispatch, during
+      // Agent DB lease contention, with an empty Session. Read as "not terminal",
+      // it fell through to artifact recovery and reached a person as "the handoff
+      // is missing". The Agent never took a turn: that is the execution substrate.
+      return this.failTerminalAttempt({
+        attempt,
+        card,
+        contentItemId,
+        failure: {
+          kind: "agent_not_started",
+          source: "gateway",
+          rawError: "The Worker blocked this card before the Agent's first turn: its Session has no messages",
+          retryable: true,
+        },
+        instance,
+        nothingSpent: true,
+        release,
+        stageId,
+        terminalAt: this.now(),
+      });
+    }
     if (card.status === "blocked" && startedAt > 0 && silentMs >= this.orphanedSessionMs &&
       (latest?.role !== "assistant" || !["stop", "error", "aborted"].includes(stopReason) || terminalAt < startedAt)) {
       // On V two paid produce cards sat blocked for two hours after their Worker
@@ -396,11 +422,12 @@ export class NightShiftRuntime {
     }
   }
 
-  async failTerminalAttempt({ attempt, card, contentItemId, failure: terminalFailure, instance, release, stageId, terminalAt }) {
+  async failTerminalAttempt({ attempt, card, contentItemId, failure: terminalFailure, instance, nothingSpent = false, release, stageId, terminalAt }) {
     const eventId = `attempt-failure:${card.id}:${attempt}`;
     const previousFailures = this.store.listEvents(instance.id, 1000).filter((event) =>
       event.type === "stage.attempt.failed" && event.payload?.cardId === card.id);
-    const safeToRetry = this.safeToAutomaticallyRetry({ card, contentItemId, instance, release, stageId });
+    const safeToRetry = this.safeToAutomaticallyRetry({ card, contentItemId, instance, release, stageId }) ||
+      (nothingSpent && this.ledgerSettledFor({ card, contentItemId, instance, stageId }));
     const retry = scheduleAutomaticRetry({
       failure: terminalFailure,
       failureCount: previousFailures.length + 1,
@@ -507,6 +534,16 @@ export class NightShiftRuntime {
       (operation.contentItemId ?? null) === (contentItemId ?? null) &&
       ["executing", "succeeded"].includes(operation.status) &&
       Boolean(operation.externalTaskId));
+  }
+
+  // An attempt that never took a turn cannot have spent money, but an earlier
+  // attempt of the same card may have reserved an operation it never resolved.
+  // Only a ledger with nothing in flight for this card lets a paid stage retry.
+  ledgerSettledFor({ card, contentItemId, instance, stageId }) {
+    if (this.hasHumanTakeover({ cardId: card.id, contentItemId, instanceId: instance.id, stageId })) return false;
+    return !this.store.listExternalOperations(instance.id).some((operation) =>
+      operation.ownerCardId === card.id &&
+      (operation.status === "reserved" || (operation.status === "executing" && !operation.externalTaskId)));
   }
 
   hasHumanTakeover({ cardId, contentItemId, instanceId, stageId }) {
