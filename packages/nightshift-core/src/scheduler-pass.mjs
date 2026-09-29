@@ -1,5 +1,5 @@
 import { tickWithFaultProjection } from "./scheduler-state.mjs";
-import { byArrival, projectQueue } from "./project-queue.mjs";
+import { byQueueOrder, projectQueue } from "./project-queue.mjs";
 
 export async function runSchedulerPass({
   dispatchMaxStarts = 36,
@@ -15,7 +15,8 @@ export async function runSchedulerPass({
   refreshCards,
   syncContentItemsManifest,
 }) {
-  // First come, first delivered: projects are ticked in the order they arrived,
+  // First come, first delivered (unless a project was given priority, which
+  // jumps the queue): projects are ticked in the order they arrived,
   // over one start budget shared by every Workflow, so the earliest project
   // takes its share first and a late one waits until starts are left over. The
   // store lists by last update, which on V (2026-09-29) handed the few free
@@ -23,7 +24,7 @@ export async function runSchedulerPass({
   // started at 11:49 sat queued behind ones that arrived four hours later.
   const instances = store.listInstances().filter((instance) => instance.status === "active")
     .sort((a, b) => Number(store.getInstanceControl(b.id).automaticDispatch) - Number(store.getInstanceControl(a.id).automaticDispatch) ||
-      byArrival(a, b));
+      byQueueOrder(store)(a, b));
   const nowMs = Date.now();
   const wasRunning = (id) => [...store.listStageRuns(id), ...store.listContentItemRuns(id)]
     .some((run) => runIsLive(run, nowMs));

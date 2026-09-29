@@ -349,3 +349,36 @@ test("a project waiting on a person does not hold its place in the queue", async
   assert.deepEqual(result.queue.get("EARLY"), { state: "waiting" });
   assert.deepEqual(result.queue.get("LATE"), { state: "queued", position: 1 });
 });
+
+// An operator or an Agent can put a project ahead of the queue (priority);
+// projects nobody set keep first come, first delivered.
+test("a project given priority jumps the queue; the rest keep their arrival order", async () => {
+  const f = arrivalFixture({ budget: 3 });
+  f.store.setInstanceControl("LATE", { priority: 1 });
+  const result = await runSchedulerPass(f);
+  assert.deepEqual(f.starts, ["LATE", "LATE", "EARLY"]);
+  assert.deepEqual(result.queue.get("LATE"), { state: "running", priority: 1 });
+  assert.deepEqual(result.queue.get("MIDDLE"), { state: "queued", position: 1 });
+});
+
+test("a project put last lets every other project go first", async () => {
+  const f = arrivalFixture({ budget: 2 });
+  f.store.setInstanceControl("EARLY", { priority: -1 });
+  const result = await runSchedulerPass(f);
+  assert.deepEqual(f.starts, ["MIDDLE", "MIDDLE"]);
+  assert.deepEqual(result.queue.get("LATE"), { state: "queued", position: 1 });
+  assert.deepEqual(result.queue.get("EARLY"), { state: "queued", position: 2, priority: -1 });
+});
+
+test("an explicit order puts projects ahead in that order; clearing it restores arrival", async () => {
+  const f = arrivalFixture({ budget: 2 });
+  f.store.setInstanceControl("MIDDLE", { priority: 2 });
+  f.store.setInstanceControl("LATE", { priority: 1 });
+  let result = await runSchedulerPass(f);
+  assert.deepEqual(f.starts, ["MIDDLE", "MIDDLE"]);
+  assert.deepEqual(result.queue.get("LATE"), { state: "queued", position: 1, priority: 1 });
+  const g = arrivalFixture({ budget: 2 });
+  g.store.setInstanceControl("MIDDLE", { priority: null });
+  result = await runSchedulerPass(g);
+  assert.deepEqual(g.starts, ["EARLY", "EARLY"]);
+});

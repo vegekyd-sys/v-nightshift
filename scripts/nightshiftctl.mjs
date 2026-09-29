@@ -83,6 +83,40 @@ async function run(input) {
       method: "POST",
     });
   }
+  // Queue order. priority <id> [<n>|first|last|default]: higher goes first,
+  // equal priorities keep arrival order. order <id> <id> …: those projects go
+  // ahead of every other, in that order. queue: the current order.
+  if (resource === "projects" && action === "priority" && subject) {
+    const value = input[3];
+    if (!value || value.startsWith("--")) {
+      const project = await api(`/api/instances/${encodeURIComponent(subject)}`);
+      const control = (project.instance ?? project).control ?? {};
+      return { instanceId: subject, priority: control.priority ?? null, queue: control.queue ?? null };
+    }
+    const priority = ["first", "last", "default"].includes(value) ? value : Number(value);
+    if (typeof priority === "number" && !Number.isSafeInteger(priority)) throw new Error("projects priority <id> <n|first|last|default> [--reason <text>]");
+    return api(`/api/instances/${encodeURIComponent(subject)}/priority`, {
+      body: JSON.stringify({ priority, reason: option(input, "--reason") ?? null, actor: option(input, "--actor") ?? "Night Shift operator" }),
+      method: "POST",
+    });
+  }
+  if (resource === "projects" && action === "order") {
+    const instanceIds = [];
+    for (let index = 2; index < input.length && !input[index].startsWith("--"); index++) instanceIds.push(input[index]);
+    if (instanceIds.length === 0) throw new Error("projects order <id> [<id> …] [--reason <text>]");
+    return api("/api/queue/order", {
+      body: JSON.stringify({ instanceIds, reason: option(input, "--reason") ?? null, actor: option(input, "--actor") ?? "Night Shift operator" }),
+      method: "POST",
+    });
+  }
+  if (resource === "projects" && action === "queue") {
+    const result = await api("/api/instances");
+    return (result.instances ?? []).filter((entry) => entry.status === "active")
+      .map((entry) => ({ id: entry.id, name: entry.name, createdAt: entry.createdAt, priority: entry.control?.priority ?? null,
+        queue: entry.control?.queue ?? null, concurrency: entry.control?.concurrency?.effective ?? null }))
+      .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || String(a.createdAt).localeCompare(String(b.createdAt)))
+      .map((entry, index) => ({ order: index + 1, ...entry }));
+  }
   if (resource === "projects" && action === "start" && subject) {
     return api(`/api/instances/${encodeURIComponent(subject)}/start`, { body: "{}", method: "POST" });
   }
@@ -219,7 +253,7 @@ async function run(input) {
       method: "POST",
     });
   }
-  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|monitor|preflight|create|start|pause|archive|restore | projects concurrency <id> [<1-8>|default] [--reason <text>] | projects inputs <id> --file <json> | projects collaboration <id> --to <oc_…|user:ou_…> [--by <ou_…>] | decisions list [--project <id>] [--status open|decided] | decisions get <id> | decisions decide <id> --option <id> [--note <text>] [--apply-to-group] | governance audit [--refresh] | governance archive|restore <manifest.json> [--apply] | operations reserve|checkpoint <card-id> | cards list|session|approve|changes|reject|retry");
+  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|monitor|preflight|create|start|pause|archive|restore | projects concurrency <id> [<1-8>|default] [--reason <text>] | projects priority <id> [<n>|first|last|default] [--reason <text>] | projects order <id> [<id> …] [--reason <text>] | projects queue | projects inputs <id> --file <json> | projects collaboration <id> --to <oc_…|user:ou_…> [--by <ou_…>] | decisions list [--project <id>] [--status open|decided] | decisions get <id> | decisions decide <id> --option <id> [--note <text>] [--apply-to-group] | governance audit [--refresh] | governance archive|restore <manifest.json> [--apply] | operations reserve|checkpoint <card-id> | cards list|session|approve|changes|reject|retry");
 }
 
 async function resolveWorkflow(project) {

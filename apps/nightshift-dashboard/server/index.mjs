@@ -35,8 +35,11 @@ import {
   instanceRelativeArtifactPath,
   normalizeArtifactPath,
   normalizeProjectGovernance,
+  PRIORITY_MAX,
+  PRIORITY_MIN,
   PROJECT_CONCURRENCY_MAX,
   projectConcurrencyLimit,
+  projectPriority,
   normalizeDeliverablesManifest,
   deliverablesFromHandoffs,
   normalizeStageHandoff,
@@ -873,6 +876,64 @@ async function handleApi(request, response, url) {
       return { instanceId, concurrency: after };
     });
     if (store.getInstanceControl(instanceId).automaticDispatch) changeScheduler.enqueue("concurrency.changed");
+    json(response, 200, result);
+    return;
+  }
+  // A project's place in the queue. Higher priority takes the free starts
+  // first; equal priorities (every project nobody set) keep first come, first
+  // delivered. "first" and "last" place it ahead of or behind every other
+  // active project; "default" (or null) returns it to arrival order.
+  const priorityMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/priority$/);
+  if (request.method === "POST" && priorityMatch) {
+    const instanceId = decodeURIComponent(priorityMatch[1]);
+    const body = await bodyJson(request);
+    const actor = operatorIdentity(request, body);
+    if (!store.getInstance(instanceId)) throw new Error(`Unknown project ${instanceId}`);
+    const reason = typeof body.reason === "string" ? body.reason.slice(0, 500) : null;
+    const result = await serializedOperation(async () => {
+      const others = store.listInstances().filter((entry) => entry.status === "active" && entry.id !== instanceId)
+        .map((entry) => projectPriority(store, entry.id));
+      const requested = body.priority === "default" || body.priority === null || body.priority === undefined ? null
+        : body.priority === "first" ? Math.max(0, ...others) + 1
+          : body.priority === "last" ? Math.min(0, ...others) - 1
+            : body.priority;
+      if (requested !== null && (!Number.isSafeInteger(requested) || requested < PRIORITY_MIN || requested > PRIORITY_MAX)) {
+        throw new Error(`priority must be an integer from ${PRIORITY_MIN} to ${PRIORITY_MAX}, "first", "last", or "default"`);
+      }
+      const from = store.getInstanceControl(instanceId).priority;
+      store.setInstanceControl(instanceId, { priority: requested });
+      store.appendEvent({ instanceId, type: "queue.priority.changed", payload: { actor, reason, from, to: requested, requested: body.priority ?? null } });
+      return { instanceId, priority: requested };
+    });
+    changeScheduler.enqueue("queue.priority.changed");
+    json(response, 200, result);
+    return;
+  }
+  // An Agent's own order: the listed projects go ahead of every other active
+  // project, in the order given. Projects not listed keep their priority.
+  if (request.method === "POST" && url.pathname === "/api/queue/order") {
+    const body = await bodyJson(request);
+    const actor = operatorIdentity(request, body);
+    const ids = Array.isArray(body.instanceIds) ? body.instanceIds : [];
+    if (ids.length === 0 || new Set(ids).size !== ids.length) throw new Error("instanceIds must list each project once");
+    for (const id of ids) if (!store.getInstance(id)) throw new Error(`Unknown project ${id}`);
+    const reason = typeof body.reason === "string" ? body.reason.slice(0, 500) : null;
+    const result = await serializedOperation(async () => {
+      const listed = new Set(ids);
+      const others = store.listInstances().filter((entry) => entry.status === "active" && !listed.has(entry.id))
+        .map((entry) => projectPriority(store, entry.id));
+      const top = Math.max(0, ...others) + ids.length;
+      if (top > PRIORITY_MAX) throw new Error(`the order would exceed priority ${PRIORITY_MAX}; reset some priorities to default first`);
+      const order = ids.map((id, index) => {
+        const from = store.getInstanceControl(id).priority;
+        const to = top - index;
+        store.setInstanceControl(id, { priority: to });
+        store.appendEvent({ instanceId: id, type: "queue.priority.changed", payload: { actor, reason, from, to, order: ids } });
+        return { instanceId: id, priority: to };
+      });
+      return { order };
+    });
+    changeScheduler.enqueue("queue.priority.changed");
     json(response, 200, result);
     return;
   }

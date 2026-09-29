@@ -22,6 +22,7 @@ export {
   gatewayIdempotencyLabel,
 } from "./workboard-gateway-adapter.mjs";
 export { NightShiftRuntime, cardIsStartable } from "./runtime.mjs";
+export { byQueueOrder, PRIORITY_MAX, PRIORITY_MIN, projectPriority } from "./project-queue.mjs";
 export {
   deliverableArtifactPaths,
   deliverablesFromHandoffs,
