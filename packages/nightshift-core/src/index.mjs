@@ -9,7 +9,7 @@ export {
   stageEnabled,
   validateWorkflow,
 } from "./workflow.mjs";
-export { actionKey, buildAgentBrief, nativeActionKey, planNextActions, redactSensitiveInputs, requiredApproval, resolveApprovalBinding, WORKBOARD_NOTES_LIMIT, WORKBOARD_PARENTS_LIMIT } from "./orchestrator.mjs";
+export { actionKey, buildAgentBrief, nativeActionKey, planNextActions, PROJECT_CONCURRENCY_MAX, projectConcurrencyLimit, redactSensitiveInputs, requiredApproval, resolveApprovalBinding, WORKBOARD_NOTES_LIMIT, WORKBOARD_PARENTS_LIMIT } from "./orchestrator.mjs";
 export { findNightShiftExternalOperation, resolveNightShiftCardContext, resolveNightShiftOperationKeys } from "./card-context.mjs";
 export { WorkboardCliAdapter, idempotencyLabel } from "./workboard-adapter.mjs";
 export { NightShiftStore } from "./store.mjs";
@@ -22,6 +22,7 @@ export {
   gatewayIdempotencyLabel,
 } from "./workboard-gateway-adapter.mjs";
 export { NightShiftRuntime, cardIsStartable } from "./runtime.mjs";
+export { byQueueOrder, PRIORITY_MAX, PRIORITY_MIN, projectPriority } from "./project-queue.mjs";
 export {
   deliverableArtifactPaths,
   deliverablesFromHandoffs,

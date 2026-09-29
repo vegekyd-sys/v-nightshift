@@ -234,3 +234,37 @@ test("an older database gains the collaboration column without losing projects",
   store.close();
   await rm(directory, { recursive: true, force: true });
 });
+
+test("a project's own session limit is stored beside its dispatch switch and can be cleared", async () => {
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  const store = new NightShiftStore();
+  store.saveRelease(release, await import("node:fs/promises").then(({ readFile }) => readFile(fixture, "utf8")));
+  store.createInstance({ id: "P", workflowSha256: release.metadata.workflowSha256 });
+  assert.equal(store.getInstanceControl("P").perInstanceLimit, null);
+  store.setInstanceControl("P", { automaticDispatch: false });
+  store.setInstanceControl("P", { perInstanceLimit: 4 });
+  assert.deepEqual(store.getInstanceControl("P"), { automaticDispatch: false, fault: null, perInstanceLimit: 4, priority: null });
+  store.setInstanceControl("P", { priority: -3 });
+  assert.equal(store.getInstanceControl("P").priority, -3);
+  assert.equal(store.getInstanceControl("P").perInstanceLimit, 4, "setting one control keeps the others");
+  store.setInstanceControl("P", { perInstanceLimit: null });
+  assert.equal(store.getInstanceControl("P").perInstanceLimit, null);
+  assert.equal(store.getInstanceControl("P").automaticDispatch, false);
+  store.close();
+});
+
+test("a database from before project limits gains the column and keeps its dispatch switches", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "nightshift-controls-"));
+  const path = join(dir, "state.sqlite");
+  const old = new DatabaseSync(path);
+  old.exec(`CREATE TABLE instance_controls (
+    instance_id TEXT PRIMARY KEY, automatic_dispatch INTEGER NOT NULL DEFAULT 1, fault_json TEXT, updated_at TEXT NOT NULL)`);
+  old.prepare("INSERT INTO instance_controls VALUES ('OLD', 0, NULL, '2026-09-29T00:00:00Z')").run();
+  old.close();
+  const store = new NightShiftStore(path);
+  assert.deepEqual(store.getInstanceControl("OLD"), { automaticDispatch: false, fault: null, perInstanceLimit: null, priority: null });
+  store.setInstanceControl("OLD", { perInstanceLimit: 2 });
+  assert.equal(store.getInstanceControl("OLD").perInstanceLimit, 2);
+  store.close();
+  await rm(dir, { recursive: true, force: true });
+});

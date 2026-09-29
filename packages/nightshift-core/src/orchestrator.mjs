@@ -19,6 +19,18 @@ const PRESENT_STATUSES = new Set([
   "cancelled",
 ]);
 
+// How many cards of one project may run at once. A project's own limit, set
+// while it runs by an operator or an Agent (nightshiftctl projects concurrency),
+// wins; otherwise the Workflow's perInstance, which is what every project got
+// before the limit could be set. The board-wide brakes still apply on top.
+export const PROJECT_CONCURRENCY_MAX = 8;
+
+export function projectConcurrencyLimit(release, control = {}) {
+  const own = control?.perInstanceLimit;
+  if (Number.isSafeInteger(own) && own >= 1) return Math.min(own, PROJECT_CONCURRENCY_MAX);
+  return release?.spec?.concurrency?.perInstance ?? 1;
+}
+
 export function planNextActions({
   release,
   instance,
@@ -26,6 +38,7 @@ export function planNextActions({
   contentItems = [],
   contentItemRuns = [],
   now = new Date(),
+  perInstanceLimit = null,
 }) {
   assertInstance(release, instance);
   if (instance.status !== "active") return [];
@@ -37,7 +50,8 @@ export function planNextActions({
   const activeCount = [...latestRuns.values(), ...latestItemRuns.values()].filter((run) =>
     ACTIVE_STATUSES.has(run.status),
   ).length;
-  const limit = release.spec.concurrency?.perInstance ?? 1;
+  // The caller passes the project's effective limit; alone, the Workflow's.
+  const limit = Number.isSafeInteger(perInstanceLimit) && perInstanceLimit >= 1 ? perInstanceLimit : projectConcurrencyLimit(release);
   if (activeCount >= limit) return [];
   const itemById = new Map(contentItems.map((item) => [item.id, item]));
   const reservedResources = activeResourceLocks({ instance, itemById, latestItemRuns, latestRuns, stageById });

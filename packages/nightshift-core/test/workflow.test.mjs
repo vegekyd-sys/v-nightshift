@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
-import { buildAgentBrief, compileWorkflow, loadWorkflow, planNextActions, validateWorkflow, WORKBOARD_NOTES_LIMIT } from "../src/index.mjs";
+import { buildAgentBrief, compileWorkflow, loadWorkflow, planNextActions, PROJECT_CONCURRENCY_MAX, projectConcurrencyLimit, validateWorkflow, WORKBOARD_NOTES_LIMIT } from "../src/index.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = resolve(here, "../../../examples/workflows/xingqing-content-delivery.workflow.md");
@@ -642,4 +642,15 @@ test("a Workflow may name who hears when its projects finish", async () => {
   assert.deepEqual(codes({ instanceCompleted: { enabled: true, to: "Tianyi" } }), ["notifications.to.invalid spec.notifications.instanceCompleted.to"]);
   assert.deepEqual(codes({ instanceCompleted: { to: "oc_1" } }), ["notifications.event.config.invalid spec.notifications.instanceCompleted"]);
   assert.deepEqual(codes({ onFailure: { enabled: true } }), ["notifications.event.invalid spec.notifications.onFailure"]);
+});
+
+test("a project's own limit wins over the Workflow's, within 1 to the maximum", () => {
+  const release = { spec: { concurrency: { perInstance: 2 } } };
+  assert.equal(projectConcurrencyLimit(release), 2);
+  assert.equal(projectConcurrencyLimit(release, { perInstanceLimit: null }), 2);
+  assert.equal(projectConcurrencyLimit(release, { perInstanceLimit: 5 }), 5);
+  assert.equal(projectConcurrencyLimit(release, { perInstanceLimit: 1 }), 1);
+  assert.equal(projectConcurrencyLimit(release, { perInstanceLimit: 50 }), PROJECT_CONCURRENCY_MAX);
+  assert.equal(projectConcurrencyLimit(release, { perInstanceLimit: 0 }), 2);
+  assert.equal(projectConcurrencyLimit({ spec: {} }), 1);
 });

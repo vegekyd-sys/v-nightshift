@@ -5,7 +5,7 @@ import {
   validateWorkflow,
   WorkflowValidationError,
 } from "./workflow.mjs";
-import { actionKey, buildAgentBrief, nativeActionKey, planNextActions, requiredApproval, resolveApprovalBinding, stageTimeoutSeconds, WORKBOARD_NOTES_LIMIT } from "./orchestrator.mjs";
+import { actionKey, buildAgentBrief, nativeActionKey, planNextActions, projectConcurrencyLimit, requiredApproval, resolveApprovalBinding, stageTimeoutSeconds, WORKBOARD_NOTES_LIMIT } from "./orchestrator.mjs";
 import { classifyRunOutcome, classifyTerminalFailure, infrastructureFailureSummary, runEndedNormally, scheduleAutomaticRetry } from "./failure-policy.mjs";
 import { normalizeProjectCollaboration } from "./project.mjs";
 
@@ -854,6 +854,7 @@ export class NightShiftRuntime {
     const runs = this.store.listStageRuns(instanceId);
     const contentItems = this.store.listContentItems(instanceId);
     const contentItemRuns = this.store.listContentItemRuns(instanceId);
+    const perInstanceLimit = projectConcurrencyLimit(savedRelease.manifest, this.store.getInstanceControl?.(instanceId));
     const actions = planNextActions({
       release: savedRelease.manifest,
       instance,
@@ -861,6 +862,7 @@ export class NightShiftRuntime {
       contentItems,
       contentItemRuns,
       now: new Date(nowMs),
+      perInstanceLimit,
     });
     // A card the board holds for a timed release must wake the scheduler at
     // exactly that moment. Two sources, because the card can be planned in this
@@ -963,7 +965,7 @@ export class NightShiftRuntime {
           this.dispatchMaxStarts,
           normalizeDispatchBudget(dispatchMaxStarts),
           Math.max(0, this.maxWorkboardActive - activeAcrossBoard),
-          Math.max(0, (savedRelease.manifest.spec.concurrency?.perInstance ?? 1) - active.length),
+          Math.max(0, perInstanceLimit - active.length),
           cardIds.length,
         );
         if (maxStarts > 0) {

@@ -85,6 +85,40 @@ Each project's place is reported as `control.queue` in `/api/overview`:
 
 Before this, the scheduler visited projects by last update. On 2026-09-29 that gave the few free starts to the newest batches: DL-0929-01, started at 11:49, sat queued behind projects that arrived four hours later, and all seven batches were heading to finish together late at night.
 
+### A project's own session limit
+
+How many cards one project may run at once can be set while it runs, by an operator or by an Agent. V sets it through the CLI:
+
+```bash
+nightshiftctl projects concurrency <project>                                 # show
+nightshiftctl projects concurrency <project> 6 --actor V --reason "机器空闲，加快"
+nightshiftctl projects concurrency <project> default --reason "高峰结束"
+```
+
+- The limit is 1 to 8 (`PROJECT_CONCURRENCY_MAX`). `default` clears it, and the project runs by its Workflow's `concurrency.perInstance` again. A project nobody set runs exactly as before.
+- It is stored in `instance_controls.per_instance_limit`. The column is added at startup; a database from before it is upgraded in place, and an older release ignores it.
+- It only changes that project's share. The board-wide brakes still cap every start: Agent DB pressure, host memory, `maxActive`, and the first-come queue. Raising one project while the host is braking starts nothing new.
+- Every change is an audit event `concurrency.control.changed` with the actor, the reason and the limits before and after. `/api/instances/:id` and `/api/overview` report `control.concurrency { effective, project, workflow, max }`.
+- API: `POST /api/instances/:id/concurrency { perInstance: 1–8 | null | "default", reason, actor }`.
+
+### Jumping the queue
+
+A project's place in the queue can be changed while it runs, by an operator or by an Agent on its own judgement (a delivery promise, a customer waiting, a project whose materials need fixing first):
+
+```bash
+nightshiftctl projects queue                                              # the order now
+nightshiftctl projects priority <project> first --actor V --reason "客户明早要"
+nightshiftctl projects priority <project> last  --reason "素材有问题，先放后面"
+nightshiftctl projects priority <project> default
+nightshiftctl projects order <a> <b> <c> --actor V --reason "按交付承诺排"
+```
+
+- The queue orders by priority, higher first, then by arrival. A project nobody set has priority 0, so with no priorities set the order is exactly first come, first delivered.
+- `first` sets one above every other active project and `last` one below. A number from -1000 to 1000 sets it directly. `order` puts the listed projects ahead of every other, in the order given; projects not listed keep theirs. `default` clears it.
+- It orders only new starts. Cards already running finish. Together with the project's session limit it decides how many of the free starts each project takes, and the board-wide brakes still decide how many there are.
+- Stored in `instance_controls.priority` and reported as `control.priority`, and as `priority` in `control.queue`. Each change is an audit event `queue.priority.changed` with the actor, the reason, and the priority before and after.
+- API: `POST /api/instances/:id/priority { priority: n | "first" | "last" | "default", reason, actor }` and `POST /api/queue/order { instanceIds: [...], reason, actor }`.
+
 ## Why a blocked card stopped
 
 A blocked card is first explained by how its run ended, as the Gateway records it (`tasks.list` for the card's Session, matched by run id). The Workboard keeps no reason for a blocked attempt; the Gateway's task registry does.
