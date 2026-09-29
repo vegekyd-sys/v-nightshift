@@ -3,11 +3,11 @@ apiVersion: nightshift.versa.ai/v1alpha1
 kind: Workflow
 metadata:
   id: generic-agent-delivery
-  version: 0.1.0-draft
+  version: 0.1.1-draft
   name: 通用 Agent 交付
 spec:
   ownerAgentRole: operator
-  concurrency: {perInstance: 1, maxActiveInstances: 10}
+  concurrency: {perInstance: 1}
   inputs:
     briefUrl: {type: string, required: true}
 ---

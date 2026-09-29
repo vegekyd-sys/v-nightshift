@@ -67,6 +67,24 @@ Night Shift therefore reads the Gateway journal (`journalctl -u $NIGHTSHIFT_GATE
 
 A cut reply also sets a ceiling, `dispatchPressure.harmCeiling` in `/api/health`, at 70% of the Night Shift cards running when it happened. Recovery is capped there, including the rule that admits one card beyond those still running, so it cannot jump straight back to the level that caused the harm. The ceiling starts rising when the hold ends: one card per 5 quiet minutes. It lowers again at the next separate cut reply and disappears once it climbs back to `maxActive`. It is held in memory, so a service restart forgets it. On 2026-09-28, without it, recovery at 15:10 returned to the ten cards that had cut a reply at 14:55, and two more replies were cut at 15:22.
 
+### First come, first delivered
+
+The starts that admission allows in one scheduler pass are shared by every project, whatever its Workflow. Projects take them in the order they were created:
+- The earliest project takes as many as its Workflow lets one project run (`concurrency.perInstance`).
+- The next project takes what is left, and so on.
+- A project that arrives when nothing is left waits.
+
+How many projects move together follows from how much admission allows. No fixed count applies. `concurrency.maxActiveInstances`, which was declared in Workflows but never enforced, is now refused at publish; releases published before keep it and it is ignored.
+
+A project waiting only on a person or on a release time has nothing to start, so it holds no place in the queue. Once it can start again, it takes the next free start ahead of any project that arrived after it. Cards already running elsewhere finish; only new starts go to the earlier project.
+
+Each project's place is reported as `control.queue` in `/api/overview`:
+- `running`: it has cards running.
+- `queued`, with `position`: it has cards ready to start and got no start in the last pass. The board shows 「排队第 N 位」.
+- `waiting`: it has nothing to start.
+
+Before this, the scheduler visited projects by last update. On 2026-09-29 that gave the few free starts to the newest batches: DL-0929-01, started at 11:49, sat queued behind projects that arrived four hours later, and all seven batches were heading to finish together late at night.
+
 ## Why a blocked card stopped
 
 A blocked card is first explained by how its run ended, as the Gateway records it (`tasks.list` for the card's Session, matched by run id). The Workboard keeps no reason for a blocked attempt; the Gateway's task registry does.

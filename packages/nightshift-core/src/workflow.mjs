@@ -138,6 +138,13 @@ export function validateWorkflow(document) {
   if (spec.completion !== undefined && (!isObject(spec.completion) || spec.completion.mode !== "strict-v1")) {
     issues.push(issue("completion.mode.invalid", "spec.completion.mode", "completion.mode must be strict-v1"));
   }
+  // Declared in every Workflow and never enforced. Every project now shares one
+  // first-come queue, so a per-Workflow count of projects has nothing to mean;
+  // refusing it stops authors copying it forward.
+  if (isObject(spec.concurrency) && spec.concurrency.maxActiveInstances !== undefined) {
+    issues.push(issue("concurrency.maxActiveInstances.removed", "spec.concurrency.maxActiveInstances",
+      "maxActiveInstances is not supported: every project shares one first-come queue. Remove it; perInstance still limits one project"));
+  }
 
   const stages = Array.isArray(spec.stages) ? spec.stages : [];
   if (stages.length === 0) {

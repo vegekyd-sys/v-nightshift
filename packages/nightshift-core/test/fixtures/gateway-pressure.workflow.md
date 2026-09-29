@@ -7,7 +7,7 @@ metadata:
   name: Gateway Pressure Canary
 spec:
   ownerAgentRole: operator
-  concurrency: {perInstance: 1, maxActiveInstances: 30}
+  concurrency: {perInstance: 1}
   completion: {mode: strict-v1}
   handoff: {version: 1, mode: stage-input-output}
   inputs:

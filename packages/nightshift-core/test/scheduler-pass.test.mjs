@@ -285,3 +285,67 @@ test("the shared card list handed to each project tick contains its approval car
   assert.ok(requested.includes("approval-card"), "the pass must read the approval card");
   assert.deepEqual(seen[0].map((card) => card.id), ["approval-card"]);
 });
+
+// On V (2026-09-29) seven projects shared a handful of starts, and the store
+// lists projects by last update: the newest batches took the starts while the
+// one started at 11:49 sat queued. Starts go by arrival instead.
+function arrivalFixture({ budget }) {
+  // Listed newest first, the way the store orders by updated_at.
+  const instances = [
+    { id: "LATE", status: "active", createdAt: "2026-09-29T07:55:00.000Z" },
+    { id: "MIDDLE", status: "active", createdAt: "2026-09-29T07:10:00.000Z" },
+    { id: "EARLY", status: "active", createdAt: "2026-09-29T03:49:00.000Z" },
+  ];
+  const controls = new Map(instances.map(({ id }) => [id, { automaticDispatch: true, fault: null }]));
+  let cards = instances.flatMap(({ id }) => [1, 2].map((n) => ({ id: `${id}-${n}`, status: "ready", labels: [`instance:${id}`] })));
+  const starts = [];
+  return {
+    starts,
+    dispatchMaxStarts: budget,
+    maxWorkboardActive: budget,
+    store: {
+      listInstances: () => instances,
+      getInstanceControl: (id) => controls.get(id),
+      setInstanceControl: (id, patch) => controls.set(id, { ...controls.get(id), ...patch }),
+      listStageRuns: () => [{ stageId: "plan", status: "ready" }], listContentItemRuns: () => [], appendEvent() {},
+    },
+    workboard: { listCards() { throw new Error("Unexpected per-project board scan"); } },
+    refreshCards: async () => cards,
+    syncContentItemsManifest: async () => {},
+    runtime: {
+      // A project runs at most two cards at once, as its Workflow allows.
+      tick: async (id, options) => {
+        const ready = cards.filter((card) => card.labels.includes(`instance:${id}`) && card.status === "ready")
+          .slice(0, Math.min(2, options.dispatchMaxStarts));
+        for (const card of ready) { card.status = "running"; starts.push(id); }
+        cards = cards.map((card) => ({ ...card }));
+        return { applied: [], dispatch: ready.length ? { started: ready.map((card) => ({ card })) } : null };
+      },
+    },
+  };
+}
+
+test("starts go to projects in the order they arrived, not the order they last moved", async () => {
+  const f = arrivalFixture({ budget: 3 });
+  await runSchedulerPass(f);
+  assert.deepEqual(f.starts, ["EARLY", "EARLY", "MIDDLE"]);
+});
+
+test("a project that arrives when no start is left waits, and the board is told its place", async () => {
+  const f = arrivalFixture({ budget: 2 });
+  const result = await runSchedulerPass(f);
+  assert.deepEqual(f.starts, ["EARLY", "EARLY"]);
+  assert.deepEqual(result.queue.get("EARLY"), { state: "running" });
+  assert.deepEqual(result.queue.get("MIDDLE"), { state: "queued", position: 1 });
+  assert.deepEqual(result.queue.get("LATE"), { state: "queued", position: 2 });
+});
+
+test("a project waiting on a person does not hold its place in the queue", async () => {
+  const f = arrivalFixture({ budget: 2 });
+  const cards = await f.refreshCards();
+  for (const card of cards.filter((entry) => entry.labels.includes("instance:EARLY"))) card.status = "blocked";
+  const result = await runSchedulerPass(f);
+  assert.deepEqual(f.starts, ["MIDDLE", "MIDDLE"]);
+  assert.deepEqual(result.queue.get("EARLY"), { state: "waiting" });
+  assert.deepEqual(result.queue.get("LATE"), { state: "queued", position: 1 });
+});

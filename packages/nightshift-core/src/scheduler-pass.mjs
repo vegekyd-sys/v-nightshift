@@ -1,4 +1,5 @@
 import { tickWithFaultProjection } from "./scheduler-state.mjs";
+import { byArrival, projectQueue } from "./project-queue.mjs";
 
 export async function runSchedulerPass({
   dispatchMaxStarts = 36,
@@ -14,8 +15,15 @@ export async function runSchedulerPass({
   refreshCards,
   syncContentItemsManifest,
 }) {
+  // First come, first delivered: projects are ticked in the order they arrived,
+  // over one start budget shared by every Workflow, so the earliest project
+  // takes its share first and a late one waits until starts are left over. The
+  // store lists by last update, which on V (2026-09-29) handed the few free
+  // starts to whichever project had just moved, usually the newest: the batch
+  // started at 11:49 sat queued behind ones that arrived four hours later.
   const instances = store.listInstances().filter((instance) => instance.status === "active")
-    .sort((a, b) => Number(store.getInstanceControl(b.id).automaticDispatch) - Number(store.getInstanceControl(a.id).automaticDispatch));
+    .sort((a, b) => Number(store.getInstanceControl(b.id).automaticDispatch) - Number(store.getInstanceControl(a.id).automaticDispatch) ||
+      byArrival(a, b));
   const nowMs = Date.now();
   const wasRunning = (id) => [...store.listStageRuns(id), ...store.listContentItemRuns(id)]
     .some((run) => runIsLive(run, nowMs));
@@ -79,7 +87,7 @@ export async function runSchedulerPass({
       warnings.push(`${instance.id}: ${error.message}`);
     }
   }
-  if (changed) await refreshCards({ cardIds: schedulerCardIds(store, null, { fullSweep, nowMs }) });
+  if (changed) cards = await refreshCards({ cardIds: schedulerCardIds(store, null, { fullSweep, nowMs }) }) ?? cards;
   return {
     dispatchMaxStarts,
     dispatched,
@@ -87,6 +95,7 @@ export async function runSchedulerPass({
     warnings,
     instances: eligible.length,
     pausedInstances: instances.length - eligible.length,
+    queue: projectQueue({ store, instances, cards, nowMs }),
     retryAfterMs,
   };
 }

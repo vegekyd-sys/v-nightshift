@@ -7,7 +7,7 @@ metadata:
   name: Night Shift 审计链路 Canary
 spec:
   ownerAgentRole: operator
-  concurrency: {perInstance: 1, maxActiveInstances: 4}
+  concurrency: {perInstance: 1}
   completion: {mode: strict-v1}
   handoff: {version: 1, mode: stage-input-output}
   inputs:

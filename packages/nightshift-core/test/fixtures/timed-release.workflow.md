@@ -7,7 +7,7 @@ metadata:
   name: Timed Release Canary
 spec:
   ownerAgentRole: operator
-  concurrency: {perInstance: 2, maxActiveInstances: 30}
+  concurrency: {perInstance: 2}
   completion: {mode: strict-v1}
   handoff: {version: 1, mode: stage-input-output}
   inputs:

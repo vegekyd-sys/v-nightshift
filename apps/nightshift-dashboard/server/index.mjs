@@ -137,6 +137,8 @@ let lastNotificationError = null;
 let lastNotificationAt = null;
 let lastSchedulerTrigger = null;
 let schedulerPromise = null;
+// Each project's place in its Workflow's queue, as of the last scheduler pass.
+let projectQueue = new Map();
 const notificationCoordinator = notificationsEnabled
   ? new NightShiftNotificationCoordinator({
       baseUrl: publicBaseUrl || `http://${host}:${port}`,
@@ -214,10 +216,13 @@ const server = createServer(async (request, response) => {
     }
     await serveStatic(response, url.pathname);
   } catch (error) {
+    // A refused Workflow says why: publish used to answer only "failed with 1
+    // issue(s)", so an author could not tell what to change.
+    const issues = Array.isArray(error.issues) ? error.issues : null;
     const statusCode = Number.isInteger(error.statusCode) && error.statusCode >= 400 && error.statusCode <= 599
       ? error.statusCode
-      : 500;
-    json(response, statusCode, { error: error.message });
+      : issues ? 422 : 500;
+    json(response, statusCode, issues ? { error: error.message, issues } : { error: error.message });
   }
 });
 
@@ -959,6 +964,7 @@ function runScheduler({ trigger = "manual" } = {}) {
       store, runtime, workboard, refreshCards, syncContentItemsManifest,
     }));
     dispatchPressureGuard.consumeStarts(result.dispatched);
+    projectQueue = result.queue ?? new Map();
     schedulerRetryMs = 0;
     lastSchedulerAt = new Date().toISOString();
     lastSchedulerDurationMs = Date.now() - started;
@@ -1724,7 +1730,8 @@ function withWorkflowLinks(release) {
 }
 
 function withInstanceLinks(instance) {
-  return { ...instance, governance: normalizeProjectGovernance(instance), control: store.getInstanceControl(instance.id), links: projectLinks(instance.id) };
+  const control = { ...store.getInstanceControl(instance.id), queue: projectQueue.get(instance.id) ?? null };
+  return { ...instance, governance: normalizeProjectGovernance(instance), control, links: projectLinks(instance.id) };
 }
 
 function countCardsByStatus(cards) {
