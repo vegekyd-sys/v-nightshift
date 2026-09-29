@@ -974,7 +974,7 @@ function emptyWorkflow() {
     metadata: { id: "new-workflow", version: "0.1.0-draft", name: "新 Workflow" },
     spec: {
       ownerAgentRole: "operator",
-      concurrency: { perInstance: 2, maxActiveInstances: 3 },
+      concurrency: { perInstance: 2 },
       completion: { mode: "strict-v1" },
       inputs: {},
       stages: [defaultStage(1)],

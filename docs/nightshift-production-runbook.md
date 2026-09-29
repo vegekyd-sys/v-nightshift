@@ -74,7 +74,7 @@ The starts that admission allows in one scheduler pass are shared by every proje
 - The next project takes what is left, and so on.
 - A project that arrives when nothing is left waits.
 
-How many projects move together follows from how much admission allows. No fixed count applies, and `concurrency.maxActiveInstances` is not used.
+How many projects move together follows from how much admission allows. No fixed count applies. `concurrency.maxActiveInstances`, which was declared in Workflows but never enforced, is now refused at publish; releases published before keep it and it is ignored.
 
 A project waiting only on a person or on a release time has nothing to start, so it holds no place in the queue. Once it can start again, it takes the next free start ahead of any project that arrived after it. Cards already running elsewhere finish; only new starts go to the earlier project.
 
