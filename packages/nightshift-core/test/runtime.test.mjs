@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
 import {
+  NeedsYouTracker,
   NightShiftRuntime,
   NightShiftStore,
 } from "../src/index.mjs";
@@ -1159,6 +1160,8 @@ class FakeWorkboard {
     this.updateCalls = [];
     this.sessions = new Map();
     this.sessionCalls = [];
+    this.runOutcomes = new Map();
+    this.runOutcomeCalls = [];
   }
 
   async listCards() {
@@ -1268,6 +1271,11 @@ class FakeWorkboard {
   }
 
 
+
+  async getRunOutcome({ runId }) {
+    this.runOutcomeCalls.push(runId);
+    return this.runOutcomes.get(runId) ?? null;
+  }
 
   async getSession(sessionKey) {
     this.sessionCalls.push(sessionKey);
@@ -1754,5 +1762,165 @@ test("blocked-card inspection has its own budget and a deferred card is read on 
   await runtime.reconcile("NS-ORPHAN-BUDGET", null, { inspectSessions: false });
   assert.equal(workboard.sessionCalls.length, 2, "the deferred card is read without waiting for a repair pass");
   assert.equal(attemptFailures(store, "NS-ORPHAN-BUDGET").length, 2);
+  store.close();
+});
+
+// Only stops a person can act on reach 需要你. On V (2026-09-28/29) eight of ten
+// requests were runs the Gateway had recorded as failed, timed out or still
+// running; the engine read the transcripts instead and sent them to people.
+async function stoppedRun({ id, stageId, outcome, session, runtimeOptions = {}, validator = async () => { throw new Error("Stage handoff is required: plan"); } }) {
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  let clock = Date.now();
+  const needsYou = new NeedsYouTracker({ store, now: () => clock });
+  const runtime = new NightShiftRuntime({ store, workboard, needsYou, completionValidator: validator, now: () => clock, ...runtimeOptions });
+  const release = runtime.publish(await readFile(workflowPath, "utf8"));
+  runtime.startInstance({ id, workflowSha256: release.workflowSha256, agentBindings: { "content-operator": "main" } });
+  const item = stageId === "plan" ? null : "video-1";
+  if (item) runtime.setContentItems(id, [{ id: item, title: "Video", route: "SCENE_EDIT" }]);
+  const card = {
+    id: `card-${id}`,
+    status: "blocked",
+    sessionKey: `agent:main:subagent:${id}`,
+    runId: `run-${id}`,
+    execution: { status: "blocked", startedAt: clock - 5 * 60_000 },
+    labels: [`instance:${id}`, `stage:${stageId}`, ...(item ? [`content-item:${item}`] : [])],
+  };
+  workboard.cards.push(card);
+  workboard.sessions.set(card.sessionKey, session ?? { messages: [
+    { role: "assistant", content: [{ type: "text", text: "Now let me build the four outputs + handoff." }], stopReason: "toolUse", timestamp: clock - 3 * 60_000 },
+    { role: "toolResult", content: "wrote content-items.json", timestamp: clock - 3 * 60_000 },
+  ] });
+  if (outcome) workboard.runOutcomes.set(card.runId, outcome);
+  return { card, needsYou, runtime, store, workboard, advance: (ms) => { clock += ms; } };
+}
+
+function openRequests(store, instanceId) {
+  return store.listDecisionRequests({ instanceId });
+}
+
+test("a run the Gateway recorded as failed on an Agent DB lease is retried and never announced", async () => {
+  const { runtime, store } = await stoppedRun({
+    id: "NS-RUN-LEASE", stageId: "plan",
+    outcome: { status: "failed", error: "Agent DB process coordinator wait exceeded 5000ms | V_AGENT_DB_PROCESS_COORDINATOR_TIMEOUT" },
+  });
+  await runtime.reconcile("NS-RUN-LEASE", null, { inspectSessions: true });
+  const [event] = attemptFailures(store, "NS-RUN-LEASE");
+  assert.equal(event.payload.failure.kind, "database_lock");
+  assert.equal(event.payload.failure.automaticRetry, true);
+  assert.equal(store.listEvents("NS-RUN-LEASE").some((entry) => entry.type === "stage.completion.rejected"), false);
+  assert.equal(openRequests(store, "NS-RUN-LEASE").length, 0);
+  store.close();
+});
+
+test("a run that failed with no named cause is an interruption, not the Agent's verdict", async () => {
+  const { runtime, store } = await stoppedRun({ id: "NS-RUN-FAILED", stageId: "plan", outcome: { status: "failed", error: "Agent run failed" } });
+  await runtime.reconcile("NS-RUN-FAILED", null, { inspectSessions: true });
+  const [event] = attemptFailures(store, "NS-RUN-FAILED");
+  assert.equal(event.payload.failure.kind, "agent_interrupted");
+  assert.equal(event.payload.failure.automaticRetry, true);
+  assert.equal(openRequests(store, "NS-RUN-FAILED").length, 0);
+  store.close();
+});
+
+test("a paid card whose run timed out before any reservation is retried: the ledger says nothing was spent", async () => {
+  const { runtime, store } = await stoppedRun({
+    id: "NS-RUN-PAID-TIMEOUT", stageId: "produce",
+    outcome: { status: "timed_out", error: "Request timed out before a response was generated." },
+  });
+  await runtime.reconcile("NS-RUN-PAID-TIMEOUT", null, { inspectSessions: true });
+  const [event] = attemptFailures(store, "NS-RUN-PAID-TIMEOUT");
+  assert.equal(event.payload.failure.automaticRetry, true);
+  assert.equal(openRequests(store, "NS-RUN-PAID-TIMEOUT").length, 0);
+  store.close();
+});
+
+test("a paid card whose run failed with a reservation still open asks a person: it may have been charged", async () => {
+  const { card, runtime, store } = await stoppedRun({
+    id: "NS-RUN-PAID-OPEN", stageId: "produce", outcome: { status: "failed", error: "Agent run failed" },
+  });
+  store.reserveExternalOperation({
+    idempotencyKey: "NS-RUN-PAID-OPEN:video-1:produce",
+    instanceId: "NS-RUN-PAID-OPEN",
+    contentItemId: "video-1",
+    stageId: "produce",
+    ownerCardId: card.id,
+    requestHash: "request-sha",
+  });
+  await runtime.reconcile("NS-RUN-PAID-OPEN", null, { inspectSessions: true });
+  const [event] = attemptFailures(store, "NS-RUN-PAID-OPEN");
+  assert.equal(event.payload.failure.automaticRetry, false);
+  assert.equal(openRequests(store, "NS-RUN-PAID-OPEN").length, 1);
+  store.close();
+});
+
+test("a blocked card whose run is still going is left alone: not failed, not salvaged, not announced", async () => {
+  // DL-0929-01 item 9: blocked at 16:38 while its Agent kept working; it
+  // finished the video at 16:41, three minutes after reaching a person.
+  const { runtime, store, workboard, advance } = await stoppedRun({ id: "NS-RUN-ACTIVE", stageId: "produce", outcome: { status: "running" } });
+  let validations = 0;
+  runtime.completionValidator = async () => { validations += 1; throw new Error("External side effect has no succeeded Night Shift operation checkpoint"); };
+  await runtime.reconcile("NS-RUN-ACTIVE", null, { inspectSessions: true });
+  await runtime.reconcile("NS-RUN-ACTIVE", null, { inspectSessions: false });
+  assert.equal(attemptFailures(store, "NS-RUN-ACTIVE").length, 0);
+  assert.equal(validations, 0);
+  assert.equal(workboard.sessionCalls.length, 0, "the Gateway's answer is enough; the transcript is not read");
+  advance(10 * 60_000);
+  await runtime.reconcile("NS-RUN-ACTIVE", null, { inspectSessions: true });
+  assert.equal(openRequests(store, "NS-RUN-ACTIVE").length, 0);
+  store.close();
+});
+
+test("a run that ended normally is still judged by the Agent's report and reaches a person", async () => {
+  // DL-0928-07 item 1: the Agent blocked because Makaron failed twice; its run
+  // ended normally. This is what 需要你 is for.
+  const { runtime, store } = await stoppedRun({
+    id: "NS-RUN-REPORT", stageId: "plan", outcome: { status: "completed" },
+    session: { messages: [{ role: "assistant", stopReason: "stop", timestamp: Date.now() - 60_000, content: [{ type: "text", text: "问题：素材撑不起 30 条混剪\n原因：只有 1 段视频\n影响：出片会失败\n建议：补素材后重新执行" }] }] },
+  });
+  await runtime.reconcile("NS-RUN-REPORT", null, { inspectSessions: true });
+  const [request] = openRequests(store, "NS-RUN-REPORT");
+  assert.ok(request, "the Agent's own stop is announced");
+  assert.match(request.problem, /素材撑不起/);
+  store.close();
+});
+
+test("without the Gateway's answer, outputs that are not there are no verdict: the card waits, the board says what is missing", async () => {
+  const { runtime, store, advance } = await stoppedRun({ id: "NS-RUN-UNKNOWN", stageId: "plan", outcome: null });
+  await runtime.reconcile("NS-RUN-UNKNOWN", null, { inspectSessions: true });
+  assert.equal(attemptFailures(store, "NS-RUN-UNKNOWN").length, 0);
+  assert.equal(store.listEvents("NS-RUN-UNKNOWN").some((entry) => entry.type === "stage.completion.rejected"), false);
+  assert.match(store.listStageRuns("NS-RUN-UNKNOWN")[0].summary, /Outputs not found yet: Stage handoff is required/);
+  advance(10 * 60_000);
+  await runtime.reconcile("NS-RUN-UNKNOWN", null, { inspectSessions: true });
+  assert.equal(openRequests(store, "NS-RUN-UNKNOWN").length, 0, "no request while the engine can still explain it");
+  store.close();
+});
+
+test("a run the Gateway saw end normally is never read as a start failure, even with an empty transcript", async () => {
+  // Shared VLab, 2026-09-29 (NS-S4-STOP-0929): the run completed at 09:40:13
+  // after three model calls, the transcript read back empty, and the empty-Session
+  // rule failed it as never started. The Agent had stopped on purpose.
+  const { runtime, store } = await stoppedRun({
+    id: "NS-RUN-EMPTY-DONE", stageId: "plan", outcome: { status: "completed", endedAt: Date.now() - 4 * 60_000 },
+    session: { messages: [] },
+  });
+  await runtime.reconcile("NS-RUN-EMPTY-DONE", null, { inspectSessions: true });
+  assert.equal(attemptFailures(store, "NS-RUN-EMPTY-DONE").length, 0, "not a failure of the substrate");
+  assert.ok(store.listEvents("NS-RUN-EMPTY-DONE").some((entry) => entry.type === "stage.terminal.blocked"));
+  const [request] = openRequests(store, "NS-RUN-EMPTY-DONE");
+  assert.equal(request?.evidence.failure.kind, "contract_error");
+  store.close();
+});
+
+test("a run that ended normally is judged on its outputs even when the transcript stops mid-tool", async () => {
+  let complete = true;
+  const { runtime, store, workboard } = await stoppedRun({
+    id: "NS-RUN-DONE-MIDTOOL", stageId: "plan", outcome: { status: "succeeded" },
+    validator: async () => { if (!complete) throw new Error("Stage handoff is required: plan"); },
+  });
+  await runtime.reconcile("NS-RUN-DONE-MIDTOOL", null, { inspectSessions: true });
+  assert.equal(workboard.cards[0].status, "done");
+  assert.equal(attemptFailures(store, "NS-RUN-DONE-MIDTOOL").length, 0);
   store.close();
 });

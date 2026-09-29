@@ -24,6 +24,12 @@ test("creates and reuses native cards through Gateway RPC", async () => {
     if (method === "sessions.get") {
       return JSON.stringify({ messages: [{ role: "assistant", content: [{ type: "text", text: params.key }] }] });
     }
+    if (method === "tasks.list") {
+      return JSON.stringify({ tasks: [
+        { runId: "workboard:card-1:2", status: "completed", childSessionKey: params.sessionKey },
+        { runId: "workboard:card-1:1", status: "failed", error: "Agent run failed", endedAt: 1790668529796 },
+      ] });
+    }
     if (method === "skills.status") {
       return JSON.stringify({ agentId: params.agentId, skills: [{ name: "night-shift-operator", eligible: true }] });
     }
@@ -69,6 +75,14 @@ test("creates and reuses native cards through Gateway RPC", async () => {
     key: "agent:main:subagent:workboard-card-1",
     limit: 25,
   });
+  const outcome = await adapter.getRunOutcome({ sessionKey: "agent:main:subagent:workboard-card-1", runId: "workboard:card-1:1" });
+  assert.deepEqual(outcome, { status: "failed", error: "Agent run failed", endedAt: 1790668529796 });
+  const tasksCall = calls.find(({ args }) => args[2] === "tasks.list");
+  assert.deepEqual(JSON.parse(tasksCall.args[tasksCall.args.indexOf("--params") + 1]), {
+    sessionKey: "agent:main:subagent:workboard-card-1",
+    limit: 20,
+  });
+  assert.equal(await adapter.getRunOutcome({ sessionKey: "agent:main:subagent:workboard-card-1", runId: "workboard:card-1:9" }), null);
   const skills = await adapter.getSkillsStatus("main");
   assert.equal(skills.skills[0].name, "night-shift-operator");
   const skillsCall = calls.find(({ args }) => args[2] === "skills.status");

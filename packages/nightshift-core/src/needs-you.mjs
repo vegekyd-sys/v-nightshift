@@ -26,8 +26,15 @@ export const REVIEW_OPTIONS = Object.freeze([
   Object.freeze({ id: "reject", label: "拒绝", effect: "reject", description: "不采用这条结果" }),
 ]);
 
+// A card blocked with no recorded failure has no verdict yet: the engine has
+// not learned why it stopped. Such a card waits longer than the engine's own
+// orphan rule (45 min), so the engine's verdict always comes first; a failure
+// of the substrate is retried, not announced. Only a card nobody could explain
+// in an hour reaches a person this way.
+const UNEXPLAINED_GRACE_MS = 60 * 60_000;
+
 export class NeedsYouTracker {
-  constructor({ store, graceMs = 120_000, shelveAfterMs = 3 * DAY_MS, now = () => Date.now() }) {
+  constructor({ store, graceMs = UNEXPLAINED_GRACE_MS, shelveAfterMs = 3 * DAY_MS, now = () => Date.now() }) {
     if (!store) throw new Error("NeedsYouTracker requires a store");
     this.store = store;
     this.graceMs = graceMs;

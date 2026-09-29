@@ -6,7 +6,7 @@ import {
   WorkflowValidationError,
 } from "./workflow.mjs";
 import { actionKey, buildAgentBrief, nativeActionKey, planNextActions, requiredApproval, resolveApprovalBinding, stageTimeoutSeconds, WORKBOARD_NOTES_LIMIT } from "./orchestrator.mjs";
-import { classifyTerminalFailure, infrastructureFailureSummary, scheduleAutomaticRetry } from "./failure-policy.mjs";
+import { classifyRunOutcome, classifyTerminalFailure, infrastructureFailureSummary, runEndedNormally, scheduleAutomaticRetry } from "./failure-policy.mjs";
 import { normalizeProjectCollaboration } from "./project.mjs";
 
 // A blocked card with an empty Session is read as never started only after this
@@ -140,6 +140,7 @@ export class NightShiftRuntime {
       let completionValidationDeferred = false;
       let terminalReconciliationDeferred = false;
       let terminalSession = null;
+      let salvageable = false;
       if (status === "blocked" && failure) {
         const recovered = await this.maybeAutoRetryFailure({ card, contentItemId, failure, instance, stageId });
         status = recovered.status;
@@ -153,6 +154,7 @@ export class NightShiftRuntime {
         if (recovered?.deferred) {
           terminalReconciliationDeferred = true;
           terminalSession = recovered.terminalSession ?? null;
+          salvageable = Boolean(recovered.salvageable);
         } else if (recovered) {
           status = recovered.status;
           summary = recovered.summary;
@@ -160,13 +162,13 @@ export class NightShiftRuntime {
           completionAlreadyValidated = recovered.status === "done";
         }
       }
-      if ((!terminalReconciliationDeferred || terminalSession) && status === "blocked" && (!failure || recoverableContractFailure(failure)) && stage.actor === "agent" && card.sessionKey && !this.store.getHumanAttempt?.(card.id)) {
+      if ((!terminalReconciliationDeferred || terminalSession || salvageable) && status === "blocked" && (!failure || recoverableContractFailure(failure)) && stage.actor === "agent" && card.sessionKey && !this.store.getHumanAttempt?.(card.id)) {
         const recovered = await this.recoverWrittenArtifacts({ card, cards: currentCards, contentItemId, failure, instance, release, stageId, terminalSession });
         if (recovered) {
           status = recovered.status;
           summary = recovered.summary;
           failure = recovered.failure ?? null;
-          completionAlreadyValidated = true;
+          completionAlreadyValidated = !recovered.unrecovered;
         }
       }
       const completionValidationEventId = `completion-validation:${card.id}:${card.metadata?.automation?.attempt ?? 1}`;
@@ -285,7 +287,10 @@ export class NightShiftRuntime {
     const inspectionEventId = card.status === "running"
       ? null
       : terminalInspectionEventId(card, attempt);
-    if (inspectionEventId && this.store.getEvent?.(inspectionEventId)) return { deferred: true };
+    const inspected = inspectionEventId ? this.store.getEvent?.(inspectionEventId) : null;
+    // Read in this five-minute window already. Written outputs may still be
+    // salvaged, unless the Gateway said the run was still going.
+    if (inspected) return { deferred: true, salvageable: inspected.type !== "stage.run.active" };
     // Blocked-card Sessions have their own budget. Sharing one with completion
     // validation starved them on V (2026-09-28): 70 validations in two hours
     // used every repair pass's budget, and no blocked card was read at all.
@@ -295,6 +300,49 @@ export class NightShiftRuntime {
       return { deferred: true };
     }
     this.deferredSessionInspections.delete(card.id);
+    // Ask the Gateway how the run ended before reading anything into the
+    // transcript. On V (2026-09-29) six cards whose runs had failed or timed out
+    // (Agent DB lease timeouts) left transcripts with no terminal message; read
+    // as unfinished, they reached a person as missing handoffs, and one whose
+    // run was still going reached a person while its Agent finished the video.
+    let endedNormally = false;
+    let runEndedAt = 0;
+    if (card.status === "blocked" && typeof this.workboard.getRunOutcome === "function") {
+      const runId = card.runId ?? card.execution?.runId;
+      let outcome = null;
+      try {
+        outcome = runId ? await this.workboard.getRunOutcome({ sessionKey: card.sessionKey, runId }) : null;
+      } catch {
+        // The transcript below is the fallback.
+      }
+      if (outcome && ["queued", "running"].includes(String(outcome.status).toLowerCase())) {
+        if (inspectionEventId) {
+          this.store.appendEvent({
+            eventId: inspectionEventId,
+            instanceId: instance.id,
+            type: "stage.run.active",
+            payload: { cardId: card.id, contentItemId, stageId, runId },
+          });
+        }
+        return { deferred: true };
+      }
+      const runFailure = classifyRunOutcome(outcome);
+      if (runFailure) {
+        return this.failTerminalAttempt({
+          attempt,
+          card,
+          contentItemId,
+          failure: runFailure,
+          instance,
+          ledgerDecides: true,
+          release,
+          stageId,
+          terminalAt: timestampMs(outcome.endedAt ?? 0) || this.now(),
+        });
+      }
+      endedNormally = runEndedNormally(outcome);
+      runEndedAt = timestampMs(outcome?.endedAt ?? 0);
+    }
     let session;
     try {
       session = await this.workboard.getSession(card.sessionKey, { limit: 12 });
@@ -312,10 +360,15 @@ export class NightShiftRuntime {
     const messages = Array.isArray(session?.messages) ? session.messages : [];
     const latest = messages.at(-1);
     const startedAt = timestampMs(card.execution?.startedAt ?? card.metadata?.attempts?.at(-1)?.startedAt ?? 0);
-    const terminalAt = timestampMs(latest?.timestamp ?? latest?.__openclaw?.recordTimestampMs ?? 0);
+    let terminalAt = timestampMs(latest?.timestamp ?? latest?.__openclaw?.recordTimestampMs ?? 0);
     const stopReason = String(latest?.stopReason ?? "").toLowerCase();
     const silentMs = this.now() - Math.max(terminalAt, startedAt);
-    if (card.status === "blocked" && startedAt > 0 && messages.length === 0 && silentMs >= NOT_STARTED_GRACE_MS) {
+    // The rules below infer a stopped run from the transcript. They apply only
+    // when the Gateway has not said the run ended normally: on the shared VLab
+    // (2026-09-29) a completed run's transcript read back empty and the first
+    // rule failed it as never started, sending the Agent's own stop to a person
+    // as a start failure.
+    if (!endedNormally && card.status === "blocked" && startedAt > 0 && messages.length === 0 && silentMs >= NOT_STARTED_GRACE_MS) {
       // On V (2026-09-29) a brief card was blocked 7 s after dispatch, during
       // Agent DB lease contention, with an empty Session. Read as "not terminal",
       // it fell through to artifact recovery and reached a person as "the handoff
@@ -331,13 +384,13 @@ export class NightShiftRuntime {
           retryable: true,
         },
         instance,
-        nothingSpent: true,
+        ledgerDecides: true,
         release,
         stageId,
         terminalAt: this.now(),
       });
     }
-    if (card.status === "blocked" && startedAt > 0 && silentMs >= this.orphanedSessionMs &&
+    if (!endedNormally && card.status === "blocked" && startedAt > 0 && silentMs >= this.orphanedSessionMs &&
       (latest?.role !== "assistant" || !["stop", "error", "aborted"].includes(stopReason) || terminalAt < startedAt)) {
       // On V two paid produce cards sat blocked for two hours after their Worker
       // exited mid-poll: no terminal message ever arrives for such a run, so it
@@ -359,7 +412,7 @@ export class NightShiftRuntime {
         terminalAt: this.now(),
       });
     }
-    if (latest?.role !== "assistant" || !["stop", "error", "aborted"].includes(stopReason) || terminalAt < startedAt) {
+    if (!endedNormally && (latest?.role !== "assistant" || !["stop", "error", "aborted"].includes(stopReason) || terminalAt < startedAt)) {
       if (inspectionEventId) {
         this.store.appendEvent({
           eventId: inspectionEventId,
@@ -370,11 +423,12 @@ export class NightShiftRuntime {
       }
       return inspectionEventId ? { deferred: true, terminalSession: session } : null;
     }
-    const terminalFailure = classifyTerminalFailure({ message: latest, session });
+    const terminalFailure = endedNormally ? null : classifyTerminalFailure({ message: latest, session });
     if (terminalFailure) {
       return this.failTerminalAttempt({ attempt, card, contentItemId, failure: terminalFailure, instance, release, stageId, terminalAt });
     }
-    const terminalText = messageText(latest);
+    if (endedNormally) terminalAt = runEndedAt || terminalAt;
+    const terminalText = endedNormally ? lastAssistantText(session) : messageText(latest);
     try {
       if (this.completionValidator) {
         await this.completionValidator({ card, contentItemId, instance, release, stageId, terminalSession: session });
@@ -422,12 +476,16 @@ export class NightShiftRuntime {
     }
   }
 
-  async failTerminalAttempt({ attempt, card, contentItemId, failure: terminalFailure, instance, nothingSpent = false, release, stageId, terminalAt }) {
+  // ledgerDecides: the run ended by a fault of the substrate (it failed, timed
+  // out, or never took a turn), so a paid stage may retry unless the ledger
+  // shows an operation this card left unresolved. Agents reserve on the ledger
+  // before any paid call.
+  async failTerminalAttempt({ attempt, card, contentItemId, failure: terminalFailure, instance, ledgerDecides = false, release, stageId, terminalAt }) {
     const eventId = `attempt-failure:${card.id}:${attempt}`;
     const previousFailures = this.store.listEvents(instance.id, 1000).filter((event) =>
       event.type === "stage.attempt.failed" && event.payload?.cardId === card.id);
     const safeToRetry = this.safeToAutomaticallyRetry({ card, contentItemId, instance, release, stageId }) ||
-      (nothingSpent && this.ledgerSettledFor({ card, contentItemId, instance, stageId }));
+      (ledgerDecides && this.ledgerSettledFor({ card, contentItemId, instance, stageId }));
     const retry = scheduleAutomaticRetry({
       failure: terminalFailure,
       failureCount: previousFailures.length + 1,
@@ -536,9 +594,10 @@ export class NightShiftRuntime {
       Boolean(operation.externalTaskId));
   }
 
-  // An attempt that never took a turn cannot have spent money, but an earlier
-  // attempt of the same card may have reserved an operation it never resolved.
-  // Only a ledger with nothing in flight for this card lets a paid stage retry.
+  // Agents reserve on the ledger before a paid call, so a card with nothing in
+  // flight there has not started one; an earlier attempt of the same card may
+  // still have reserved an operation it never resolved. Only a ledger with
+  // nothing in flight for this card lets a paid stage retry after a fault.
   ledgerSettledFor({ card, contentItemId, instance, stageId }) {
     if (this.hasHumanTakeover({ cardId: card.id, contentItemId, instanceId: instance.id, stageId })) return false;
     return !this.store.listExternalOperations(instance.id).some((operation) =>
@@ -614,6 +673,13 @@ export class NightShiftRuntime {
         terminalSession,
       });
     } catch (error) {
+      // Recovery only salvages outputs a finished attempt left behind. Without
+      // a recorded failure there is no verdict to keep: nobody claimed these
+      // outputs, so their absence says nothing about the Agent's work. Turning
+      // it into a contract failure sent eight stopped runs to 需要你 on V
+      // (2026-09-28/29) as missing handoffs and unrecorded payments.
+      // The board still shows what is missing.
+      if (!failure) return { status: "blocked", summary: `Outputs not found yet: ${error.message}`, failure: null, unrecovered: true };
       return { status: "blocked", summary: `Completion validation failed: ${error.message}`, failure: contractFailure(error) };
     }
     const attempt = card.runId ?? card.execution?.runId ?? card.metadata?.automation?.attempt ?? 1;
