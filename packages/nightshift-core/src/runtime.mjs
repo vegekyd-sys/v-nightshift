@@ -6,7 +6,7 @@ import {
   WorkflowValidationError,
 } from "./workflow.mjs";
 import { actionKey, buildAgentBrief, nativeActionKey, planNextActions, requiredApproval, resolveApprovalBinding, stageTimeoutSeconds, WORKBOARD_NOTES_LIMIT } from "./orchestrator.mjs";
-import { classifyTerminalFailure, infrastructureFailureSummary, scheduleAutomaticRetry } from "./failure-policy.mjs";
+import { classifyRunOutcome, classifyTerminalFailure, infrastructureFailureSummary, scheduleAutomaticRetry } from "./failure-policy.mjs";
 import { normalizeProjectCollaboration } from "./project.mjs";
 
 // A blocked card with an empty Session is read as never started only after this
@@ -140,6 +140,7 @@ export class NightShiftRuntime {
       let completionValidationDeferred = false;
       let terminalReconciliationDeferred = false;
       let terminalSession = null;
+      let salvageable = false;
       if (status === "blocked" && failure) {
         const recovered = await this.maybeAutoRetryFailure({ card, contentItemId, failure, instance, stageId });
         status = recovered.status;
@@ -153,6 +154,7 @@ export class NightShiftRuntime {
         if (recovered?.deferred) {
           terminalReconciliationDeferred = true;
           terminalSession = recovered.terminalSession ?? null;
+          salvageable = Boolean(recovered.salvageable);
         } else if (recovered) {
           status = recovered.status;
           summary = recovered.summary;
@@ -160,13 +162,13 @@ export class NightShiftRuntime {
           completionAlreadyValidated = recovered.status === "done";
         }
       }
-      if ((!terminalReconciliationDeferred || terminalSession) && status === "blocked" && (!failure || recoverableContractFailure(failure)) && stage.actor === "agent" && card.sessionKey && !this.store.getHumanAttempt?.(card.id)) {
+      if ((!terminalReconciliationDeferred || terminalSession || salvageable) && status === "blocked" && (!failure || recoverableContractFailure(failure)) && stage.actor === "agent" && card.sessionKey && !this.store.getHumanAttempt?.(card.id)) {
         const recovered = await this.recoverWrittenArtifacts({ card, cards: currentCards, contentItemId, failure, instance, release, stageId, terminalSession });
         if (recovered) {
           status = recovered.status;
           summary = recovered.summary;
           failure = recovered.failure ?? null;
-          completionAlreadyValidated = true;
+          completionAlreadyValidated = !recovered.unrecovered;
         }
       }
       const completionValidationEventId = `completion-validation:${card.id}:${card.metadata?.automation?.attempt ?? 1}`;
@@ -285,7 +287,10 @@ export class NightShiftRuntime {
     const inspectionEventId = card.status === "running"
       ? null
       : terminalInspectionEventId(card, attempt);
-    if (inspectionEventId && this.store.getEvent?.(inspectionEventId)) return { deferred: true };
+    const inspected = inspectionEventId ? this.store.getEvent?.(inspectionEventId) : null;
+    // Read in this five-minute window already. Written outputs may still be
+    // salvaged, unless the Gateway said the run was still going.
+    if (inspected) return { deferred: true, salvageable: inspected.type !== "stage.run.active" };
     // Blocked-card Sessions have their own budget. Sharing one with completion
     // validation starved them on V (2026-09-28): 70 validations in two hours
     // used every repair pass's budget, and no blocked card was read at all.
@@ -295,6 +300,45 @@ export class NightShiftRuntime {
       return { deferred: true };
     }
     this.deferredSessionInspections.delete(card.id);
+    // Ask the Gateway how the run ended before reading anything into the
+    // transcript. On V (2026-09-29) six cards whose runs had failed or timed out
+    // (Agent DB lease timeouts) left transcripts with no terminal message; read
+    // as unfinished, they reached a person as missing handoffs, and one whose
+    // run was still going reached a person while its Agent finished the video.
+    if (card.status === "blocked" && typeof this.workboard.getRunOutcome === "function") {
+      const runId = card.runId ?? card.execution?.runId;
+      let outcome = null;
+      try {
+        outcome = runId ? await this.workboard.getRunOutcome({ sessionKey: card.sessionKey, runId }) : null;
+      } catch {
+        // The transcript below is the fallback.
+      }
+      if (outcome && ["queued", "running"].includes(String(outcome.status).toLowerCase())) {
+        if (inspectionEventId) {
+          this.store.appendEvent({
+            eventId: inspectionEventId,
+            instanceId: instance.id,
+            type: "stage.run.active",
+            payload: { cardId: card.id, contentItemId, stageId, runId },
+          });
+        }
+        return { deferred: true };
+      }
+      const runFailure = classifyRunOutcome(outcome);
+      if (runFailure) {
+        return this.failTerminalAttempt({
+          attempt,
+          card,
+          contentItemId,
+          failure: runFailure,
+          instance,
+          ledgerDecides: true,
+          release,
+          stageId,
+          terminalAt: timestampMs(outcome.endedAt ?? 0) || this.now(),
+        });
+      }
+    }
     let session;
     try {
       session = await this.workboard.getSession(card.sessionKey, { limit: 12 });
@@ -331,7 +375,7 @@ export class NightShiftRuntime {
           retryable: true,
         },
         instance,
-        nothingSpent: true,
+        ledgerDecides: true,
         release,
         stageId,
         terminalAt: this.now(),
@@ -422,12 +466,16 @@ export class NightShiftRuntime {
     }
   }
 
-  async failTerminalAttempt({ attempt, card, contentItemId, failure: terminalFailure, instance, nothingSpent = false, release, stageId, terminalAt }) {
+  // ledgerDecides: the run ended by a fault of the substrate (it failed, timed
+  // out, or never took a turn), so a paid stage may retry unless the ledger
+  // shows an operation this card left unresolved. Agents reserve on the ledger
+  // before any paid call.
+  async failTerminalAttempt({ attempt, card, contentItemId, failure: terminalFailure, instance, ledgerDecides = false, release, stageId, terminalAt }) {
     const eventId = `attempt-failure:${card.id}:${attempt}`;
     const previousFailures = this.store.listEvents(instance.id, 1000).filter((event) =>
       event.type === "stage.attempt.failed" && event.payload?.cardId === card.id);
     const safeToRetry = this.safeToAutomaticallyRetry({ card, contentItemId, instance, release, stageId }) ||
-      (nothingSpent && this.ledgerSettledFor({ card, contentItemId, instance, stageId }));
+      (ledgerDecides && this.ledgerSettledFor({ card, contentItemId, instance, stageId }));
     const retry = scheduleAutomaticRetry({
       failure: terminalFailure,
       failureCount: previousFailures.length + 1,
@@ -536,9 +584,10 @@ export class NightShiftRuntime {
       Boolean(operation.externalTaskId));
   }
 
-  // An attempt that never took a turn cannot have spent money, but an earlier
-  // attempt of the same card may have reserved an operation it never resolved.
-  // Only a ledger with nothing in flight for this card lets a paid stage retry.
+  // Agents reserve on the ledger before a paid call, so a card with nothing in
+  // flight there has not started one; an earlier attempt of the same card may
+  // still have reserved an operation it never resolved. Only a ledger with
+  // nothing in flight for this card lets a paid stage retry after a fault.
   ledgerSettledFor({ card, contentItemId, instance, stageId }) {
     if (this.hasHumanTakeover({ cardId: card.id, contentItemId, instanceId: instance.id, stageId })) return false;
     return !this.store.listExternalOperations(instance.id).some((operation) =>
@@ -614,6 +663,13 @@ export class NightShiftRuntime {
         terminalSession,
       });
     } catch (error) {
+      // Recovery only salvages outputs a finished attempt left behind. Without
+      // a recorded failure there is no verdict to keep: nobody claimed these
+      // outputs, so their absence says nothing about the Agent's work. Turning
+      // it into a contract failure sent eight stopped runs to 需要你 on V
+      // (2026-09-28/29) as missing handoffs and unrecorded payments.
+      // The board still shows what is missing.
+      if (!failure) return { status: "blocked", summary: `Outputs not found yet: ${error.message}`, failure: null, unrecovered: true };
       return { status: "blocked", summary: `Completion validation failed: ${error.message}`, failure: contractFailure(error) };
     }
     const attempt = card.runId ?? card.execution?.runId ?? card.metadata?.automation?.attempt ?? 1;

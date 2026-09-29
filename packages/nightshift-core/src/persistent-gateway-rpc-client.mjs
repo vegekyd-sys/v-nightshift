@@ -166,7 +166,7 @@ export async function loadGatewayClient(entry) {
 const READ_ONLY_METHODS = new Set([
   "workboard.cards.list", "workboard.cards.runs", "workboard.cards.stats",
   "workboard.notifications.list", "workboard.notifications.events",
-  "sessions.list", "sessions.get", "skills.status",
+  "sessions.list", "sessions.get", "skills.status", "tasks.list",
 ]);
 
 function gatewayIsLoopback(gatewayUrl) {
