@@ -1,4 +1,4 @@
-import { isAbsolute, normalize, sep } from "node:path";
+import { isAbsolute, normalize, relative, sep } from "node:path";
 
 const PATH_FIELDS = [
   ["proposal", "summaryPath"],
@@ -91,6 +91,22 @@ export function normalizeArtifactPath(value) {
     throw new Error("Artifact path must stay inside the instance directory");
   }
   return normalized.split(sep).join("/");
+}
+
+// Agents often cite their outputs by absolute path. On V (2026-09-29) a
+// plan-route handoff listed four files, all inside DL-0929-02, as absolute
+// paths and was rejected as "outside the instance directory". A path under one
+// of the instance roots is made relative; anything else is left for
+// normalizeArtifactPath to refuse. Callers still check the resolved file.
+export function instanceRelativeArtifactPath(value, roots = []) {
+  if (typeof value !== "string" || !isAbsolute(value.trim())) return value;
+  const absolute = normalize(value.trim());
+  for (const root of roots) {
+    if (typeof root !== "string" || !root) continue;
+    const path = relative(normalize(root), absolute);
+    if (path && path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path)) return path;
+  }
+  return value;
 }
 
 function normalizeProposal(value = {}) {

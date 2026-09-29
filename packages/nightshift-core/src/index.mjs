@@ -25,6 +25,7 @@ export { NightShiftRuntime, cardIsStartable } from "./runtime.mjs";
 export {
   deliverableArtifactPaths,
   deliverablesFromHandoffs,
+  instanceRelativeArtifactPath,
   normalizeArtifactPath,
   normalizeDeliverablesManifest,
 } from "./deliverables.mjs";
