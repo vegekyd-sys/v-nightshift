@@ -73,6 +73,8 @@ A card can sit blocked after its Agent is gone. Usually its Worker exited mid-ru
 - A stage with side effects retries automatically only when the external-operation ledger holds an `executing` or `succeeded` entry with an external task id for that card. The retried Agent then resumes the existing provider task instead of paying again.
 - Without such an entry the card stays blocked with "需要人工检查后重试".
 
+A blocked card whose Session has no messages at all, two minutes after its attempt started, never ran: the Worker blocked it before the Agent's first turn. It records `stage.attempt.failed` with kind `agent_not_started` ("Agent 没能启动") and retries automatically, paid stages included, since an attempt that never took a turn cannot have spent anything. The exception is a paid card whose ledger still holds a `reserved` entry, or an `executing` one without an external task id, from an earlier attempt: that one waits for a person. On 2026-09-29 such a brief card, blocked 7 s after dispatch during Agent DB lease contention, had been checked for written artifacts instead and reached 需要你 as "the handoff is missing".
+
 Blocked-card Session checks have their own budget, separate from completion validation. A card deferred for budget is checked on the next ordinary pass rather than at the next repair tick. On 2026-09-28, sharing that budget left two paid produce cards unread and blocked for two hours, while Makaron had finished both videos 3 minutes after their Agents died.
 
 Running cards are never stopped by this guard. A retried card also gets its native failure budget reset (`workboard.cards.reassign`), because the board refuses to start a card whose failure count exceeds `maxRetries`.
