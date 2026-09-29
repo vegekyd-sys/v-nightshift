@@ -425,7 +425,16 @@ export class NightShiftRuntime {
     }
     const terminalFailure = endedNormally ? null : classifyTerminalFailure({ message: latest, session });
     if (terminalFailure) {
-      return this.failTerminalAttempt({ attempt, card, contentItemId, failure: terminalFailure, instance, release, stageId, terminalAt });
+      // A retryable kind is a fault of the substrate read from the transcript
+      // (a lease timeout, a lost connection), the same fault the Gateway's run
+      // record would report. It gets the same ledger rule. On V (2026-09-29
+      // 20:21) a paid card whose run failed on an Agent DB lease was read while
+      // the board still showed it running, so the Gateway was not asked; with
+      // nothing on its ledger it went to a person instead of retrying.
+      return this.failTerminalAttempt({
+        attempt, card, contentItemId, failure: terminalFailure, instance,
+        ledgerDecides: terminalFailure.retryable === true, release, stageId, terminalAt,
+      });
     }
     if (endedNormally) terminalAt = runEndedAt || terminalAt;
     const terminalText = endedNormally ? lastAssistantText(session) : messageText(latest);
