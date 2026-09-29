@@ -215,10 +215,13 @@ const server = createServer(async (request, response) => {
     }
     await serveStatic(response, url.pathname);
   } catch (error) {
+    // A refused Workflow says why: publish used to answer only "failed with 1
+    // issue(s)", so an author could not tell what to change.
+    const issues = Array.isArray(error.issues) ? error.issues : null;
     const statusCode = Number.isInteger(error.statusCode) && error.statusCode >= 400 && error.statusCode <= 599
       ? error.statusCode
-      : 500;
-    json(response, statusCode, { error: error.message });
+      : issues ? 422 : 500;
+    json(response, statusCode, issues ? { error: error.message, issues } : { error: error.message });
   }
 });
 

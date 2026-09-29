@@ -233,7 +233,10 @@ async function api(path, options = {}) {
     headers: { "Content-Type": "application/json", ...(options.headers ?? {}) },
   });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error ?? `Night Shift API returned HTTP ${response.status}`);
+  if (!response.ok) {
+    const issues = Array.isArray(body.issues) ? body.issues.map((issue) => `${issue.path}: ${issue.message}`) : [];
+    throw new Error([body.error ?? `Night Shift API returned HTTP ${response.status}`, ...issues].join("\n- "));
+  }
   return body;
 }
 
