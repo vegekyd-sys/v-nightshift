@@ -643,7 +643,7 @@ function ProjectTuneMenu({ project, onTuned }) {
     setBusy(key);
     setError("");
     try {
-      await api(`/api/instances/${encodeURIComponent(project.id)}/${kind}`, { method: "POST", body: JSON.stringify({ ...body, reason: reason.trim() || undefined }) });
+      await api(`/api/instances/${encodeURIComponent(project.id)}/${kind}`, { method: "POST", body: JSON.stringify({ ...body, actor: "Workboard operator", reason: reason.trim() || undefined }) });
       await onTuned?.();
     } catch (reason) {
       setError(reason.message);
@@ -936,7 +936,7 @@ function Projects({ onScopeChange, data, onNewProject, onOpenProject, refresh })
   async function archiveProject(instance) {
     setDeleteError("");
     try {
-      await api(`/api/instances/${encodeURIComponent(instance.id)}/archive`, { method: "POST", body: JSON.stringify({ reason: "Archived from Projects" }) });
+      await api(`/api/instances/${encodeURIComponent(instance.id)}/archive`, { method: "POST", body: JSON.stringify({ actor: "Workboard operator", reason: "Archived from Projects" }) });
       setDeleting(null);
       await refresh(true);
     } catch (reason) { setDeleteError(reason.message); }
