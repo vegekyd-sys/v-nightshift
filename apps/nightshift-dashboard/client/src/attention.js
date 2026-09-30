@@ -56,11 +56,14 @@ export function taskAttention(task, { operation = null, shelved = false, queue =
 
 // The engine's queue, indexed by card: open requests and approvals, and the
 // blocked cards it is still giving a grace period before deciding.
-export function needsYouQueue(needsYou) {
+export function needsYouQueue(needsYou, gatewayRestart = null) {
   if (!needsYou || !Array.isArray(needsYou.items)) return null;
   return {
     byCard: new Map(needsYou.items.map((item) => [item.cardId, item])),
     pending: new Map((needsYou.pending ?? []).map((entry) => [entry.cardId, entry])),
+    // While the Gateway restarts (#125) Night Shift judges nothing; the cards
+    // it interrupted go back to ready when it returns.
+    holding: Boolean(gatewayRestart && gatewayRestart.status !== "up"),
   };
 }
 
@@ -82,6 +85,7 @@ function queuedAttention(task, operation, queue) {
   }
   // In its grace period, or blocked since the engine's last pass: the engine
   // either queues it or it moves on within minutes.
+  if (status === "blocked" && queue.holding) return { kind: "healing", reason: "Gateway 重启中，恢复后自动接上" };
   if (status === "blocked") return { kind: "healing", reason: "正在判定是否需要你", judging: true };
   return { kind: "queued" };
 }

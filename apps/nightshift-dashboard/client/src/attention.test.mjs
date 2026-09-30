@@ -173,3 +173,12 @@ test("a skipped item is settled, and leaves the project's expected work", async 
   assert.equal(projectProgress(stages, instance).expected, 3, "two items left times one item stage, plus delivery");
   assert.equal(stageExpected(stages[0], [instance]), 2);
 });
+
+test("while the Gateway restarts, a stopped card waits to be picked up, not judged", async () => {
+  const { cardAttention, needsYouQueue } = await import("./attention.js");
+  const holding = needsYouQueue({ items: [{ id: "d", kind: "decision", cardId: "asked", problem: "p" }], pending: [] }, { status: "holding" });
+  assert.deepEqual(cardAttention({ id: "cut", status: "blocked" }, { queue: holding }), { kind: "healing", reason: "Gateway 重启中，恢复后自动接上" });
+  assert.equal(cardAttention({ id: "asked", status: "blocked" }, { queue: holding }).kind, "needs-you", "a question already asked stays asked");
+  const up = needsYouQueue({ items: [], pending: [] }, { status: "up" });
+  assert.equal(cardAttention({ id: "cut", status: "blocked" }, { queue: up }).reason, "正在判定是否需要你");
+});
