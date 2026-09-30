@@ -74,7 +74,7 @@ test("the expected task count follows the stages this project will run", () => {
 });
 
 test("counts every kind even when absent", () => {
-  assert.deepEqual(countByKind([{ attention: { kind: "healing" } }]), { "needs-you": 0, healing: 1, running: 0, queued: 0, done: 0, stale: 0 });
+  assert.deepEqual(countByKind([{ attention: { kind: "healing" } }]), { "needs-you": 0, healing: 1, running: 0, queued: 0, done: 0, stale: 0, skipped: 0 });
 });
 
 // The shelved view on V listed 88 "needs you" items, all from projects nobody
@@ -152,4 +152,24 @@ test("an overview without the queue field means no queue", async () => {
   const { needsYouQueue } = await import("./attention.js");
   assert.equal(needsYouQueue(undefined), null);
   assert.equal(needsYouQueue({}), null);
+});
+
+test("a skipped item is settled, and leaves the project's expected work", async () => {
+  const { cardAttention, projectRuns, projectProgress, stageExpected } = await import("./attention.js");
+  const queue = { byCard: new Map(), pending: new Map() };
+  assert.deepEqual(cardAttention({ id: "c", status: "blocked" }, { queue, skipped: true, skipReason: "只有 1 段素材" }), { kind: "skipped", reason: "已跳过：只有 1 段素材" });
+  const instance = {
+    status: "active",
+    contentItems: [{ id: "a" }, { id: "b" }, { id: "c" }],
+    skippedContentItems: [{ contentItemId: "b", reason: null }],
+    stageRuns: [],
+    contentItemRuns: [
+      { stageId: "brief", contentItemId: "a", attempt: 1, status: "done" },
+      { stageId: "brief", contentItemId: "b", attempt: 1, status: "blocked", cardId: "cb" },
+    ],
+  };
+  const stages = [{ id: "brief", scope: "content-item" }, { id: "deliver", scope: "project" }];
+  assert.deepEqual(projectRuns(instance).map((run) => [run.contentItemId, run.attention.kind]).sort(), [["a", "done"], ["b", "skipped"]]);
+  assert.equal(projectProgress(stages, instance).expected, 3, "two items left times one item stage, plus delivery");
+  assert.equal(stageExpected(stages[0], [instance]), 2);
 });

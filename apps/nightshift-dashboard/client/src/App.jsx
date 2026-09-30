@@ -16,7 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { api } from "./api.js";
-import { cardAttention, countByKind, enabledStages, inScope, isToday, needsYouQueue, projectProgress, projectRuns, projectScope, scopeAuthorizes, stageExpected, taskAttention } from "./attention.js";
+import { cardAttention, countByKind, enabledStages, inScope, isToday, needsYouQueue, projectProgress, projectRuns, projectScope, scopeAuthorizes, skippedItems, stageExpected, taskAttention } from "./attention.js";
 import { Drawer, Icons, Sidebar } from "./components.jsx";
 
 
@@ -263,7 +263,7 @@ function LiveBoard({ onScopeChange, data, query, setQuery, selected, setSelected
     <nav className="mobile-board-tabs" aria-label="任务状态">{columns.map(([kind, title]) => <button className={mobileColumn === kind ? "active" : ""} key={kind} onClick={() => setMobileColumn(kind)}><span>{title}</span><strong>{counts[kind] ?? 0}</strong></button>)}</nav>
     <section className={`factory-board ${selected ? "with-drawer" : ""}`} style={{ "--board-columns": columns.length }}>
       {columns.map(([kind, title]) => {
-        const items = shown.filter((entry) => entry.attention.kind === kind).sort((left, right) => finishedAt(right) - finishedAt(left));
+        const items = shown.filter((entry) => entry.attention.kind === kind || (kind === "done" && entry.attention.kind === "skipped")).sort((left, right) => finishedAt(right) - finishedAt(left));
         return <div className={`factory-column column-${kind} ${mobileColumn === kind ? "mobile-active" : ""}`} key={kind}>
           <header><strong>{title}</strong><span>{items.length}</span></header>
           {kind === "done" || kind === "stale"
@@ -295,8 +295,10 @@ function boardEntries(data) {
   return (data?.cards ?? []).map((card) => {
     const instance = instances.get(cardLabel(card, "instance"));
     const projectState = instance ? projectScope(instance, now) : card.status === "done" ? "delivered" : "live";
-    const content = instance?.contentItems?.find((item) => item.id === (card.metadata?.automation?.contentItemId ?? label(card, "content-item")));
+    const contentItemId = card.metadata?.automation?.contentItemId ?? label(card, "content-item");
+    const content = instance?.contentItems?.find((item) => item.id === contentItemId);
     const approval = (card.labels ?? []).includes("nightshift:approval");
+    const skipped = instance ? skippedItems(instance) : new Map();
     return {
       card,
       scope: projectState === "live" ? "live" : "other",
@@ -305,7 +307,7 @@ function boardEntries(data) {
       contentTitle: content?.title ?? null,
       stageId: card.metadata?.automation?.stageId ?? label(card, "stage"),
       stageTitle: instance ? stageTitles.get(instance.workflowSha256)?.get(card.metadata?.automation?.stageId ?? label(card, "stage")) ?? null : null,
-      attention: cardAttention(card, { run: runByCard.get(card.id), operation: operationByCard.get(card.id), shelved: projectState === "shelved", approval, queue }),
+      attention: cardAttention(card, { run: runByCard.get(card.id), operation: operationByCard.get(card.id), shelved: projectState === "shelved", approval, queue, skipped: skipped.has(contentItemId), skipReason: skipped.get(contentItemId) ?? null }),
     };
   });
 }
@@ -337,7 +339,7 @@ function DoneList({ entries, onSelect, stale = false }) {
   const shown = expanded ? entries : entries.slice(0, limit);
   if (!entries.length) return <p className="factory-empty">{stale ? "没有搁置的卡片" : "还没有完成的任务"}</p>;
   return <div className={`factory-done factory-done-column ${stale ? "is-stale" : ""}`}>
-    {shown.map((entry) => <button className="factory-done-row" title={entry.contentTitle ?? entry.card.title} key={entry.card.id} onClick={() => onSelect(entry.card)}><Check size={13} /><span>{entry.contentTitle ?? entry.card.title}</span></button>)}
+    {shown.map((entry) => <button className={`factory-done-row ${entry.attention.kind === "skipped" ? "is-skipped" : ""}`} title={entry.contentTitle ?? entry.card.title} key={entry.card.id} onClick={() => onSelect(entry.card)}>{entry.attention.kind === "skipped" ? <X size={13} /> : <Check size={13} />}<span>{entry.contentTitle ?? entry.card.title}</span></button>)}
     {entries.length > limit && <button className="factory-done-more" onClick={() => setExpanded((value) => !value)}>{expanded ? "收起" : `还有 ${entries.length - limit} 条`}</button>}
   </div>;
 }
@@ -578,23 +580,24 @@ function StageLane({ stage, index, expected, mobileSelected, tasks, onSelect, on
   const counts = countByKind(tasks);
   const isLive = counts.running > 0;
   const reviewCards = tasks.filter((task) => task.status === "review" && task.card).map((task) => task.card);
-  const shown = tasks.filter((task) => task.attention.kind !== "done");
-  const done = tasks.filter((task) => task.attention.kind === "done").sort((left, right) => finishedAt(right) - finishedAt(left));
-  const total = Math.max(expected ?? 0, tasks.length);
+  // Skipped items join the finished list, marked, below the work still moving.
+  const shown = tasks.filter((task) => task.attention.kind !== "done" && task.attention.kind !== "skipped");
+  const done = tasks.filter((task) => task.attention.kind === "done" || task.attention.kind === "skipped").sort((left, right) => finishedAt(right) - finishedAt(left));
+  const total = Math.max(expected ?? 0, tasks.length - counts.skipped);
   const doneShown = showAllDone ? done : done.slice(0, DONE_PREVIEW);
   return <section className={`stage-lane ${isLive ? "is-live" : ""} ${mobileSelected ? "mobile-selected" : ""}`}>
     <header><span className="stage-index">{String(index + 1).padStart(2, "0")}</span><div><strong>{stage.title}</strong><small>{stage.scope === "content-item" ? "每条内容" : "整个项目"} · {stage.actor === "human" ? "人工" : "Agent"}</small></div></header>
     {total > 0 && <div className="factory-lane-progress" aria-label={`已完成 ${counts.done} / ${total}`}><div><span style={{ width: `${(counts.done / total) * 100}%` }} /></div><small>{counts.done === total ? "全部完成" : `${counts.done}/${total}`}</small></div>}
     <div className="stage-counts">
-      {ATTENTION_KINDS.filter(([kind]) => kind !== "done" && counts[kind]).map(([kind, title]) => <span className={`attention-${kind}`} key={kind}>{title} {counts[kind]}</span>)}
+      {ATTENTION_KINDS.filter(([kind]) => kind !== "done" && kind !== "skipped" && counts[kind]).map(([kind, title]) => <span className={`attention-${kind}`} key={kind}>{title} {counts[kind]}</span>)}
       {tasks.length === 0 && <span>尚未开始</span>}
       {reviewCards.length > 1 && <button className="bulk-review-button" onClick={() => onBulkApprove(reviewCards)}>批量通过 {reviewCards.length}</button>}
     </div>
     <div className="stage-tasks">
       {shown.map((task) => <button key={`${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}-${task.card?.id ?? task.attempt}`} className={`stage-task state-${task.status} attention-${task.attention.kind}`} title={task.contentTitle ? `${task.contentTitle}\n${task.projectName}` : task.projectName} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}><span className="task-state" /><div><strong>{task.contentTitle ?? task.projectName}</strong><small>{task.contentTitle ? task.projectName : task.projectId}</small></div><span className="task-action">{attentionLabel(task)}</span></button>)}
       {done.length > 0 && <div className="factory-done" aria-label={`已完成 ${done.length}`}>
-        <div className="factory-done-head"><Check size={13} />已完成 {done.length}</div>
-        {doneShown.map((task) => <button className="factory-done-row" title={task.contentTitle ?? task.projectName} key={`${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}`} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}><Check size={12} /><span>{task.contentTitle ?? task.projectName}</span></button>)}
+        <div className="factory-done-head"><Check size={13} />已完成 {counts.done}{counts.skipped ? <em>· 跳过 {counts.skipped}</em> : null}</div>
+        {doneShown.map((task) => <button className={`factory-done-row ${task.attention.kind === "skipped" ? "is-skipped" : ""}`} title={[task.contentTitle ?? task.projectName, task.attention.kind === "skipped" ? task.attention.reason : null].filter(Boolean).join("\n")} key={`${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}`} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}>{task.attention.kind === "skipped" ? <X size={12} /> : <Check size={12} />}<span>{task.contentTitle ?? task.projectName}</span>{task.attention.kind === "skipped" && <em>跳过</em>}</button>)}
         {done.length > DONE_PREVIEW && <button className="factory-done-more" onClick={() => setShowAllDone((value) => !value)}>{showAllDone ? "收起" : `还有 ${done.length - DONE_PREVIEW} 条`}</button>}
       </div>}
     </div>
@@ -719,7 +722,7 @@ function FactoryOverview({ scope, stages, projects, focused = false, renderContr
         const tasks = tasksByProject.get(project.id) ?? [];
         const counts = countByKind(tasks);
         const progress = projectProgress(release?.manifest?.spec?.stages ?? [], project);
-        const expected = Math.max(progress.expected, tasks.length, 1);
+        const expected = Math.max(progress.expected, tasks.length - counts.skipped, 1);
         const share = (value) => `${(value / expected) * 100}%`;
         const fraction = progress.splitting ? "拆单中" : `${progress.estimated ? "约 " : ""}${counts.done}/${expected}`;
         const open = focused ? undefined : () => onOpenProject(project.id);
@@ -1163,6 +1166,7 @@ function indexStageTasks(stages, projects, cards, queue = null) {
   const shelvedProjects = new Set(projects.filter((project) => projectScope(project, now) === "shelved").map((project) => project.id));
   for (const project of projects) {
     const contentById = new Map((project.contentItems ?? []).map((item) => [item.id, item]));
+    const skipped = skippedItems(project);
     const runs = [
       ...(project.stageRuns ?? []).map((run) => ({ ...run, contentItemId: null })),
       ...(project.contentItemRuns ?? []),
@@ -1179,6 +1183,8 @@ function indexStageTasks(stages, projects, cards, queue = null) {
         projectId: project.id,
         projectName: project.name,
         requiresApproval: missingApprovalFor(project, stageById.get(run.stageId), run.contentItemId),
+        skipped: skipped.has(run.contentItemId),
+        skipReason: skipped.get(run.contentItemId) ?? null,
         status: displayedTaskStatus(run, card),
       });
     }

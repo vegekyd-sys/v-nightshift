@@ -12,7 +12,7 @@ const AUTOMATION_FIELDS = ["instanceId", "stageId", "contentItemId", "scheduledA
 const INPUT_FIELDS = ["targetCount", "deliveryMode", "authorizationScope", "publicationTarget"];
 const FAILURE_FIELDS = ["kind", "source", "retryable", "automaticRetry", "nextRetryAt", "validationPhase"];
 
-export function buildOverview({ scope = "live", instances, cards, releases, operationsFor, now = Date.now() }) {
+export function buildOverview({ scope = "live", instances, cards, releases, operationsFor, skippedFor, now = Date.now() }) {
   const wanted = OVERVIEW_SCOPES.includes(scope) ? scope : "live";
   const visible = instances.filter((instance) => instance.status !== "archived");
   const detailed = new Set(visible.filter((instance) => wanted === "all" || projectScope(instance, now) === wanted).map((instance) => instance.id));
@@ -35,7 +35,7 @@ export function buildOverview({ scope = "live", instances, cards, releases, oper
     cardCounts,
     agentDoneToday,
     instances: visible.map((instance) => detailed.has(instance.id)
-      ? leanProject(instance, operationsFor?.(instance.id) ?? [])
+      ? leanProject(instance, operationsFor?.(instance.id) ?? [], skippedFor?.(instance.id) ?? [])
       : projectSummary(instance)),
     cards: cards.filter((card) => detailed.has(cardInstanceId(card))).map(leanCard),
     workflows: releases.map((release) => usedShas.has(release.workflowSha256) || latestShas.has(release.workflowSha256)
@@ -75,7 +75,7 @@ export function leanRun(run) {
   };
 }
 
-function leanProject(instance, operations) {
+function leanProject(instance, operations, skipped = []) {
   return {
     ...projectSummary(instance),
     detail: true,
@@ -85,6 +85,9 @@ function leanProject(instance, operations) {
     contentItemRuns: (instance.contentItemRuns ?? []).map(leanRun),
     stageRuns: (instance.stageRuns ?? []).map(leanRun),
     operations: operations.map((operation) => pick(operation, ["ownerCardId", "status", "updatedAt"])),
+    // Items a person decided not to deliver (#115): out of the project, so the
+    // board neither waits on them nor counts them.
+    skippedContentItems: skipped.map((entry) => ({ contentItemId: entry.contentItemId, reason: typeof entry.reason === "string" ? entry.reason.slice(0, 200) : null })),
   };
 }
 
