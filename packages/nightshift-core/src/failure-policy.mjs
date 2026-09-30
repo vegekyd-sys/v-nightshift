@@ -100,6 +100,7 @@ export function infrastructureFailureSummary(failure) {
     provider_error: "模型返回异常",
     agent_interrupted: "Agent 运行被中断",
     agent_not_started: "Agent 没能启动",
+    gateway_restart: "Gateway 重启打断了这次运行，而这一步有一笔付费操作还没确认是否已提交",
     run_cancelled: "Agent 运行被取消",
     agent_error: "Agent 运行失败",
   }[failure?.kind] ?? "Agent 运行失败";

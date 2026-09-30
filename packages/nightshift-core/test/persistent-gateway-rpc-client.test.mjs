@@ -35,7 +35,7 @@ test("reuses one Gateway client for RPC and forwards Workboard change events", a
 
   assert.equal(constructed, 1);
   assert.equal(requests.length, 2);
-  assert.deepEqual(events, [{ event: "workboard.changed", payload: { revision: 2 } }]);
+  assert.deepEqual(events.filter((event) => !event.event.startsWith("nightshift.gateway.")), [{ event: "workboard.changed", payload: { revision: 2 } }]);
   await client.close();
 });
 
@@ -52,4 +52,32 @@ test("does not replay an ambiguous mutation after a socket disconnect", async ()
   await assert.rejects(client.request("workboard.cards.create", {}), /socket closed/);
   assert.equal(calls, 1);
   await client.close();
+});
+
+test("reports the Gateway going away and which Gateway process it came back as", async () => {
+  let options;
+  class Fake {
+    constructor(o) { options = o; }
+    start() { queueMicrotask(() => options.onHelloOk({ server: { bootId: "boot-a" } })); }
+    async request() { return { ok: true }; }
+    async stopAndWait() { options.onClose?.(); }
+  }
+  const client = new PersistentGatewayRpcClient({entry: "/opt/dist/index.js", gatewayUrl: "ws://localhost:1", token: "test", gatewayClientLoader: async () => Fake});
+  const events = [];
+  client.onEvent((event) => events.push(event));
+  await client.request("workboard.cards.list", {});
+  assert.equal(client.bootId, "boot-a");
+  options.onEvent({ event: "shutdown", payload: { reason: "gateway restarting", restartExpectedMs: 1500 } });
+  options.onClose();
+  options.onHelloOk({ server: { bootId: "boot-b" } });
+  assert.deepEqual(events.map((event) => [event.event, event.payload?.bootId ?? event.payload?.reason]), [
+    ["nightshift.gateway.connected", "boot-a"],
+    ["shutdown", "gateway restarting"],
+    ["nightshift.gateway.disconnected", "boot-a"],
+    ["nightshift.gateway.connected", "boot-b"],
+    ["nightshift.gateway.reconnected", "boot-b"],
+  ]);
+  events.length = 0;
+  await client.close();
+  assert.deepEqual(events, [], "closing our own connection is not the Gateway going away");
 });

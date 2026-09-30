@@ -76,7 +76,7 @@ test("creates and reuses native cards through Gateway RPC", async () => {
     limit: 25,
   });
   const outcome = await adapter.getRunOutcome({ sessionKey: "agent:main:subagent:workboard-card-1", runId: "workboard:card-1:1" });
-  assert.deepEqual(outcome, { status: "failed", error: "Agent run failed", endedAt: 1790668529796 });
+  assert.deepEqual(outcome, { status: "failed", error: "Agent run failed", endedAt: 1790668529796, startedAt: null, updatedAt: null });
   const tasksCall = calls.find(({ args }) => args[2] === "tasks.list");
   assert.deepEqual(JSON.parse(tasksCall.args[tasksCall.args.indexOf("--params") + 1]), {
     sessionKey: "agent:main:subagent:workboard-card-1",
@@ -124,6 +124,18 @@ test("uses one persistent Gateway transport and forwards native Workboard change
   assert.equal(requests.length, 2);
   assert.deepEqual(changes, [{ revision: 7 }]);
   assert.equal(adapter.connected, true);
+
+  const lifecycle = [];
+  adapter.onGatewayLifecycle((event) => lifecycle.push(event));
+  eventListener({ event: "shutdown", payload: { reason: "gateway restarting", restartExpectedMs: 1500 } });
+  eventListener({ event: "nightshift.gateway.disconnected", payload: { bootId: "boot-a" } });
+  eventListener({ event: "nightshift.gateway.connected", payload: { bootId: "boot-b", reconnected: true } });
+  eventListener({ event: "plugin.workboard.changed", payload: { revision: 8 } });
+  assert.deepEqual(lifecycle, [
+    { type: "shutdown", reason: "gateway restarting", restartExpectedMs: 1500 },
+    { type: "disconnected" },
+    { type: "connected", bootId: "boot-b" },
+  ]);
   await adapter.close();
 });
 

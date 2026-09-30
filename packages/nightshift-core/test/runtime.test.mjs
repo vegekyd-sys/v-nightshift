@@ -2156,3 +2156,131 @@ test("a stop on a project-wide stage cannot be skipped", async () => {
   await assert.rejects(runtime.decide({ decisionId: request.id, optionId: "skip", actor: "local:Tianyi" }), /Unknown option skip/);
   store.close();
 });
+
+// Gateway restart pickup (GatewayRestartHold -> runtime.resumeAfterGatewayRestart).
+async function restartedRun({ id, stageId = "produce", cardStatus = "blocked", outcome, approve = true }) {
+  const fixture = await stoppedRun({ id, stageId });
+  const { card, store, workboard } = fixture;
+  card.status = cardStatus;
+  card.execution = { status: cardStatus, startedAt: Date.parse("2026-09-30T04:40:00Z") };
+  workboard.runOutcomes.set(card.runId, outcome);
+  const item = stageId === "plan" ? null : "video-1";
+  if (item) store.upsertContentItemRun({ instanceId: id, contentItemId: item, stageId, attempt: 1, cardId: card.id, status: cardStatus });
+  else store.upsertStageRun({ instanceId: id, stageId, attempt: 1, cardId: card.id, status: cardStatus });
+  if (approve && stageId === "produce") {
+    store.recordApproval({ actor: "tester", contentItemId: item, effect: "paid-production", instanceId: id, scope: "content-item", stageId, status: "approved" });
+  }
+  return fixture;
+}
+
+const restartWindow = {
+  from: "2026-09-30T04:53:00.000Z",
+  to: "2026-09-30T04:54:10.000Z",
+  reason: "gateway restarting",
+  fromBootId: "boot-a",
+  bootId: "boot-b",
+  bootChanged: true,
+};
+
+function paidOperation(store, card, id, patch = null) {
+  const operation = store.reserveExternalOperation({
+    idempotencyKey: `${id}:video-1:produce`,
+    instanceId: id,
+    contentItemId: "video-1",
+    stageId: "produce",
+    ownerCardId: card.id,
+    requestHash: "request-sha",
+  });
+  if (patch) store.checkpointExternalOperation(operation.idempotencyKey, patch);
+  return operation;
+}
+
+test("a run the Gateway killed while restarting is resumed without spending a retry or reaching a person", async () => {
+  // V, 2026-09-30 12:53: the drain ended two produce runs with "subagent run
+  // terminated" and one reached the group as a decision.
+  const { card, runtime, store, workboard } = await restartedRun({
+    id: "NS-RESTART-KILLED",
+    outcome: { status: "cancelled", error: "subagent run terminated", endedAt: Date.parse("2026-09-30T04:53:31Z") },
+  });
+  paidOperation(store, card, "NS-RESTART-KILLED", { status: "executing", externalTaskId: "makaron-task-1" });
+  const outcome = await runtime.resumeAfterGatewayRestart(restartWindow);
+  assert.equal(outcome.resumed.length, 1);
+  assert.equal(card.status, "ready");
+  assert.equal(attemptFailures(store, "NS-RESTART-KILLED").length, 0, "not a failure of the card");
+  assert.equal(openRequests(store, "NS-RESTART-KILLED").length, 0);
+  assert.ok(store.listEvents("NS-RESTART-KILLED").some((event) => event.type === "stage.gateway-restart.resumed"));
+  assert.equal(workboard.blockCalls.length, 0, "already blocked");
+  store.close();
+});
+
+test("a run the old Gateway still lists as running is lost: it is blocked and resumed", async () => {
+  // V, 2026-09-30 08:26: the registry kept the run "running" after the restart
+  // and the card waited for it until someone blocked and retried it by hand.
+  const { card, runtime, store, workboard } = await restartedRun({
+    id: "NS-RESTART-LOST", cardStatus: "running",
+    outcome: { status: "running", startedAt: Date.parse("2026-09-30T04:40:00Z"), updatedAt: Date.parse("2026-09-30T04:52:50Z") },
+  });
+  const outcome = await runtime.resumeAfterGatewayRestart(restartWindow);
+  assert.equal(outcome.resumed.length, 1);
+  assert.equal(workboard.blockCalls.length, 1);
+  assert.equal(card.status, "ready");
+  store.close();
+});
+
+test("without a new Gateway boot a running run is not presumed lost", async () => {
+  const { card, runtime, store } = await restartedRun({
+    id: "NS-RESTART-BLIP", cardStatus: "running",
+    outcome: { status: "running", startedAt: Date.parse("2026-09-30T04:40:00Z"), updatedAt: Date.parse("2026-09-30T04:52:50Z") },
+  });
+  const outcome = await runtime.resumeAfterGatewayRestart({ ...restartWindow, bootChanged: false });
+  assert.equal(outcome.resumed.length, 0);
+  assert.equal(card.status, "running");
+  store.close();
+});
+
+test("a run that kept going on the new Gateway is left alone", async () => {
+  const { card, runtime, store } = await restartedRun({
+    id: "NS-RESTART-ALIVE", cardStatus: "running",
+    outcome: { status: "running", startedAt: Date.parse("2026-09-30T04:40:00Z"), updatedAt: Date.parse("2026-09-30T04:55:00Z") },
+  });
+  assert.equal((await runtime.resumeAfterGatewayRestart(restartWindow)).resumed.length, 0);
+  assert.equal(card.status, "running");
+  store.close();
+});
+
+test("a run that ended before the restart, or ended normally, is not the restart's", async () => {
+  for (const [id, outcome] of [
+    ["NS-RESTART-EARLIER", { status: "cancelled", error: "subagent run terminated", endedAt: Date.parse("2026-09-30T04:30:00Z") }],
+    ["NS-RESTART-NORMAL", { status: "succeeded", endedAt: Date.parse("2026-09-30T04:53:20Z") }],
+  ]) {
+    const { card, runtime, store } = await restartedRun({ id, outcome });
+    assert.equal((await runtime.resumeAfterGatewayRestart(restartWindow)).resumed.length, 0, id);
+    assert.equal(card.status, "blocked", id);
+    store.close();
+  }
+});
+
+test("a paid card with a reservation not yet recorded as submitted goes to a person: it may have been charged", async () => {
+  const { card, runtime, store } = await restartedRun({
+    id: "NS-RESTART-PAID-OPEN",
+    outcome: { status: "cancelled", error: "subagent run terminated", endedAt: Date.parse("2026-09-30T04:53:31Z") },
+  });
+  paidOperation(store, card, "NS-RESTART-PAID-OPEN");
+  const outcome = await runtime.resumeAfterGatewayRestart(restartWindow);
+  assert.equal(outcome.handedOver.length, 1);
+  assert.equal(card.status, "blocked");
+  const [event] = attemptFailures(store, "NS-RESTART-PAID-OPEN");
+  assert.equal(event.payload.failure.kind, "gateway_restart");
+  assert.equal(event.payload.failure.automaticRetry, false);
+  store.close();
+});
+
+test("a card is resumed once per interrupted attempt", async () => {
+  const { runtime, store } = await restartedRun({
+    id: "NS-RESTART-ONCE",
+    outcome: { status: "cancelled", error: "subagent run terminated", endedAt: Date.parse("2026-09-30T04:53:31Z") },
+  });
+  assert.equal((await runtime.resumeAfterGatewayRestart(restartWindow)).resumed.length, 1);
+  assert.equal((await runtime.resumeAfterGatewayRestart(restartWindow)).resumed.length, 0);
+  store.close();
+});

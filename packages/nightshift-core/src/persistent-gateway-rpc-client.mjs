@@ -27,11 +27,23 @@ export class PersistentGatewayRpcClient {
     this.connected = false;
     this.listeners = new Set();
     this.stopped = false;
+    // The Gateway process this connection last greeted (hello-ok server.bootId).
+    this.bootId = null;
   }
 
   onEvent(listener) {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  emit(event) {
+    for (const listener of this.listeners) {
+      try {
+        listener(event);
+      } catch {
+        // One consumer must not break the shared Gateway connection.
+      }
+    }
   }
 
   async request(method, params) {
@@ -76,28 +88,23 @@ export class PersistentGatewayRpcClient {
         env: this.env,
         mode: "backend",
         onClose: () => {
+          const wasConnected = this.connected;
           this.connected = false;
+          // Our own close() is not the Gateway going away.
+          if (wasConnected && !this.stopped) this.emit({event: "nightshift.gateway.disconnected", payload: {bootId: this.bootId}});
         },
         onConnectError: (error) => {
           if (!this.connected) rejectReady(error);
         },
-        onEvent: (event) => {
-          for (const listener of this.listeners) {
-            try {
-              listener(event);
-            } catch {
-              // One consumer must not break the shared Gateway connection.
-            }
-          }
-        },
-        onHelloOk: () => {
+        onEvent: (event) => this.emit(event),
+        onHelloOk: (hello) => {
           const reconnected = this.hasConnected === true;
           this.connected = true;
           this.hasConnected = true;
+          this.bootId = typeof hello?.server?.bootId === "string" ? hello.server.bootId : null;
           resolveReady(client);
-          if (reconnected) for (const listener of this.listeners) {
-            try { listener({event: "nightshift.gateway.reconnected", payload: {}}); } catch {}
-          }
+          this.emit({event: "nightshift.gateway.connected", payload: {bootId: this.bootId, reconnected}});
+          if (reconnected) this.emit({event: "nightshift.gateway.reconnected", payload: {bootId: this.bootId}});
         },
         requestTimeoutMs: this.requestTimeoutMs,
         role: "operator",
