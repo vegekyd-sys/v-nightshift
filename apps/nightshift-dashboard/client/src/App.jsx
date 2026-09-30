@@ -220,6 +220,7 @@ export function App() {
       <Sidebar active={active} collapsed={navigationCollapsed} onChange={setActive} onToggle={() => setNavigationCollapsed((value) => !value)} />
       <main className="main-shell">
         {error && <div className="error-banner">{error}</div>}
+        <GatewayRestartBanner state={data?.gatewayRestart} />
         {active === "board" && <LiveBoard onScopeChange={requestScope} data={data} query={query} setQuery={setQuery} selected={selectedForDecision} setSelected={setSelected} refreshing={refreshing} refresh={refresh} decide={decide} retry={retry} resolve={resolveRequest} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} />}
         {active === "workflows" && <WorkflowStudio onScopeChange={requestScope} data={data} refresh={refresh} initialProjectId={workflowProjectId} initialWorkflowId={initialLocation.workflow} setSelected={setSelected} selected={selectedForDecision} decide={decide} approveMany={approveMany} retry={retry} resolve={resolveRequest} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onNewProject={(release) => setProjectReleaseSha(release?.workflowSha256 ?? data?.workflows?.[0]?.workflowSha256)} />}
         {active === "projects" && <Projects onScopeChange={requestScope} data={data} refresh={refresh} onNewProject={() => setProjectReleaseSha(data?.workflows?.[0]?.workflowSha256)} onOpenProject={(projectId) => { setWorkflowProjectId(projectId); updateDashboardLocation({ project: projectId, view: "workflows" }); setActive("workflows"); }} />}
@@ -282,7 +283,7 @@ const BOARD_EMPTY = { "needs-you": "没有要你决定的事", running: "现在�
 
 function boardEntries(data) {
   const now = Date.now();
-  const queue = needsYouQueue(data?.needsYou);
+  const queue = needsYouQueue(data?.needsYou, data?.gatewayRestart);
   const instances = new Map((data?.instances ?? []).map((instance) => [instance.id, instance]));
   const workflowName = new Map((data?.workflows ?? []).map((release) => [release.workflowSha256, release.name]));
   const stageTitles = new Map((data?.workflows ?? []).map((release) => [release.workflowSha256, new Map((release.manifest?.spec?.stages ?? []).map((stage) => [stage.id, stage.title]))]));
@@ -481,7 +482,7 @@ function WorkflowStudio({ onScopeChange, data, refresh, initialProjectId, initia
     const used = stages.filter((stage) => visibleProjects.some((project) => enabledStages([stage], project.inputs ?? {}).length > 0));
     return used.length ? used : stages;
   }, [stages, visibleProjects]);
-  const queue = useMemo(() => needsYouQueue(data?.needsYou), [data?.needsYou]);
+  const queue = useMemo(() => needsYouQueue(data?.needsYou, data?.gatewayRestart), [data?.needsYou, data?.gatewayRestart]);
   const taskIndex = useMemo(() => indexStageTasks(stages, visibleProjects, data?.cards ?? [], queue), [stages, visibleProjects, data?.cards, queue]);
   const allTasks = useMemo(() => [...taskIndex.values()].flat(), [taskIndex]);
   const factory = useMemo(() => ({
@@ -538,6 +539,7 @@ function WorkflowStudio({ onScopeChange, data, refresh, initialProjectId, initia
             <button onClick={async () => { setMobileActionsOpen(false); try { const source = await api(`/api/workflows/${group.releases[0].workflowSha256}/source`); setEditor({ mode: "edit", source: source.sourceMarkdown ?? source.sourceYaml ?? "" }); } catch (reason) { setEditor(null); } }}><FilePenLine size={15} />编辑这个 Workflow</button>
             <button onClick={() => { setMobileActionsOpen(false); setEditor({ mode: "import", source: "" }); }}><Upload size={15} />导入 Workflow</button>
             <button onClick={() => { setMobileActionsOpen(false); setEditor({ mode: "create", source: newWorkflowSource() }); }}><Plus size={15} />新建 Workflow</button>
+            <GatewayRestartLast state={data?.gatewayRestart} />
             <small>{pinnedRelease?.version} · {runwayStages.length === stages.length ? `${stages.length} 个阶段` : `本批走 ${runwayStages.length}/${stages.length} 个阶段`} · SHA {pinnedRelease?.workflowSha256.slice(0, 12)}</small>
           </div>
         </>}
@@ -686,6 +688,34 @@ function ProjectTuneMenu({ project, onTuned }) {
       </div>
     </>}
   </div>;
+}
+
+// While the Gateway restarts, Night Shift holds: nothing is dispatched or
+// judged, and the cards it interrupted resume a minute after it returns. Only
+// shown while it matters.
+function GatewayRestartBanner({ state }) {
+  if (!state || state.status === "up") return null;
+  const since = state.since ? clockTime(state.since) : null;
+  return <div className={`gateway-banner is-${state.status}`} role="status">
+    <span className="gateway-banner-dot" />
+    {state.status === "resuming"
+      ? <><strong>Gateway 已恢复</strong><span>{state.resumeAt ? `${clockTime(state.resumeAt)} 继续派卡，被打断的卡会自动接上，不算失败次数` : "马上继续派卡"}</span></>
+      : <><strong>Gateway 重启中，夜班已暂停</strong><span>{since ? `${since} 开始 · ` : ""}期间不派卡、不判卡，回来一分钟后自动接上被打断的卡</span></>}
+  </div>;
+}
+
+// The last restart, quietly: when, and what happened to the cards it cut.
+function GatewayRestartLast({ state }) {
+  const last = state?.last;
+  if (!last?.to) return null;
+  return <p className="gateway-last">上次 Gateway 重启 {clockTime(last.from ?? last.to)}，自动接上 {last.resumed ?? 0} 张{last.handedOver ? `，${last.handedOver} 张交给了人` : ""}</p>;
+}
+
+function clockTime(value) {
+  const at = new Date(value);
+  if (Number.isNaN(at.getTime())) return "";
+  const time = at.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+  return isToday(at.getTime()) ? time : `${at.getMonth() + 1}/${at.getDate()} ${time}`;
 }
 
 function defaultScope(counts) {
@@ -911,7 +941,7 @@ function Projects({ onScopeChange, data, onNewProject, onOpenProject, refresh })
   const rows = useMemo(() => {
     const now = Date.now();
     const cardsById = new Map((data?.cards ?? []).map((card) => [card.id, card]));
-    const queue = needsYouQueue(data?.needsYou);
+    const queue = needsYouQueue(data?.needsYou, data?.gatewayRestart);
     const releases = new Map((data?.workflows ?? []).map((release) => [release.workflowSha256, release]));
     return (data?.instances ?? []).filter((instance) => instance.status !== "archived").map((instance) => {
       const release = releases.get(instance.workflowSha256);

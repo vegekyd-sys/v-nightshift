@@ -900,3 +900,14 @@ body { background:radial-gradient(circle at 72% -20%,rgba(128,92,214,.14),transp
 .factory-studio .factory-done-row em { flex:0 0 auto; margin-left:auto; padding:0 6px; border-radius:6px; background:rgba(255,255,255,.05); color:#8b93a8; font-size:11px; font-style:normal; }
 .factory-studio .factory-done-head em { margin-left:6px; color:#8b93a8; font-style:normal; }
 .factory-studio .drawer section.drawer-now.attention-skipped { background:rgba(255,255,255,.04); }
+/* Gateway restart hold: one quiet strip above the page, only while it lasts. */
+.gateway-banner { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; margin:16px 32px 0; padding:12px 16px; border-radius:12px; background:rgba(128,147,179,.14); color:#c3cfe3; font-size:13px; line-height:1.5; }
+.gateway-banner strong { color:#e3e9f5; font-size:14px; font-weight:620; }
+.gateway-banner span:not(.gateway-banner-dot) { color:#9aa8bf; }
+.gateway-banner-dot { width:8px; height:8px; flex:0 0 auto; border-radius:50%; background:#8093b3; animation:gateway-hold 1.6s ease-in-out infinite; }
+.gateway-banner.is-resuming { background:rgba(125,141,255,.12); }
+.gateway-banner.is-resuming .gateway-banner-dot { background:var(--f-running,#7d8dff); }
+@keyframes gateway-hold { 0%,100% { opacity:.35; } 50% { opacity:1; } }
+@media (prefers-reduced-motion:reduce) { .gateway-banner-dot { animation:none; } }
+.gateway-last { margin:4px 0 0; padding:10px 10px 4px; border-top:1px solid #222a36; color:#8b93a8; font-size:12px; line-height:1.5; }
+@media (max-width:700px) { .gateway-banner { margin:12px 16px 0; } }
