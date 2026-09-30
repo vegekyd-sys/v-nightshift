@@ -79,3 +79,10 @@ test("tab sizes and agents' finished work count every project, not only the load
   assert.deepEqual(overview.cardCounts, { live: 1, paused: 0, delivered: 0, shelved: 1, all: 2 });
   assert.deepEqual(overview.agentDoneToday, { makaron: 1 });
 });
+
+test("a detailed project carries the items a person skipped, with a short reason", () => {
+  const { instances, cards, releases } = fixture();
+  const overview = buildOverview({ scope: "live", instances, cards, releases, skippedFor: (id) => id === "LIVE" ? [{ contentItemId: "i1", reason: "r".repeat(500), actor: "x", skippedAt: "t" }] : [], now: NOW });
+  assert.deepEqual(overview.instances[0].skippedContentItems, [{ contentItemId: "i1", reason: "r".repeat(200) }]);
+  assert.equal("skippedContentItems" in overview.instances[1], false, "a summary does not carry them");
+});

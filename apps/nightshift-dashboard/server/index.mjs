@@ -329,6 +329,7 @@ async function handleApi(request, response, url) {
         cards: visibleCards(cardCache, visible).map(withCardLinks),
         releases: store.listReleases().map(withWorkflowLinks),
         operationsFor: (instanceId) => store.listExternalOperations(instanceId),
+        skippedFor: (instanceId) => store.listSkippedContentItems(instanceId),
       }),
       // 需要你 is scope-independent: every project that is not shelved.
       needsYou: buildNeedsYou({

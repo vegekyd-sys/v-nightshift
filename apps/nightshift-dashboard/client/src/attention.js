@@ -47,6 +47,8 @@ const OPERATION_UNDER_WAY = new Set(["reserved", "executing"]);
 // decides what needs a person; the board only adds healing and flow. Without
 // it (an older server) the board falls back to judging blocked cards itself.
 export function taskAttention(task, { operation = null, shelved = false, queue = null } = {}) {
+  // A person decided not to deliver this item: settled, not waiting on anyone.
+  if (task.skipped) return { kind: "skipped", reason: task.skipReason ? `已跳过：${task.skipReason}` : "已跳过" };
   const attention = queue ? queuedAttention(task, operation, queue) : liveAttention(task, operation);
   if (shelved && attention.kind !== "done") return { kind: "stale", reason: attention.reason ?? "项目已搁置" };
   return attention;
@@ -121,6 +123,12 @@ export function effectLabel(effect) {
   return ({ "external-publication": "外部发布", "paid-production": "付费生产", destructive: "高风险操作", "permission-change": "权限变更" })[effect] ?? null;
 }
 
+// Content items a person skipped (#115). They are out of the project: the
+// board neither waits on them nor counts them.
+export function skippedItems(instance) {
+  return new Map((instance?.skippedContentItems ?? []).map((entry) => [entry.contentItemId, entry.reason ?? null]));
+}
+
 // Stages this project will actually run, honoring `when` on project inputs.
 export function enabledStages(stages, inputs = {}) {
   return stages.filter((stage) => stageEnabled(stage, inputs));
@@ -150,7 +158,7 @@ export function expectedTasks(stages, instance) {
 export function projectProgress(stages, instance) {
   const enabled = enabledStages(stages, instance.inputs ?? {});
   const itemStages = enabled.filter((stage) => stage.scope === "content-item").length;
-  const known = (instance.contentItems ?? []).length;
+  const known = Math.max(0, (instance.contentItems ?? []).length - skippedItems(instance).size);
   const target = Number(instance.inputs?.targetCount);
   const splitting = itemStages > 0 && known === 0;
   const items = splitting && Number.isFinite(target) && target > 0 ? target : known;
@@ -165,12 +173,12 @@ export function projectProgress(stages, instance) {
 export function stageExpected(stage, instances) {
   return instances.reduce((sum, instance) => {
     if (enabledStages([stage], instance.inputs ?? {}).length === 0) return sum;
-    return sum + (stage.scope === "content-item" ? (instance.contentItems ?? []).length : 1);
+    return sum + (stage.scope === "content-item" ? Math.max(0, (instance.contentItems ?? []).length - skippedItems(instance).size) : 1);
   }, 0);
 }
 
 export function countByKind(entries) {
-  const counts = { "needs-you": 0, healing: 0, running: 0, queued: 0, done: 0, stale: 0 };
+  const counts = { "needs-you": 0, healing: 0, running: 0, queued: 0, done: 0, stale: 0, skipped: 0 };
   for (const entry of entries) counts[entry.attention.kind] = (counts[entry.attention.kind] ?? 0) + 1;
   return counts;
 }
@@ -191,6 +199,7 @@ function truncate(value, max) {
 export function projectRuns(instance, { cardsById = new Map(), now = Date.now(), queue = null } = {}) {
   const shelved = projectScope(instance, now) === "shelved";
   const operationByCard = new Map((instance.operations ?? []).map((operation) => [operation.ownerCardId, operation]));
+  const skipped = skippedItems(instance);
   const latest = new Map();
   const runs = [
     ...(instance.stageRuns ?? []).map((run) => ({ ...run, contentItemId: null })),
@@ -204,14 +213,14 @@ export function projectRuns(instance, { cardsById = new Map(), now = Date.now(),
   return [...latest.values()].map((run) => {
     const card = run.cardId ? cardsById.get(run.cardId) : undefined;
     const status = run.status === "blocked" && run.failure?.automaticRetry && run.failure?.nextRetryAt ? "retry_wait" : (card?.status ?? run.status);
-    const task = { ...run, card, status };
+    const task = { ...run, card, status, skipped: skipped.has(run.contentItemId), skipReason: skipped.get(run.contentItemId) ?? null };
     return { ...task, attention: taskAttention(task, { operation: operationByCard.get(run.cardId), shelved, queue }) };
   });
 }
 
 // Attention for a native card on its own (Live Board), using the run and the
 // paid operation behind it when the card belongs to a Night Shift project.
-export function cardAttention(card, { run = null, operation = null, shelved = false, approval = false, queue = null } = {}) {
+export function cardAttention(card, { run = null, operation = null, shelved = false, approval = false, queue = null, skipped = false, skipReason = null } = {}) {
   const status = run?.status === "blocked" && run.failure?.automaticRetry && run.failure?.nextRetryAt ? "retry_wait" : card.status;
-  return taskAttention({ ...(run ?? {}), card: { ...card, status: status === "retry_wait" ? "blocked" : card.status }, status, requiresApproval: approval }, { operation, shelved, queue });
+  return taskAttention({ ...(run ?? {}), card: { ...card, status: status === "retry_wait" ? "blocked" : card.status }, status, requiresApproval: approval, skipped, skipReason }, { operation, shelved, queue });
 }

@@ -893,3 +893,10 @@ body { background:radial-gradient(circle at 72% -20%,rgba(128,92,214,.14),transp
   .project-tune-choices button,.project-tune-steps button { min-height:42px; font-size:14px; }
   .project-tune-reason { height:44px; font-size:14px; }
 }
+/* An item a person skipped: in the finished list, quieter, marked. */
+.factory-studio .factory-done-row.is-skipped { color:#6b7388; }
+.factory-studio .factory-done-row.is-skipped svg { color:#6b7388; }
+.factory-studio .factory-done-row.is-skipped span { text-decoration:line-through; text-decoration-color:rgba(107,115,136,.6); }
+.factory-studio .factory-done-row em { flex:0 0 auto; margin-left:auto; padding:0 6px; border-radius:6px; background:rgba(255,255,255,.05); color:#8b93a8; font-size:11px; font-style:normal; }
+.factory-studio .factory-done-head em { margin-left:6px; color:#8b93a8; font-style:normal; }
+.factory-studio .drawer section.drawer-now.attention-skipped { background:rgba(255,255,255,.04); }
