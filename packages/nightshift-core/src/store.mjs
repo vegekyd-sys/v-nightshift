@@ -205,6 +205,18 @@ export class NightShiftStore {
         skipped_at TEXT NOT NULL,
         PRIMARY KEY (instance_id, content_item_id)
       );
+      -- A person asked for changes on an item's review: its stages are done again.
+      CREATE TABLE IF NOT EXISTS content_item_revisions (
+        instance_id TEXT NOT NULL,
+        content_item_id TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        review_stage_id TEXT NOT NULL,
+        stage_ids_json TEXT NOT NULL,
+        note TEXT,
+        actor TEXT NOT NULL,
+        requested_at TEXT NOT NULL,
+        PRIMARY KEY (instance_id, content_item_id, revision)
+      );
     `);
     // Production databases created by the 2026-08-25 notification build already
     // carry this column and these tables; newer ones gain them here.
@@ -335,6 +347,32 @@ export class NightShiftStore {
       this.appendEvent({ instanceId, type: "content-item.skipped", payload: { contentItemId, reason, actor, decisionId }, now });
     }
     return this.listSkippedContentItems(instanceId).find((entry) => entry.contentItemId === contentItemId);
+  }
+
+  addContentItemRevision({ instanceId, contentItemId, reviewStageId, stageIds, note = null, actor }, now = new Date()) {
+    if (!instanceId || !contentItemId || !reviewStageId || !actor || !Array.isArray(stageIds)) {
+      throw new Error("addContentItemRevision needs instanceId, contentItemId, reviewStageId, stageIds and actor");
+    }
+    const revision = (this.db.prepare(`SELECT MAX(revision) AS revision FROM content_item_revisions
+      WHERE instance_id = ? AND content_item_id = ?`).get(instanceId, contentItemId)?.revision ?? 0) + 1;
+    this.db.prepare(`INSERT INTO content_item_revisions
+      (instance_id, content_item_id, revision, review_stage_id, stage_ids_json, note, actor, requested_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(instanceId, contentItemId, revision, reviewStageId, JSON.stringify(stageIds), note, actor, now.toISOString());
+    return this.listContentItemRevisions(instanceId).find((entry) => entry.contentItemId === contentItemId && entry.revision === revision);
+  }
+
+  listContentItemRevisions(instanceId) {
+    return this.db.prepare("SELECT * FROM content_item_revisions WHERE instance_id = ? ORDER BY content_item_id, revision")
+      .all(instanceId)
+      .map((row) => ({
+        contentItemId: row.content_item_id,
+        revision: row.revision,
+        reviewStageId: row.review_stage_id,
+        stageIds: JSON.parse(row.stage_ids_json),
+        note: row.note,
+        actor: row.actor,
+        requestedAt: row.requested_at,
+      }));
   }
 
   listSkippedContentItems(instanceId) {

@@ -44,7 +44,7 @@ export function currentOptions(request) {
 // Approvals and human review stages keep their own endpoints and choices.
 export const REVIEW_OPTIONS = Object.freeze([
   Object.freeze({ id: "approve", label: "通过", effect: "approve", description: "确认结果，流程继续" }),
-  Object.freeze({ id: "request-changes", label: "要求修改", effect: "request-changes", description: "写明要改什么，agent 按意见重做" }),
+  Object.freeze({ id: "request-changes", label: "要求修改", effect: "request-changes", description: "写明要改什么：这一条按意见重做前面的步骤（含出片的会再花一次钱），做完再请你看" }),
   Object.freeze({ id: "reject", label: "拒绝", effect: "reject", description: "不采用这条结果" }),
 ]);
 

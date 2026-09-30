@@ -9,6 +9,7 @@ import {
   NightShiftStore,
 } from "../src/index.mjs";
 import { instanceCardIds } from "../src/scheduler-pass.mjs";
+import { stagesToRedo } from "../src/runtime.mjs";
 import { gatewayIdempotencyLabel } from "../src/workboard-gateway-adapter.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -1240,8 +1241,14 @@ class FakeWorkboard {
         id: `card-${this.cards.length + 1}`,
         ...rest,
         status: held ? "scheduled" : rest.status,
-        ...(Number.isFinite(scheduledAt)
-          ? { metadata: { ...(rest.metadata ?? {}), automation: { ...(rest.metadata?.automation ?? {}), scheduledAt } } }
+        // The real adapter stores the plan's automation block as the card's
+        // metadata.automation, where reconcile reads the attempt back.
+        ...(Number.isFinite(scheduledAt) || rest.automation?.attempt
+          ? { metadata: { ...(rest.metadata ?? {}), automation: {
+            ...(rest.metadata?.automation ?? {}),
+            ...(rest.automation?.attempt ? { attempt: rest.automation.attempt } : {}),
+            ...(Number.isFinite(scheduledAt) ? { scheduledAt } : {}),
+          } } }
           : {}),
         labels: [...new Set([...(card.labels ?? []), marker])],
       };
@@ -2283,4 +2290,100 @@ test("a card is resumed once per interrupted attempt", async () => {
   assert.equal((await runtime.resumeAfterGatewayRestart(restartWindow)).resumed.length, 1);
   assert.equal((await runtime.resumeAfterGatewayRestart(restartWindow)).resumed.length, 0);
   store.close();
+});
+
+
+// 要求修改 redoes the item (runtime.redoForChanges).
+async function reviewedItem(id) {
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  let clock = Date.now();
+  const needsYou = new NeedsYouTracker({ store, now: () => clock });
+  const runtime = new NightShiftRuntime({ store, workboard, needsYou, now: () => clock });
+  const release = runtime.publish(await readFile(workflowPath, "utf8"));
+  runtime.startInstance({ id, workflowSha256: release.workflowSha256, agentBindings: { "content-operator": "main" } });
+  runtime.setContentItems(id, [{ id: "video-1", title: "Video", route: "SCENE_EDIT" }]);
+  store.upsertStageRun({ instanceId: id, stageId: "plan", attempt: 1, cardId: "card-plan", status: "done" });
+  workboard.cards.push({ id: "card-plan", status: "done", labels: [`instance:${id}`, "stage:plan"] });
+  for (const stageId of ["route", "materials", "brief", "produce"]) {
+    store.upsertContentItemRun({ instanceId: id, contentItemId: "video-1", stageId, attempt: 1, cardId: `card-${stageId}-old`, status: "done" });
+    workboard.cards.push({ id: `card-${stageId}-old`, status: "done", labels: [`instance:${id}`, `stage:${stageId}`, "content-item:video-1"] });
+  }
+  store.upsertContentItemRun({ instanceId: id, contentItemId: "video-1", stageId: "review", attempt: 1, cardId: "card-review-old", status: "review" });
+  workboard.cards.push({ id: "card-review-old", status: "review", labels: [`instance:${id}`, "stage:review", "content-item:video-1"] });
+  store.recordApproval({ actor: "tester", contentItemId: "video-1", effect: "paid-production", instanceId: id, scope: "content-item", stageId: "produce", status: "approved" });
+  return { runtime, store, workboard, advance: (ms) => { clock += ms; } };
+}
+
+test("要求修改 redoes the item: a new produce card carrying the person's note, then a new review", async () => {
+  // V, 2026-09-30: ref1 and ref2 of NS-BATCHV2-0929-01 waited five hours after
+  // a person asked for changes; nothing could redo a finished video.
+  const id = "NS-REDO";
+  const { runtime, store, workboard, advance } = await reviewedItem(id);
+  const decision = await runtime.requestChanges({
+    actor: "张寒冰", cardId: "card-review-old", contentItemId: "video-1", evidence: "时长≤15s，只用 BGM", instanceId: id, stageId: "review",
+  });
+  assert.equal(decision.status, "changes_requested");
+  assert.deepEqual(decision.redo, { redone: true, revision: 1, stageIds: ["produce", "review"] });
+
+  await runtime.tick(id, { dispatch: false });
+  const produce = workboard.cards.filter((card) => (card.labels ?? []).includes("stage:produce"));
+  assert.equal(produce.length, 2, "a new card, the old one untouched");
+  const fresh = produce.find((card) => card.id !== "card-produce-old");
+  assert.equal(fresh.status, "ready");
+  assert.equal(fresh.metadata.automation.attempt, 2);
+  assert.match(fresh.notes, /Redo requested \(revision 1\).*时长≤15s，只用 BGM/);
+  assert.equal(workboard.cards.find((card) => card.id === "card-produce-old").status, "done");
+  assert.equal(workboard.cards.filter((card) => (card.labels ?? []).includes("stage:review")).length, 1, "the review waits for the new video");
+
+  // The old review a person sent back is nobody's matter.
+  advance(2 * 60 * 60_000);
+  await runtime.reconcile(id, null, { inspectSessions: false });
+  assert.equal(store.listDecisionRequests({ instanceId: id }).filter((entry) => entry.status === "open").length, 0);
+
+  fresh.status = "done";
+  await runtime.tick(id, { dispatch: false });
+  const reviews = workboard.cards.filter((card) => (card.labels ?? []).includes("stage:review"));
+  assert.equal(reviews.length, 2);
+  const newReview = reviews.find((card) => card.id !== "card-review-old");
+  assert.equal(newReview.status, "review");
+  assert.equal(newReview.metadata.automation.attempt, 2);
+  assert.ok(store.listEvents(id).some((event) => event.type === "content-item.redo.requested"));
+  store.close();
+});
+
+test("a second request for changes while the redo is under way does not stack another", async () => {
+  const id = "NS-REDO-TWICE";
+  const { runtime, store } = await reviewedItem(id);
+  await runtime.requestChanges({ actor: "a", cardId: "card-review-old", contentItemId: "video-1", evidence: "one", instanceId: id, stageId: "review" });
+  const again = await runtime.requestChanges({ actor: "a", cardId: "card-review-old", contentItemId: "video-1", evidence: "two", instanceId: id, stageId: "review" });
+  assert.equal(again.redo.redone, false);
+  assert.equal(store.listContentItemRevisions(id).length, 1);
+  store.close();
+});
+
+test("an approval card cannot be retried: it is a gate, not work", async () => {
+  const id = "NS-RETRY-APPROVAL";
+  const { runtime, store, workboard } = await reviewedItem(id);
+  workboard.cards.push({ id: "card-approval", status: "blocked", labels: [`instance:${id}`, "stage:produce", "content-item:video-1", "nightshift:approval"] });
+  await assert.rejects(
+    runtime.retry({ actor: "operator", cardId: "card-approval", contentItemId: "video-1", instanceId: id, stageId: "produce" }),
+    /approval card, not work/,
+  );
+  store.close();
+});
+
+test("the stages a review redoes run from the first stage it checks to the review", () => {
+  const stages = [
+    { id: "skillize", actor: "agent", scope: "project" },
+    { id: "persona-match", actor: "agent", scope: "content-item", needs: ["skillize"] },
+    { id: "produce", actor: "agent", scope: "content-item", needs: ["persona-match", "skillize"] },
+    { id: "qc-learn", actor: "agent", scope: "content-item", needs: ["produce"] },
+    { id: "review", actor: "human", scope: "content-item", needs: ["produce", "qc-learn"] },
+    { id: "package", actor: "agent", scope: "content-item", needs: ["review"] },
+    { id: "check", actor: "human", scope: "content-item", needs: ["package"] },
+  ];
+  const byId = (id) => stages.find((stage) => stage.id === id);
+  assert.deepEqual(stagesToRedo(stages, byId("review"), {}), ["produce", "qc-learn", "review"]);
+  assert.deepEqual(stagesToRedo(stages, byId("check"), {}), ["package", "check"]);
 });

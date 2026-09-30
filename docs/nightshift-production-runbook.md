@@ -209,6 +209,16 @@ Cards blocked before the first run (baseline `needs-you-v1.baseline` in `notific
 - **pause** pauses the whole project (no new cards at all) and leaves the request open. It is not a way to deliver the rest; use skip for that.
 - A second decision returns the first (`alreadyDecided`).
 
+**Reviews: 要求修改 redoes the item.** A review card offers approve, request-changes (「要求修改」) and reject (`POST /api/cards/:id/request-changes { evidence }`, or `nightshiftctl cards changes <card> --evidence …`). Request-changes on a content item's review redoes that item (`runtime.redoForChanges`):
+- The redone stages are the Agent stages the review checks, from the first of them (the one that depends on no other stage the review checks), every content-item stage between, and the review itself. For `produce → qc-learn → review` that is produce, qc-learn and review; for xingqing's `produce → review`, produce and review. Project-scope stages are not redone for one item.
+- Each gets a new attempt (a run in status `redo`, no card yet). The planner makes a fresh card for it, in order, when its dependencies are done; the old cards stay as they were. The item's revision (`content_item_revisions`) is part of the new cards' idempotency key, so they are never matched to the old ones.
+- The new cards' brief carries the person's note verbatim ("Redo requested (revision N) …"). A paid stage pays again: the existing approval of that item still covers it, and asking for changes is asking for that.
+- The old review card stays blocked but never opens a request: a card a newer attempt of its stage replaced is nobody's matter. On V on 2026-09-30 the review a person had sent back reached 需要你 itself.
+- A second request while the redo is under way (a redone stage ready, running or waiting) records the decision and does not stack another redo.
+- Audit event `content-item.redo.requested`.
+
+Before this, nothing could redo a finished item: the done cards could not be retried and the review sat blocked. On V on 2026-09-30 ref1 and ref2 of NS-BATCHV2-0929-01 waited five hours after a person asked for changes, while the operator retried their approval cards and approved again. **An approval card cannot be retried** now: it is a gate, not work. Approve it to let its stage run; to redo a finished item, request changes on its review.
+
 **What a request says.** Each request carries the text of the accepted card layout:
 - `problem`: what happened;
 - `cause`: why;

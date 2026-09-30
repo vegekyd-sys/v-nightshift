@@ -101,23 +101,29 @@ export function planNextActions({
         if (!["agent", "system", "human"].includes(stage.actor)) continue;
         const resourceKey = stage.actor === "human" ? null : stageResourceLock(stage, instance, contentItem);
         if (resourceKey && reservedResources.has(resourceKey)) continue;
+        // A stage a person asked to redo (runtime.redoForChanges) gets a new
+        // card for the attempt the redo reserved.
+        const attempt = existing?.status === "redo" ? existing.attempt : undefined;
+        const payload = cardPayload(
+          release,
+          instance,
+          stage,
+          stage.actor === "human" ? "review" : "ready",
+          contentItem,
+          resourceKey,
+          contentItems,
+          dependencyCardIdsForContentItem(stage, stageById, latestRuns, latestItemRuns, contentItem.id),
+          now,
+        );
+        if (attempt) payload.automation.attempt = attempt;
         actions.push({
           type,
           instanceId: instance.id,
           contentItemId: contentItem.id,
           stageId: stage.id,
+          ...(attempt ? { attempt } : {}),
           idempotencyKey: actionKey(release, instance, stage, stage.actor === "human" ? "review" : "run", contentItem),
-          card: cardPayload(
-            release,
-            instance,
-            stage,
-            stage.actor === "human" ? "review" : "ready",
-            contentItem,
-            resourceKey,
-            contentItems,
-            dependencyCardIdsForContentItem(stage, stageById, latestRuns, latestItemRuns, contentItem.id),
-            now,
-          ),
+          card: payload,
         });
         if (resourceKey) reservedResources.add(resourceKey);
       }
@@ -367,6 +373,9 @@ export function buildAgentBrief(release, instance, stage, contentItem = null, co
     `Stage: ${stage.id} — ${stage.title}`,
     ...(contentItem ? [`Content item: ${JSON.stringify(summarizeContentItem(contentItem))}`] : []),
     `Objective: ${strategy?.description ?? stage.description ?? "Complete the declared stage."}`,
+    ...(contentItem?.revisionRequest && (contentItem.revisionRequest.stageIds ?? []).includes(stage.id) ? [
+      `Redo requested (revision ${contentItem.revision}): ${contentItem.revisionRequest.actor} reviewed the previous result of this item and asked for changes. Their note, verbatim: «${String(contentItem.revisionRequest.note ?? "(no note)").slice(0, 1500)}». Do this stage again so the result meets that note: write new outputs and a new stage handoff over the previous ones; do not hand back the previous result.`,
+    ] : []),
     // A Night Shift card runs as the same agent, with the same Skills, as a
     // chat turn. The stage's Skills are a hint and an install-time dependency
     // (checked by project preflight), not something to load before acting.
@@ -547,7 +556,9 @@ export function actionKey(release, instance, stage, action, contentItem = null) 
         stage,
       })
     : `${instance.id}:${contentItem?.id ?? "project"}:${stage.id}:${inputHash}`;
-  return `${release.metadata.workflowSha256}:${action}:${logicalKey}`;
+  // A redone item's new cards must not be matched to its old ones.
+  const revision = Number.isSafeInteger(contentItem?.revision) && contentItem.revision > 0 ? `:revision-${contentItem.revision}` : "";
+  return `${release.metadata.workflowSha256}:${action}:${logicalKey}${revision}`;
 }
 
 export function nativeActionKey(logicalKey) {

@@ -233,9 +233,17 @@ export class NightShiftRuntime {
           // The request opens with the engine's explanation; the next attempt may read it.
         }
       }
+      const cardRunAttempt = card.metadata?.automation?.attempt ?? 1;
+      const superseded = storedRuns.some((entry) => entry.stageId === stageId &&
+        (entry.contentItemId ?? null) === contentItemId && (entry.attempt ?? 1) > cardRunAttempt);
       if (this.needsYou && contentItemId && this.isContentItemSkipped(instanceId, contentItemId)) {
         // A person already decided this item is not delivered; its stopped
         // cards are nobody's matter.
+        this.store.supersedeDecisionRequests(card.id);
+      } else if (this.needsYou && superseded) {
+        // A newer attempt of this stage replaced the card (a person asked for
+        // changes): the old card stopping is nobody's matter. On V on
+        // 2026-09-30 the review a person had sent back reached 需要你 itself.
         this.store.supersedeDecisionRequests(card.id);
       } else if (this.needsYou) {
         const operation = stage.sideEffects?.length
@@ -977,14 +985,20 @@ export class NightShiftRuntime {
     const cards = await this.workboard.listCards({ cardIds: [cardId] });
     const card = cards.find((entry) => entry.id === cardId);
     if (!card || card.status !== "blocked") throw new Error("Retry requires a blocked Workboard card");
+    // An approval card is a gate, not work: retrying it left it in ready with
+    // nothing to pick it up (V, 2026-09-30: two "reruns" of finished videos
+    // waited five hours). A finished item is redone from its review.
+    if ((card.labels ?? []).includes("nightshift:approval")) {
+      throw new Error("This is an approval card, not work: approve it to let the stage run. To redo a finished item, request changes on its review card");
+    }
     const contentItem = contentItemId
-      ? this.store.listContentItems(instanceId).find((entry) => entry.id === contentItemId)
+      ? this.contentItemsWithRevisions(instanceId).find((entry) => entry.id === contentItemId)
       : null;
     if (contentItemId && !contentItem) throw new Error(`Unknown content item ${contentItemId}`);
     await this.workboard.updateCard(cardId, {
       idempotencyKey: nativeActionKey(actionKey(release, instance, stage, "run", contentItem)),
       notes: withDecisionNote(buildAgentBrief(release, instance, stage, contentItem,
-        this.store.listContentItems(instanceId).filter((item) => !this.isContentItemSkipped(instanceId, item.id)),
+        this.contentItemsWithRevisions(instanceId).filter((item) => !this.isContentItemSkipped(instanceId, item.id)),
         this.skippedContentItems(instanceId)), decisionNote),
       maxRetries: stage.retry?.maxAttempts ?? 1,
       maxRuntimeSeconds: stageTimeoutSeconds(stage.timeout),
@@ -1036,7 +1050,7 @@ export class NightShiftRuntime {
     // stages that wait on every item (delivery) wait only on the rest.
     const skippedContentItems = this.skippedContentItems(instanceId);
     const skippedIds = new Set(skippedContentItems.map((entry) => entry.id));
-    const contentItems = this.store.listContentItems(instanceId).filter((item) => !skippedIds.has(item.id));
+    const contentItems = this.contentItemsWithRevisions(instanceId).filter((item) => !skippedIds.has(item.id));
     const contentItemRuns = this.store.listContentItemRuns(instanceId).filter((run) => !skippedIds.has(run.contentItemId));
     const perInstanceLimit = projectConcurrencyLimit(savedRelease.manifest, this.store.getInstanceControl?.(instanceId));
     const actions = planNextActions({
@@ -1096,7 +1110,7 @@ export class NightShiftRuntime {
         const run = {
           instanceId,
           stageId: result.action.stageId,
-          attempt: 1,
+          attempt: result.action.attempt ?? 1,
           cardId: card.id,
           status: card.status,
         };
@@ -1270,7 +1284,68 @@ export class NightShiftRuntime {
     if (run) contentItemId
       ? this.store.upsertContentItemRun({ ...run, status: "blocked" })
       : this.store.upsertStageRun({ ...run, status: "blocked" });
-    return approval;
+    const redo = this.redoForChanges({ actor, contentItemId, evidence, instanceId, stageId });
+    return { ...approval, redo };
+  }
+
+  // "要求修改" promises that the Agent redoes the item with the person's note.
+  // Nothing did: the stages before the review were done, a done card cannot be
+  // retried, and the review sat blocked (V, 2026-09-30: ref1 and ref2 waited
+  // five hours; retrying their approval cards and approving again did nothing).
+  // Now the Agent stages the review checks, from the first one on, get a new
+  // attempt, and so does the review itself: the planner makes fresh cards for
+  // them in order, and their brief carries the person's note. A paid stage
+  // pays again; the person asking for changes asked for that.
+  redoForChanges({ actor, contentItemId, evidence, instanceId, stageId }) {
+    if (!contentItemId) return { redone: false, why: "only a content item's review can be redone" };
+    const instance = this.store.getInstance(instanceId);
+    const release = instance ? this.store.getRelease(instance.workflowSha256)?.manifest : null;
+    const stages = release?.spec?.stages ?? [];
+    const review = stages.find((entry) => entry.id === stageId);
+    if (!review || review.actor !== "human") return { redone: false, why: "not a review stage" };
+    const stageIds = stagesToRedo(stages, review, instance);
+    if (!stageIds.some((id) => stages.find((entry) => entry.id === id)?.actor === "agent")) {
+      return { redone: false, why: "no Agent stage before this review" };
+    }
+    const runs = this.store.listContentItemRuns(instanceId).filter((entry) => entry.contentItemId === contentItemId);
+    const latest = (id) => runs.filter((entry) => entry.stageId === id).sort((a, b) => (b.attempt ?? 1) - (a.attempt ?? 1))[0] ?? null;
+    const busy = stageIds.map(latest).find((entry) => entry && ["ready", "running", "redo"].includes(entry.status));
+    if (busy) return { redone: false, why: `${busy.stageId} is already being redone` };
+    const revision = this.store.addContentItemRevision({
+      instanceId, contentItemId, reviewStageId: stageId, stageIds, note: evidence ?? null, actor,
+    });
+    for (const id of stageIds) {
+      const previous = latest(id);
+      this.store.upsertContentItemRun({
+        instanceId,
+        contentItemId,
+        stageId: id,
+        attempt: (previous?.attempt ?? 0) + 1,
+        cardId: null,
+        status: "redo",
+        summary: `Redo requested by ${actor}: ${evidence ?? "no note"}`,
+      });
+    }
+    this.store.appendEvent({
+      instanceId,
+      type: "content-item.redo.requested",
+      payload: { actor, contentItemId, reviewStageId: stageId, stageIds, revision: revision.revision, note: evidence ?? null },
+    });
+    return { redone: true, revision: revision.revision, stageIds };
+  }
+
+  // Content items as the planner and briefs see them: with the latest request
+  // for changes, whose revision number also keeps its new cards apart from the
+  // old ones.
+  contentItemsWithRevisions(instanceId) {
+    const latest = new Map();
+    for (const entry of this.store.listContentItemRevisions?.(instanceId) ?? []) latest.set(entry.contentItemId, entry);
+    return this.store.listContentItems(instanceId).map((item) => {
+      const entry = latest.get(item.id);
+      return entry
+        ? { ...item, revision: entry.revision, revisionRequest: { note: entry.note, actor: entry.actor, stageIds: entry.stageIds, requestedAt: entry.requestedAt } }
+        : item;
+    });
   }
 }
 
@@ -1359,6 +1434,36 @@ function timestampMs(value) {
 function nativeAttemptIsTerminal(card) {
   const status = String(card.metadata?.attempts?.at(-1)?.status ?? card.execution?.status ?? "").toLowerCase();
   return ["aborted", "blocked", "cancelled", "done", "error", "failed", "review", "stopped", "succeeded"].includes(status);
+}
+
+// The stages a request for changes on `review` redoes: the Agent stages it
+// checks, starting from the first of them (those that depend on no other stage
+// the review checks), every content-item stage between, and the review itself.
+// For produce -> qc-learn -> review(needs produce, qc-learn): produce, qc-learn,
+// review. Project-scope stages are not redone for one item.
+export function stagesToRedo(stages, review, instance) {
+  const byId = new Map(stages.map((stage) => [stage.id, stage]));
+  const ancestors = new Map();
+  const ancestorsOf = (id, seen = new Set()) => {
+    if (ancestors.has(id)) return ancestors.get(id);
+    const result = new Set();
+    for (const need of byId.get(id)?.needs ?? []) {
+      if (seen.has(need)) continue;
+      result.add(need);
+      for (const deeper of ancestorsOf(need, new Set([...seen, id]))) result.add(deeper);
+    }
+    ancestors.set(id, result);
+    return result;
+  };
+  const itemStage = (id) => byId.get(id) && (byId.get(id).scope ?? "project") === "content-item" && stageEnabled(byId.get(id), instance?.inputs ?? {});
+  const checked = (review.needs ?? []).filter(itemStage);
+  const roots = checked.filter((id) => !checked.some((other) => other !== id && ancestorsOf(id).has(other)));
+  const reviewAncestors = ancestorsOf(review.id);
+  const chain = stages
+    .map((stage) => stage.id)
+    .filter((id) => itemStage(id) && reviewAncestors.has(id) &&
+      roots.some((root) => root === id || ancestorsOf(id).has(root)));
+  return [...chain, review.id];
 }
 
 // Runs killed while the Gateway drained end just before its shutdown broadcast.
