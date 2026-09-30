@@ -43,6 +43,7 @@ export class WorkboardGatewayAdapter {
     this.startWindowAt = null;
     this.startsInWindow = 0;
     this.changeListeners = new Set();
+    this.lifecycleListeners = new Set();
     this.rpcClient = null;
     this.rpcEventUnsubscribe = null;
     this.needsFullSnapshot = false;
@@ -219,7 +220,13 @@ export class WorkboardGatewayAdapter {
     const result = await this.call("tasks.list", { sessionKey, limit: 20 });
     const task = (result?.tasks ?? []).find((entry) => entry?.runId === runId || entry?.sourceId === runId);
     if (!task) return null;
-    return { status: task.status ?? null, error: task.error ?? null, endedAt: task.endedAt ?? null };
+    return {
+      status: task.status ?? null,
+      error: task.error ?? null,
+      endedAt: task.endedAt ?? null,
+      startedAt: task.startedAt ?? null,
+      updatedAt: task.updatedAt ?? null,
+    };
   }
 
   async completeCard(id, input = {}) {
@@ -272,6 +279,17 @@ export class WorkboardGatewayAdapter {
   onChange(listener) {
     this.changeListeners.add(listener);
     return () => this.changeListeners.delete(listener);
+  }
+
+  // The Gateway going away and coming back: { type: "shutdown", reason,
+  // restartExpectedMs } | { type: "disconnected" } | { type: "connected", bootId }.
+  onGatewayLifecycle(listener) {
+    this.lifecycleListeners.add(listener);
+    return () => this.lifecycleListeners.delete(listener);
+  }
+
+  get bootId() {
+    return this.rpcClient?.bootId ?? null;
   }
 
   async connect() {
@@ -347,6 +365,16 @@ export class WorkboardGatewayAdapter {
       token: resolvedToken,
     });
     this.rpcEventUnsubscribe = client.onEvent((event) => {
+      const lifecycle = gatewayLifecycle(event);
+      if (lifecycle) {
+        for (const listener of this.lifecycleListeners) {
+          try {
+            listener(lifecycle);
+          } catch {
+            // A lifecycle observer must not break the shared connection.
+          }
+        }
+      }
       if (event?.event !== "plugin.workboard.changed" && event?.event !== "nightshift.gateway.reconnected") return;
       if (event.event === "nightshift.gateway.reconnected") this.needsFullSnapshot = true;
       for (const listener of this.changeListeners) {
@@ -371,6 +399,20 @@ export class WorkboardGatewayAdapter {
     await this.rpcClient?.close?.();
     this.rpcClient = null;
   }
+}
+
+function gatewayLifecycle(event) {
+  const payload = event?.payload ?? {};
+  if (event?.event === "shutdown") {
+    return {
+      type: "shutdown",
+      reason: typeof payload.reason === "string" ? payload.reason : null,
+      restartExpectedMs: Number.isFinite(payload.restartExpectedMs) ? payload.restartExpectedMs : null,
+    };
+  }
+  if (event?.event === "nightshift.gateway.disconnected") return { type: "disconnected" };
+  if (event?.event === "nightshift.gateway.connected" && payload.bootId) return { type: "connected", bootId: payload.bootId };
+  return null;
 }
 
 function gatewayEndpointIsPrivate(gateway) {

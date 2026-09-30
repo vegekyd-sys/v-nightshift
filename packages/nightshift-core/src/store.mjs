@@ -164,6 +164,12 @@ export class NightShiftStore {
         value_json TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+      -- State of the service itself, not of a project (the Gateway restart hold).
+      CREATE TABLE IF NOT EXISTS service_state (
+        key TEXT PRIMARY KEY,
+        value_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
       -- 需要你: a card attempt that stopped and will not move without a person.
       CREATE TABLE IF NOT EXISTS decision_requests (
         id TEXT PRIMARY KEY,
@@ -639,6 +645,19 @@ export class NightShiftStore {
   setNotificationMetadata(key, value, now = new Date()) {
     this.db.prepare(`
       INSERT INTO notification_metadata(key, value_json, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at
+    `).run(key, JSON.stringify(value), now.toISOString());
+    return value;
+  }
+
+  getServiceState(key) {
+    const row = this.db.prepare("SELECT value_json AS valueJson FROM service_state WHERE key = ?").get(key);
+    return row ? JSON.parse(row.valueJson) : null;
+  }
+
+  setServiceState(key, value, now = new Date()) {
+    this.db.prepare(`
+      INSERT INTO service_state(key, value_json, updated_at) VALUES (?, ?, ?)
       ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at
     `).run(key, JSON.stringify(value), now.toISOString());
     return value;

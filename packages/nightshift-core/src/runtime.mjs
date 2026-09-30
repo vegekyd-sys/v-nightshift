@@ -874,6 +874,98 @@ export class NightShiftRuntime {
     }
   }
 
+  // After the Gateway restarted (GatewayRestartHold), put back every card whose
+  // run the restart ended: killed while the Gateway drained ("subagent run
+  // terminated"), or left "running" in the registry of a Gateway that is gone
+  // (V, 2026-09-30 08:26). Such a run is not the Agent failing, so it is resumed
+  // without spending the card's retries. A paid stage resumes only when its
+  // ledger shows nothing in flight without an external task: an operation
+  // reserved but not yet recorded may already have been charged, which is for
+  // a person to settle.
+  async resumeAfterGatewayRestart({ from, to, bootChanged = false, bootId = null, reason = "gateway restart" }) {
+    const fromMs = Date.parse(from) - RESTART_WINDOW_MARGIN_MS;
+    const toMs = Date.parse(to);
+    const resumed = [];
+    const handedOver = [];
+    const skipped = [];
+    const byCard = new Map();
+    for (const instance of this.store.listInstances()) {
+      if (["archived", "cancelled"].includes(instance.status)) continue;
+      for (const run of [...this.store.listStageRuns(instance.id), ...this.store.listContentItemRuns(instance.id)]) {
+        if (run.cardId && ["running", "blocked"].includes(run.status)) byCard.set(run.cardId, instance);
+      }
+    }
+    if (byCard.size === 0 || typeof this.workboard.getRunOutcome !== "function") return { resumed, handedOver, skipped };
+    const cards = await this.workboard.listCards({ cardIds: [...byCard.keys()] });
+    for (const card of cards) {
+      const instance = byCard.get(card.id);
+      const labels = card.labels ?? [];
+      if (!instance || !labels.includes(`instance:${instance.id}`) || labels.includes("nightshift:approval")) continue;
+      if (!["running", "blocked"].includes(card.status) || !card.sessionKey || !card.runId) continue;
+      const stageId = labels.find((label) => label.startsWith("stage:"))?.slice("stage:".length);
+      const contentItemId = labels.find((label) => label.startsWith("content-item:"))?.slice("content-item:".length) ?? null;
+      const release = this.store.getRelease(instance.workflowSha256)?.manifest;
+      const stage = release?.spec?.stages?.find((entry) => entry.id === stageId);
+      if (!stage || stage.actor !== "agent") continue;
+      let outcome;
+      try {
+        outcome = await this.workboard.getRunOutcome({ sessionKey: card.sessionKey, runId: card.runId });
+      } catch (error) {
+        skipped.push({ cardId: card.id, instanceId: instance.id, why: `run outcome unreadable: ${error.message}` });
+        continue;
+      }
+      const cause = restartInterruption(outcome, { fromMs, toMs, bootChanged });
+      if (!cause) continue;
+      const context = { card, contentItemId, instance, release, stageId };
+      const entry = { cardId: card.id, instanceId: instance.id, contentItemId, stageId, cause };
+      const eventId = `gateway-restart:${card.id}:${terminalAttempt(card)}`;
+      if (this.store.getEvent?.(eventId)) continue;
+      try {
+        if (card.status !== "blocked") {
+          Object.assign(card, await this.workboard.blockCard(card.id, { reason: `Gateway restart ended this run (${cause})` }));
+        }
+        const safe = this.safeToAutomaticallyRetry(context) || this.ledgerSettledFor(context);
+        if (!safe) {
+          await this.failTerminalAttempt({
+            attempt: terminalAttempt(card),
+            card,
+            contentItemId,
+            failure: {
+              kind: "gateway_restart",
+              source: "gateway",
+              rawError: `The Gateway restart (${reason}) ended this run while a paid operation of this card was reserved but not yet recorded as submitted`,
+              retryable: false,
+            },
+            instance,
+            release,
+            stageId,
+            terminalAt: this.now(),
+          });
+          handedOver.push(entry);
+        } else {
+          await this.retry({
+            actor: "Night Shift Gateway restart",
+            cardId: card.id,
+            contentItemId,
+            evidence: `The Gateway restarted (${reason}) and ended this run (${cause}); resumed. A paid operation already submitted is only read back, never submitted again.`,
+            instanceId: instance.id,
+            stageId,
+          });
+          resumed.push(entry);
+        }
+        this.store.appendEvent({
+          eventId,
+          instanceId: instance.id,
+          type: "stage.gateway-restart.resumed",
+          payload: { ...entry, resumed: safe, from, to, bootId, reason },
+        });
+      } catch (error) {
+        skipped.push({ ...entry, why: error.message });
+      }
+    }
+    return { resumed, handedOver, skipped };
+  }
+
   async retry({ actor, cardId, contentItemId, evidence, instanceId, stageId, decisionNote = null }) {
     const instance = this.store.getInstance(instanceId);
     if (!instance) throw new Error(`Unknown instance ${instanceId}`);
@@ -1267,6 +1359,28 @@ function timestampMs(value) {
 function nativeAttemptIsTerminal(card) {
   const status = String(card.metadata?.attempts?.at(-1)?.status ?? card.execution?.status ?? "").toLowerCase();
   return ["aborted", "blocked", "cancelled", "done", "error", "failed", "review", "stopped", "succeeded"].includes(status);
+}
+
+// Runs killed while the Gateway drained end just before its shutdown broadcast.
+const RESTART_WINDOW_MARGIN_MS = 3 * 60_000;
+
+// Why this run is a casualty of the restart, or null when it is not one.
+function restartInterruption(outcome, { fromMs, toMs, bootChanged }) {
+  const status = String(outcome?.status ?? "").toLowerCase();
+  if (["cancelled", "failed", "timed_out", "error"].includes(status)) {
+    if (/session completed before registry settled/i.test(String(outcome?.error ?? ""))) return null;
+    const endedAt = Number(outcome.endedAt ?? outcome.updatedAt);
+    if (!Number.isFinite(endedAt) || endedAt < fromMs || endedAt > toMs) return null;
+    return `run ${status}${outcome.error ? `: ${String(outcome.error).slice(0, 120)}` : ""}`;
+  }
+  // A run cannot outlive the Gateway process that ran it. The registry of the
+  // new process may still list it as running; it is gone.
+  if (bootChanged && ["running", "queued"].includes(status)) {
+    const startedAt = Number(outcome.startedAt ?? 0);
+    const lastSeen = Number(outcome.updatedAt ?? outcome.startedAt ?? 0);
+    if (startedAt <= toMs && lastSeen <= toMs) return "run lost with the previous Gateway process";
+  }
+  return null;
 }
 
 function terminalAttempt(card) {
