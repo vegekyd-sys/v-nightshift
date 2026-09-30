@@ -5,11 +5,11 @@
 // to message each other to recover.
 //
 // Three signals, whichever comes first:
-// - the Gateway's own `shutdown` broadcast, sent by every orderly stop or
-//   restart, whoever asked for it (systemctl, a release script, SIGUSR1, a
-//   config change that restarts);
-// - the persistent connection dropping (a crash, SIGKILL, a stop that ran past
-//   systemd's timeout never broadcasts);
+// - the Gateway's own `shutdown` broadcast, sent when it restarts itself
+//   (SIGUSR1, a release script, a config change that restarts), whoever asked;
+// - the persistent connection dropping: a crash or SIGKILL never broadcasts,
+//   and a SIGTERM stop (systemctl) closes the socket before its broadcast
+//   reaches clients (VLab candidate, 2026-09-30);
 // - a different Gateway boot id at the next hello, which also covers a restart
 //   that happened while Night Shift itself was down.
 //

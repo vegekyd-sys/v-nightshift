@@ -149,8 +149,8 @@ When the Gateway has no entry for the run, the transcript rules below apply.
 Night Shift pauses by itself while the Gateway restarts and picks its work back up afterwards. Whoever restarts the Gateway does not need to tell anyone. On 2026-09-30 two restarts by a release session (12:53, 13:01) ended two produce runs, one reached the group as a decision, and three sessions had to message each other to recover them.
 
 What starts the hold (`packages/nightshift-core/src/gateway-restart-hold.mjs`), whichever comes first:
-- the Gateway's own `shutdown` broadcast, which every orderly stop or restart sends (systemctl, release scripts, SIGUSR1, a config change that restarts);
-- the persistent connection dropping (a crash, SIGKILL, or a stop that ran past systemd's 45 s timeout never broadcasts);
+- the Gateway's own `shutdown` broadcast, sent when it restarts itself (SIGUSR1, release scripts, a config change that restarts), whoever asked;
+- the persistent connection dropping: a crash, SIGKILL, or a stop that ran past systemd's 45 s timeout never broadcasts, and a SIGTERM stop (systemctl) closes the socket before its broadcast reaches clients;
 - a different Gateway `bootId` in the next hello, which also catches a restart that happened while Night Shift itself was down.
 
 While held, no scheduler pass runs: nothing is dispatched, no card is judged, nothing reaches 需要你, and the capacity probe is skipped (a restarting Gateway would read as overload and brake dispatch). The hold survives a Night Shift restart.
@@ -162,6 +162,8 @@ When the Gateway is back, Night Shift waits `NIGHTSHIFT_GATEWAY_RESTART_SETTLE_M
 Such a card is blocked if it still shows running, then retried. It records `stage.gateway-restart.resumed`, not `stage.attempt.failed`, so it does not spend the card's retries however many restarts there are. A paid card resumes only when its ledger holds nothing `reserved`, or `executing` without an external task id; an already submitted task is only read back. Otherwise it records `gateway_restart` and goes to a person, because it may have been charged. After the pickup, normal scheduling resumes with the usual warm-up slots.
 
 `/api/health` shows the whole state as `gatewayRestart`; `/api/overview` shows `gatewayRestart.status` (`up`, `holding`, `resuming`) for the board, plus what the last pickup did. A shutdown broadcast whose process never went away releases the hold after 5 minutes.
+
+Checked on VLab (candidate, 2026-09-30, `lab/candidate/nightshift-gateway-restart.mjs`) against a private Gateway with a real Workboard card whose Agent was running `sleep 900`: SIGUSR1 broadcast `shutdown` ("gateway restarting") and Night Shift held at once; the process took 5.5 minutes to exit and the run was recorded `cancelled` ("Subagent run killed."); after the new boot and the settle, the pickup put the card back to ready with no failure recorded. SIGTERM and SIGKILL were held through the dropped connection and found the new boot id.
 
 A run that is still in flight when the Gateway stops is always lost: the Gateway kills it during its drain and cannot wait for a produce run to finish. The resumed card runs its stage again from the start; a paid task already submitted is only read back.
 
