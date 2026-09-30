@@ -233,7 +233,7 @@ export class NightShiftRuntime {
           // The request opens with the engine's explanation; the next attempt may read it.
         }
       }
-      const cardRunAttempt = card.metadata?.automation?.attempt ?? 1;
+      const cardRunAttempt = runAttemptOf(card, storedRuns, stageId);
       const superseded = storedRuns.some((entry) => entry.stageId === stageId &&
         (entry.contentItemId ?? null) === contentItemId && (entry.attempt ?? 1) > cardRunAttempt);
       if (this.needsYou && contentItemId && this.isContentItemSkipped(instanceId, contentItemId)) {
@@ -254,7 +254,7 @@ export class NightShiftRuntime {
       const run = {
         instanceId,
         stageId,
-        attempt: card.metadata?.automation?.attempt ?? 1,
+        attempt: cardRunAttempt,
         cardId: card.id,
         status,
         summary,
@@ -836,7 +836,7 @@ export class NightShiftRuntime {
           instanceId,
           contentItemId,
           stageId,
-          attempt: card.metadata?.automation?.attempt ?? 1,
+          attempt: runAttemptOf(card, this.store.listContentItemRuns(instanceId), stageId),
           cardId: card.id,
           status: "blocked",
           summary: blockedSummary,
@@ -1486,6 +1486,16 @@ function restartInterruption(outcome, { fromMs, toMs, bootChanged }) {
     if (startedAt <= toMs && lastSeen <= toMs) return "run lost with the previous Gateway process";
   }
   return null;
+}
+
+// Which of its stage's attempts a card is. Night Shift records it when it
+// creates the card; the native board drops unknown automation fields, so
+// metadata.automation.attempt never comes back (V, 2026-09-30: a redo card read
+// as attempt 1, overwrote the first attempt's row and left its own "ready").
+function runAttemptOf(card, storedRuns, stageId) {
+  const own = storedRuns.filter((entry) => entry.cardId === card.id && entry.stageId === stageId);
+  if (own.length) return Math.max(...own.map((entry) => entry.attempt ?? 1));
+  return card.metadata?.automation?.attempt ?? 1;
 }
 
 function terminalAttempt(card) {
