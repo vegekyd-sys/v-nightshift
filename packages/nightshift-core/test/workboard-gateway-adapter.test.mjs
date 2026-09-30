@@ -127,11 +127,13 @@ test("uses one persistent Gateway transport and forwards native Workboard change
 
   const lifecycle = [];
   adapter.onGatewayLifecycle((event) => lifecycle.push(event));
+  eventListener({ event: "gateway.suspension", payload: { phase: "suspending" } });
   eventListener({ event: "shutdown", payload: { reason: "gateway restarting", restartExpectedMs: 1500 } });
   eventListener({ event: "nightshift.gateway.disconnected", payload: { bootId: "boot-a" } });
   eventListener({ event: "nightshift.gateway.connected", payload: { bootId: "boot-b", reconnected: true } });
   eventListener({ event: "plugin.workboard.changed", payload: { revision: 8 } });
   assert.deepEqual(lifecycle, [
+    { type: "suspended", phase: "suspending" },
     { type: "shutdown", reason: "gateway restarting", restartExpectedMs: 1500 },
     { type: "disconnected" },
     { type: "connected", bootId: "boot-b" },

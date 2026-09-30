@@ -8,7 +8,7 @@ import { createAgentDbPressureProbe } from "./agent-db-pressure-probe.mjs";
 import { createHostPressureProbe } from "./host-pressure-probe.mjs";
 import { DispatchPressureGuard } from "./dispatch-pressure-guard.mjs";
 import { WorkboardChangeScheduler } from "./workboard-change-scheduler.mjs";
-import { GatewayRestartHold } from "../../../packages/nightshift-core/src/gateway-restart-hold.mjs";
+import { GatewayRestartHold, isGatewayRestartError } from "../../../packages/nightshift-core/src/gateway-restart-hold.mjs";
 import { createSessionReader } from "./session-reader.mjs";
 import { HumanAttemptController, humanCompletionEvidence, publicHumanAttempt, evidenceHash } from "../../../packages/nightshift-core/src/human-attempt.mjs";
 import { createServer } from "node:http";
@@ -1085,6 +1085,13 @@ function runScheduler({ trigger = "manual" } = {}) {
       store, runtime, workboard, refreshCards, syncContentItemsManifest,
     }));
     dispatchPressureGuard.consumeStarts(result.dispatched);
+    // A project read refused mid-pass because the Gateway began suspending:
+    // hold now, and do not count it against the scheduler.
+    const restartWarnings = result.warnings.filter(isGatewayRestartError);
+    if (restartWarnings.length) {
+      holdForGateway(restartWarnings[0]);
+      result.warnings = result.warnings.filter((warning) => !isGatewayRestartError(warning));
+    }
     projectQueue = result.queue ?? new Map();
     schedulerRetryMs = 0;
     lastSchedulerAt = new Date().toISOString();
@@ -1097,6 +1104,10 @@ function runScheduler({ trigger = "manual" } = {}) {
     if (warmup.retryAfterMs > 0 && pressure.availableStarts > 0) changeScheduler.enqueueAfter("dispatch.warmup", warmup.retryAfterMs);
   })().catch((error) => {
     lastSchedulerAt = new Date().toISOString();
+    if (isGatewayRestartError(error)) {
+      holdForGateway(error.message);
+      return;
+    }
     lastSchedulerError = error.message;
     schedulerCircuit.recordFailure(error.message);
     console.error(`Night Shift scheduler failed: ${error.message}`);
@@ -1105,6 +1116,15 @@ function runScheduler({ trigger = "manual" } = {}) {
     schedulerPromise = null;
   });
   return schedulerPromise;
+}
+
+// An RPC refused with "unavailable during gateway suspension|restart": the
+// Gateway is going down even if its broadcast has not reached us.
+function holdForGateway(message) {
+  const before = gatewayRestart.snapshot().status;
+  const after = gatewayRestart.observe({ type: "suspended", phase: String(message).match(/during gateway (\w+)/i)?.[1] ?? "refused" });
+  if (after.status !== before) console.log(`Night Shift Gateway refused work (${String(message).slice(0, 120)}): ${before} -> ${after.status}`);
+  changeScheduler.enqueueAfter("gateway.resume", gatewayRestartSettleMs);
 }
 
 function gatewayRestartForBoard(state) {
@@ -1182,6 +1202,10 @@ function probeDispatchCapacity() {
       const probe = hostPressure.blocked ? {} : await workboard.probeGatewayCapacity();
       pressure = dispatchPressureGuard.recordProbe({ ...probe, hostPressure, agentDbPressure, running });
     } catch (error) {
+      if (isGatewayRestartError(error)) {
+        holdForGateway(error.message);
+        return;
+      }
       pressure = dispatchPressureGuard.recordProbe({ error: error.message, running });
     }
     if (pressure.dispatchAllowed && pressure.availableStarts > 0 && cardCache.some((card) => cardIsStartable(card, Date.now()))) {

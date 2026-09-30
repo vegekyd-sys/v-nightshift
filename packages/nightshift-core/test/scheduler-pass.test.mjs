@@ -382,3 +382,14 @@ test("an explicit order puts projects ahead in that order; clearing it restores 
   result = await runSchedulerPass(g);
   assert.deepEqual(g.starts, ["EARLY", "EARLY"]);
 });
+
+test("a Gateway suspending or restarting is no project's fault", async () => {
+  // V, 2026-09-30 21:16: a release suspended the Gateway 24 s before its
+  // shutdown broadcast; the refused reads were recorded against projects.
+  const f = fixture();
+  await assert.rejects(
+    runSchedulerPass({ ...f, refreshCards: async () => { throw new Error("workboard.cards.list unavailable during gateway suspension"); } }),
+    /during gateway suspension/,
+  );
+  assert.ok([...f.controls.values()].every((c) => c.fault === null));
+});
