@@ -75,3 +75,15 @@ test("finds a legacy ledger operation from the immutable action label", () => {
     operations: [legacyOperation],
   }), legacyOperation);
 });
+
+test("a redone item's paid call is a new ledger operation, never its first attempt's", () => {
+  // V, 2026-09-30: the redo of ref1 reserved on the first attempt's key, was
+  // told the video was paid for and done, and then failed validation.
+  const card = { labels: ["instance:NS-1", "content-item:item-1", "stage:generate"], metadata: { automation: {} } };
+  const instance = { id: "NS-1", inputHash: "input-hash" };
+  const first = resolveNightShiftOperationKeys({ card, release, instance, contentItem: { id: "item-1" } });
+  const redo = resolveNightShiftOperationKeys({ card, release, instance, contentItem: { id: "item-1", revision: 1 } });
+  assert.notEqual(redo.preferredIdempotencyKey, first.preferredIdempotencyKey);
+  const settled = [{ idempotencyKey: first.preferredIdempotencyKey, ownerCardId: "first-card", status: "succeeded" }];
+  assert.equal(findNightShiftExternalOperation({ card, candidateIdempotencyKeys: redo.candidateIdempotencyKeys, operations: settled }), null);
+});

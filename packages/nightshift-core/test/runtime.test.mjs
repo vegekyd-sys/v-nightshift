@@ -1241,14 +1241,10 @@ class FakeWorkboard {
         id: `card-${this.cards.length + 1}`,
         ...rest,
         status: held ? "scheduled" : rest.status,
-        // The real adapter stores the plan's automation block as the card's
-        // metadata.automation, where reconcile reads the attempt back.
-        ...(Number.isFinite(scheduledAt) || rest.automation?.attempt
-          ? { metadata: { ...(rest.metadata ?? {}), automation: {
-            ...(rest.metadata?.automation ?? {}),
-            ...(rest.automation?.attempt ? { attempt: rest.automation.attempt } : {}),
-            ...(Number.isFinite(scheduledAt) ? { scheduledAt } : {}),
-          } } }
+        // Like the native board: automation fields it does not know, such as
+        // the attempt, do not come back in metadata.automation.
+        ...(Number.isFinite(scheduledAt)
+          ? { metadata: { ...(rest.metadata ?? {}), automation: { ...(rest.metadata?.automation ?? {}), scheduledAt } } }
           : {}),
         labels: [...new Set([...(card.labels ?? []), marker])],
       };
@@ -2331,7 +2327,8 @@ test("要求修改 redoes the item: a new produce card carrying the person's not
   assert.equal(produce.length, 2, "a new card, the old one untouched");
   const fresh = produce.find((card) => card.id !== "card-produce-old");
   assert.equal(fresh.status, "ready");
-  assert.equal(fresh.metadata.automation.attempt, 2);
+  const itemRuns = () => store.listContentItemRuns(id).filter((run) => run.contentItemId === "video-1");
+  assert.equal(itemRuns().find((run) => run.stageId === "produce" && run.attempt === 2).cardId, fresh.id);
   assert.match(fresh.notes, /Redo requested \(revision 1\).*时长≤15s，只用 BGM/);
   assert.equal(workboard.cards.find((card) => card.id === "card-produce-old").status, "done");
   assert.equal(workboard.cards.filter((card) => (card.labels ?? []).includes("stage:review")).length, 1, "the review waits for the new video");
@@ -2341,13 +2338,19 @@ test("要求修改 redoes the item: a new produce card carrying the person's not
   await runtime.reconcile(id, null, { inspectSessions: false });
   assert.equal(store.listDecisionRequests({ instanceId: id }).filter((entry) => entry.status === "open").length, 0);
 
+  // A pass reads the new card back: it stays attempt 2, the first attempt keeps its card.
+  await runtime.reconcile(id, null, { inspectSessions: false });
+  assert.equal(itemRuns().find((run) => run.stageId === "produce" && run.attempt === 1).cardId, "card-produce-old");
+  assert.equal(itemRuns().find((run) => run.stageId === "produce" && run.attempt === 2).status, "ready");
+
   fresh.status = "done";
   await runtime.tick(id, { dispatch: false });
+  assert.equal(itemRuns().find((run) => run.stageId === "produce" && run.attempt === 2).status, "done");
   const reviews = workboard.cards.filter((card) => (card.labels ?? []).includes("stage:review"));
   assert.equal(reviews.length, 2);
   const newReview = reviews.find((card) => card.id !== "card-review-old");
   assert.equal(newReview.status, "review");
-  assert.equal(newReview.metadata.automation.attempt, 2);
+  assert.equal(itemRuns().find((run) => run.stageId === "review" && run.attempt === 2).cardId, newReview.id);
   assert.ok(store.listEvents(id).some((event) => event.type === "content-item.redo.requested"));
   store.close();
 });
@@ -2386,4 +2389,22 @@ test("the stages a review redoes run from the first stage it checks to the revie
   const byId = (id) => stages.find((stage) => stage.id === id);
   assert.deepEqual(stagesToRedo(stages, byId("review"), {}), ["produce", "qc-learn", "review"]);
   assert.deepEqual(stagesToRedo(stages, byId("check"), {}), ["package", "check"]);
+});
+
+
+test("a redo card that stops reaches a person like any card: it is the newest attempt", async () => {
+  const id = "NS-REDO-STOP";
+  const { runtime, store, workboard, advance } = await reviewedItem(id);
+  await runtime.requestChanges({ actor: "a", cardId: "card-review-old", contentItemId: "video-1", evidence: "redo", instanceId: id, stageId: "review" });
+  await runtime.tick(id, { dispatch: false });
+  const fresh = workboard.cards.find((card) => (card.labels ?? []).includes("stage:produce") && card.id !== "card-produce-old");
+  fresh.status = "blocked";
+  fresh.metadata = { ...(fresh.metadata ?? {}), automation: { ...(fresh.metadata?.automation ?? {}), summary: "Makaron export failed" } };
+  store.upsertContentItemRun({ instanceId: id, contentItemId: "video-1", stageId: "produce", attempt: 2, cardId: fresh.id, status: "blocked",
+    failure: { kind: "contract_error", retryable: false, automaticRetry: false, rawError: "Makaron export failed", agentReport: "问题：导出失败" } });
+  advance(2 * 60 * 60_000);
+  await runtime.reconcile(id, null, { inspectSessions: false });
+  const open = store.listDecisionRequests({ instanceId: id }).filter((entry) => entry.status === "open");
+  assert.deepEqual(open.map((entry) => entry.cardId), [fresh.id]);
+  store.close();
 });

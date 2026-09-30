@@ -766,8 +766,11 @@ async function handleApi(request, response, url) {
       json(response, 422, { error: "Card does not declare an external side effect" });
       return;
     }
+    // With its revision: a redone item's paid call is a new operation, not the
+    // one its first attempt already settled (V, 2026-09-30: a redo was told its
+    // video had been paid for and completed, and failed validation).
     const contentItem = context.contentItemId
-      ? store.listContentItems(instance.id).find((entry) => entry.id === context.contentItemId)
+      ? runtime.contentItemsWithRevisions(instance.id).find((entry) => entry.id === context.contentItemId)
       : null;
     if (context.contentItemId && !contentItem) {
       json(response, 422, { error: "Card references an unknown Night Shift content item" });
@@ -1499,7 +1502,7 @@ async function validateCompletion({ card, contentItemId, instance, release, reus
   if ((stage?.sideEffects ?? []).length > 0) {
     try {
       const contentItem = contentItemId
-        ? store.listContentItems(instance.id).find((entry) => entry.id === contentItemId)
+        ? runtime.contentItemsWithRevisions(instance.id).find((entry) => entry.id === contentItemId)
         : null;
       const operationKeys = resolveNightShiftOperationKeys({ card, release, instance, contentItem });
       const operation = findNightShiftExternalOperation({
