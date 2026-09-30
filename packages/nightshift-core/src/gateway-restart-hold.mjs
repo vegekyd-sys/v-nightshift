@@ -13,6 +13,13 @@
 // - a different Gateway boot id at the next hello, which also covers a restart
 //   that happened while Night Shift itself was down.
 //
+// Before any of these, a controlled restart (a release script's suspend, then
+// SIGUSR1) closes the Gateway's admission and broadcasts `gateway.suspension`
+// with a phase other than "accepting"; every RPC then fails "unavailable during
+// gateway suspension". On V on 2026-09-30 21:16 that came 24 s before the
+// shutdown broadcast, and the scheduler counted two failed passes in between.
+// Both hold too. Admission reopening on the same Gateway ends the hold.
+//
 // While held, the scheduler neither dispatches nor judges cards: a run the
 // restart ended is not the Agent failing. Once the Gateway is back and has
 // settled, the runs it interrupted are resumed (runtime.resumeAfterGatewayRestart)
@@ -43,10 +50,23 @@ export class GatewayRestartHold {
   }
 
   // event: { type: "shutdown", reason, restartExpectedMs } | { type: "disconnected" }
+  //      | { type: "suspended", phase } | { type: "accepting", bootId }
   //      | { type: "connected", bootId }
   // Returns the state after the event.
   observe(event) {
     const now = this.now();
+    if (event?.type === "suspended") {
+      this.beginHold({ reason: `gateway suspended (${event.phase ?? "closed"})`, at: now });
+      return this.snapshot();
+    }
+    if (event?.type === "accepting") {
+      // Admission reopened without a restart (a release that found the Gateway
+      // busy backs off): the same Gateway, nothing presumed lost.
+      if (this.state.status === "holding" && event.bootId && event.bootId === this.state.hold?.fromBootId) {
+        this.startResume(event.bootId, now);
+      }
+      return this.snapshot();
+    }
     if (event?.type === "shutdown" || event?.type === "disconnected") {
       this.beginHold({
         reason: event.type === "shutdown" ? (event.reason || "gateway shutdown") : "gateway connection lost",
@@ -172,6 +192,11 @@ export class GatewayRestartHold {
     this.save();
     return this.snapshot();
   }
+}
+
+// An RPC refused because the Gateway is suspending or restarting.
+export function isGatewayRestartError(error) {
+  return /unavailable during gateway (?:suspension|restart|startup)/i.test(String(error?.message ?? error ?? ""));
 }
 
 function normalize(saved) {

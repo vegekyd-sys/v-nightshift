@@ -33,6 +33,9 @@ export async function runSchedulerPass({
   try {
     cards = await refreshCards({ cardIds });
   } catch (error) {
+    // A Gateway that is suspending or restarting is not a fault of any project:
+    // the caller holds Night Shift until it is back.
+    if (/unavailable during gateway (?:suspension|restart|startup)/i.test(error.message)) throw error;
     // A failed shared read affects every project immediately, without repeating
     // the same expensive failing RPC once per historical project.
     for (const instance of instances.filter((entry) => store.getInstanceControl(entry.id).automaticDispatch || wasRunning(entry.id))) {

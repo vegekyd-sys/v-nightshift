@@ -365,7 +365,7 @@ export class WorkboardGatewayAdapter {
       token: resolvedToken,
     });
     this.rpcEventUnsubscribe = client.onEvent((event) => {
-      const lifecycle = gatewayLifecycle(event);
+      const lifecycle = gatewayLifecycle(event, client.bootId ?? null);
       if (lifecycle) {
         for (const listener of this.lifecycleListeners) {
           try {
@@ -401,7 +401,7 @@ export class WorkboardGatewayAdapter {
   }
 }
 
-function gatewayLifecycle(event) {
+function gatewayLifecycle(event, bootId = null) {
   const payload = event?.payload ?? {};
   if (event?.event === "shutdown") {
     return {
@@ -409,6 +409,9 @@ function gatewayLifecycle(event) {
       reason: typeof payload.reason === "string" ? payload.reason : null,
       restartExpectedMs: Number.isFinite(payload.restartExpectedMs) ? payload.restartExpectedMs : null,
     };
+  }
+  if (event?.event === "gateway.suspension") {
+    return payload.phase === "accepting" ? { type: "accepting", bootId } : { type: "suspended", phase: payload.phase ?? null };
   }
   if (event?.event === "nightshift.gateway.disconnected") return { type: "disconnected" };
   if (event?.event === "nightshift.gateway.connected" && payload.bootId) return { type: "connected", bootId: payload.bootId };

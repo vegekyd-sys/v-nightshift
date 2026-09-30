@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { GatewayRestartHold } from "../src/gateway-restart-hold.mjs";
+import { GatewayRestartHold, isGatewayRestartError } from "../src/gateway-restart-hold.mjs";
 import { NightShiftStore } from "../src/store.mjs";
 
 function setup({ settleMs = 60_000 } = {}) {
@@ -106,4 +106,37 @@ test("a second restart while settling keeps the first window", () => {
   assert.equal(pickup.reason, "first");
   assert.equal(pickup.fromBootId, "boot-a");
   assert.equal(pickup.bootId, "boot-c");
+});
+
+test("a suspension holds before the restart broadcast, and the window starts there", () => {
+  // V, 2026-09-30 21:16: admission closed at 21:16:00, shutdown broadcast 21:16:24.
+  const { hold, advance } = setup();
+  hold.observe({ type: "connected", bootId: "boot-a" });
+  hold.observe({ type: "suspended", phase: "suspending" });
+  assert.equal(hold.snapshot().status, "holding");
+  advance(24_000);
+  hold.observe({ type: "shutdown", reason: "gateway restarting", restartExpectedMs: 1500 });
+  hold.observe({ type: "disconnected" });
+  hold.observe({ type: "connected", bootId: "boot-b" });
+  advance(60_000);
+  const { pickup } = hold.gate({ connected: true, bootId: "boot-b" });
+  assert.equal(pickup.from, "2026-09-30T04:50:00.000Z");
+  assert.equal(pickup.reason, "gateway suspended (suspending)");
+  assert.equal(pickup.bootChanged, true);
+});
+
+test("a suspension that reopens on the same Gateway resumes without presuming anything lost", () => {
+  const { hold, advance } = setup();
+  hold.observe({ type: "connected", bootId: "boot-a" });
+  hold.observe({ type: "suspended", phase: "suspending" });
+  hold.observe({ type: "accepting", bootId: "boot-a" });
+  assert.equal(hold.snapshot().status, "resuming");
+  advance(60_000);
+  assert.equal(hold.gate({ connected: true, bootId: "boot-a" }).pickup.bootChanged, false);
+});
+
+test("refused RPCs name a Gateway suspension or restart", () => {
+  assert.equal(isGatewayRestartError(new Error("workboard.cards.list unavailable during gateway suspension")), true);
+  assert.equal(isGatewayRestartError("vlab.workers.status unavailable during gateway restart"), true);
+  assert.equal(isGatewayRestartError(new Error("gateway timeout")), false);
 });
