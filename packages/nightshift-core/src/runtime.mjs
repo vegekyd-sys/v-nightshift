@@ -233,7 +233,11 @@ export class NightShiftRuntime {
           // The request opens with the engine's explanation; the next attempt may read it.
         }
       }
-      if (this.needsYou) {
+      if (this.needsYou && contentItemId && this.isContentItemSkipped(instanceId, contentItemId)) {
+        // A person already decided this item is not delivered; its stopped
+        // cards are nobody's matter.
+        this.store.supersedeDecisionRequests(card.id);
+      } else if (this.needsYou) {
         const operation = stage.sideEffects?.length
           ? this.store.listExternalOperations(instanceId).filter((entry) => entry.ownerCardId === card.id).at(-1) ?? null
           : null;
@@ -572,6 +576,33 @@ export class NightShiftRuntime {
       });
       return { request: this.store.getDecisionRequest(decisionId), affectedCardIds: [], alreadyDecided: false };
     }
+    if (option.effect === "skip") {
+      const targets = applyToGroup
+        ? this.store.listDecisionRequests({ instanceId: request.instanceId, status: "open" }).filter((entry) => entry.groupKey === request.groupKey)
+        : [request];
+      const affectedCardIds = [];
+      for (const target of targets) {
+        if (!target.contentItemId) continue;
+        this.store.skipContentItem({
+          instanceId: target.instanceId,
+          contentItemId: target.contentItemId,
+          reason: note || target.problem,
+          actor,
+          decisionId: target.id,
+        });
+        this.store.decideRequest(target.id, { optionId, note, actor });
+        this.store.appendEvent({
+          instanceId: target.instanceId,
+          type: "decision.skipped",
+          payload: { decisionId: target.id, cardId: target.cardId, contentItemId: target.contentItemId, actor, note },
+        });
+        affectedCardIds.push(target.cardId);
+      }
+      if (affectedCardIds.length === 0) {
+        throw Object.assign(new Error("Only a stop on one content item can be skipped"), { statusCode: 400 });
+      }
+      return { request: this.store.getDecisionRequest(decisionId), affectedCardIds, alreadyDecided: false, errors: [] };
+    }
     if (option.effect !== "retry") throw Object.assign(new Error(`Option effect ${option.effect} is not supported yet`), { statusCode: 400 });
     const targets = applyToGroup
       ? this.store.listDecisionRequests({ instanceId: request.instanceId, status: "open" }).filter((entry) => entry.groupKey === request.groupKey)
@@ -600,6 +631,19 @@ export class NightShiftRuntime {
       throw Object.assign(new Error(errors[0].error), { statusCode: 409, errors });
     }
     return { request: this.store.getDecisionRequest(decisionId), affectedCardIds, alreadyDecided: false, errors };
+  }
+
+  // Items a person decided not to deliver, with the title and reason the
+  // delivery brief and the completion notice show.
+  skippedContentItems(instanceId) {
+    const skipped = this.store.listSkippedContentItems?.(instanceId) ?? [];
+    if (skipped.length === 0) return [];
+    const items = new Map(this.store.listContentItems(instanceId).map((item) => [item.id, item]));
+    return skipped.map((entry) => ({ id: entry.contentItemId, title: items.get(entry.contentItemId)?.title ?? entry.contentItemId, reason: entry.reason, actor: entry.actor }));
+  }
+
+  isContentItemSkipped(instanceId, contentItemId) {
+    return (this.store.listSkippedContentItems?.(instanceId) ?? []).some((entry) => entry.contentItemId === contentItemId);
   }
 
   consumeSessionInspectionBudget(now = this.now()) {
@@ -847,7 +891,9 @@ export class NightShiftRuntime {
     if (contentItemId && !contentItem) throw new Error(`Unknown content item ${contentItemId}`);
     await this.workboard.updateCard(cardId, {
       idempotencyKey: nativeActionKey(actionKey(release, instance, stage, "run", contentItem)),
-      notes: withDecisionNote(buildAgentBrief(release, instance, stage, contentItem, this.store.listContentItems(instanceId)), decisionNote),
+      notes: withDecisionNote(buildAgentBrief(release, instance, stage, contentItem,
+        this.store.listContentItems(instanceId).filter((item) => !this.isContentItemSkipped(instanceId, item.id)),
+        this.skippedContentItems(instanceId)), decisionNote),
       maxRetries: stage.retry?.maxAttempts ?? 1,
       maxRuntimeSeconds: stageTimeoutSeconds(stage.timeout),
     });
@@ -894,8 +940,12 @@ export class NightShiftRuntime {
     const savedRelease = this.store.getRelease(instance.workflowSha256);
     if (!savedRelease) throw new Error(`Missing release ${instance.workflowSha256}`);
     const runs = this.store.listStageRuns(instanceId);
-    const contentItems = this.store.listContentItems(instanceId);
-    const contentItemRuns = this.store.listContentItemRuns(instanceId);
+    // A skipped item is out of the project: nothing more is planned for it, and
+    // stages that wait on every item (delivery) wait only on the rest.
+    const skippedContentItems = this.skippedContentItems(instanceId);
+    const skippedIds = new Set(skippedContentItems.map((entry) => entry.id));
+    const contentItems = this.store.listContentItems(instanceId).filter((item) => !skippedIds.has(item.id));
+    const contentItemRuns = this.store.listContentItemRuns(instanceId).filter((run) => !skippedIds.has(run.contentItemId));
     const perInstanceLimit = projectConcurrencyLimit(savedRelease.manifest, this.store.getInstanceControl?.(instanceId));
     const actions = planNextActions({
       release: savedRelease.manifest,
@@ -905,6 +955,7 @@ export class NightShiftRuntime {
       contentItemRuns,
       now: new Date(nowMs),
       perInstanceLimit,
+      skippedContentItems,
     });
     // A card the board holds for a timed release must wake the scheduler at
     // exactly that moment. Two sources, because the card can be planned in this

@@ -39,6 +39,7 @@ export function planNextActions({
   contentItemRuns = [],
   now = new Date(),
   perInstanceLimit = null,
+  skippedContentItems = [],
 }) {
   assertInstance(release, instance);
   if (instance.status !== "active") return [];
@@ -168,6 +169,7 @@ export function planNextActions({
           contentItems,
           dependencyCardIdsForProject(stage, stageById, latestRuns, latestItemRuns, contentItems),
           now,
+          skippedContentItems,
         ),
       });
       continue;
@@ -191,6 +193,7 @@ export function planNextActions({
           contentItems,
           dependencyCardIdsForProject(stage, stageById, latestRuns, latestItemRuns, contentItems),
           now,
+          skippedContentItems,
         ),
       });
       if (resourceKey) reservedResources.add(resourceKey);
@@ -207,7 +210,7 @@ export function planNextActions({
 // its dependencies are done. So the list is capped and the full count kept.
 export const WORKBOARD_PARENTS_LIMIT = 20;
 
-function cardPayload(release, instance, stage, status, contentItem = null, resourceKey = null, contentItems = [], parents = [], now = new Date()) {
+function cardPayload(release, instance, stage, status, contentItem = null, resourceKey = null, contentItems = [], parents = [], now = new Date(), skippedContentItems = []) {
   const inputHash = instance.inputHash ?? hashJson(instance.inputs ?? {});
   const agentRole = stage.agentRole ?? release.spec.ownerAgentRole;
   const assignedAgent = stage.actor === "agent" ? instance.agentBindings?.[agentRole] : null;
@@ -229,7 +232,7 @@ function cardPayload(release, instance, stage, status, contentItem = null, resou
       : `${instance.name ?? instance.id}｜${stage.title}`,
     status,
     assignedAgent,
-    notes: buildAgentBrief(release, instance, stage, contentItem, contentItems),
+    notes: buildAgentBrief(release, instance, stage, contentItem, contentItems, skippedContentItems),
     labels: [
       `workflow:${release.metadata.id}`,
       `release:${release.metadata.workflowSha256.slice(0, 12)}`,
@@ -324,7 +327,7 @@ export function stageTimeoutSeconds(value) {
 const DUPLICATE_CHECK_SCRIPT = fileURLToPath(new URL("../../../scripts/check-video-duplicates.mjs", import.meta.url));
 const NIGHTSHIFTCTL_SCRIPT = fileURLToPath(new URL("../../../scripts/nightshiftctl.mjs", import.meta.url));
 
-export function buildAgentBrief(release, instance, stage, contentItem = null, contentItems = []) {
+export function buildAgentBrief(release, instance, stage, contentItem = null, contentItems = [], skippedContentItems = []) {
   const safeInputs = redactSensitiveInputs(instance.inputs ?? {});
   const projectInputsPath = instance.inputs?.nightshift?.projectInputsPath;
   const inlineInputs = projectInputsPath ? summarizeInputs(safeInputs) : safeInputs;
@@ -397,6 +400,11 @@ export function buildAgentBrief(release, instance, stage, contentItem = null, co
     ...(release.spec?.completion?.mode === "strict-v1"
       ? Object.entries(stage.outputContracts ?? {}).map(([name, contract]) => `Output contract ${name}: ${JSON.stringify(contract)}`)
       : []),
+    // A project-wide stage (delivery, packaging) must not wait for or include
+    // items a person decided to skip; content-items.json still lists them.
+    ...((stage.scope ?? "project") === "project" && skippedContentItems.length ? [
+      `Skipped content items (a person decided these are not delivered; content-items.json still lists them): ${skippedContentItems.map((entry) => `${entry.id} 「${entry.title}」${entry.reason ? ` — ${String(entry.reason).slice(0, 160)}` : ""}`).join("; ")}. Do not wait for them, do not package or count them: this delivery has ${contentItems.length} items.`,
+    ] : []),
     ...(stage.id === "deliver-download" && instanceDir ? [
       `Download delivery contract: aggregate every validated ContentItem deliverables.json and produce handoff into ${instanceDir}/deliver-download/delivery-package.zip; upload that exact package once under a stable instance-bound OSS object key; upsert one Base delivery row keyed by instance ${instance.id}; write ${instanceDir}/deliver-download/oss-delivery.json with uploaded=true and ${instanceDir}/deliver-download/base-delivery-receipt.json with recorded=true; and reference those concrete artifacts from the stage handoff.`,
       "This branch must not create human review work, request external-publication approval, publish content, call GeeLark, or invoke geelark-cloud-phone.",

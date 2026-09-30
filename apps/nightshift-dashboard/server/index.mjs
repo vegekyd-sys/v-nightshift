@@ -998,6 +998,8 @@ async function handleApi(request, response, url) {
         applyToGroup: body.applyToGroup === true,
       }));
       if (result.affectedCardIds.length) await refreshCards({ cardIds: result.affectedCardIds });
+      // A skip can leave the rest of the project ready for delivery.
+      changeScheduler.enqueue("decision.decided");
       json(response, 200, result);
     } catch (error) {
       json(response, error.statusCode ?? 500, { error: error.message, errors: error.errors });

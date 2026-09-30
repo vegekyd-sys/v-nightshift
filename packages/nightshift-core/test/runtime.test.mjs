@@ -2089,3 +2089,70 @@ test("faults of the substrate do not use up a stage's own retries", async () => 
   assert.equal(openRequests(store, "NS-SUBSTRATE-BUDGET").length, 0);
   store.close();
 });
+
+// A person may skip one content item: the rest of the project delivers
+// without it (Tianyi, 2026-09-30, DL-0929-10's missing smoke-test footage).
+async function deliveryProject(id) {
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard });
+  const release = runtime.publish(await readFile(workflowPath, "utf8"));
+  runtime.startInstance({ id, workflowSha256: release.workflowSha256, agentBindings: { "content-operator": "main" }, inputs: { deliveryMode: "download" } });
+  runtime.setContentItems(id, [
+    { id: "kept", title: "Kept video", route: "SCENE_EDIT" },
+    { id: "gone", title: "Smoke test video", route: "SCENE_EDIT" },
+  ]);
+  store.upsertStageRun({ instanceId: id, stageId: "plan", attempt: 1, cardId: `${id}-plan`, status: "done", summary: null });
+  for (const stageId of ["route", "materials", "brief", "produce"]) {
+    store.upsertContentItemRun({ instanceId: id, contentItemId: "kept", stageId, attempt: 1, cardId: `${id}-kept-${stageId}`, status: "done", summary: null });
+  }
+  for (const stageId of ["route", "materials"]) {
+    store.upsertContentItemRun({ instanceId: id, contentItemId: "gone", stageId, attempt: 1, cardId: `${id}-gone-${stageId}`, status: "done", summary: null });
+  }
+  store.upsertContentItemRun({ instanceId: id, contentItemId: "gone", stageId: "brief", attempt: 1, cardId: `${id}-gone-brief`, status: "blocked", summary: "no footage" });
+  return { release, runtime, store, workboard };
+}
+
+test("delivery waits for every item until one is skipped, then goes ahead without it", async () => {
+  const { runtime, store } = await deliveryProject("NS-SKIP-DELIVER");
+  let result = await runtime.tick("NS-SKIP-DELIVER", { dispatch: false });
+  assert.equal(result.actions.some((action) => action.stageId === "deliver-download"), false, "the skipped-to-be item still holds delivery");
+  store.skipContentItem({ instanceId: "NS-SKIP-DELIVER", contentItemId: "gone", reason: "素材库没有烟雾测试画面", actor: "local:Tianyi" });
+  result = await runtime.tick("NS-SKIP-DELIVER", { dispatch: false });
+  const delivery = result.actions.find((action) => action.stageId === "deliver-download");
+  assert.ok(delivery, "delivery is planned once the only unfinished item is skipped");
+  assert.equal(result.actions.some((action) => action.contentItemId === "gone"), false, "nothing more is planned for the skipped item");
+  assert.match(delivery.card.notes, /Skipped content items.*gone 「Smoke test video」 — 素材库没有烟雾测试画面.*this delivery has 1 items/s);
+  store.close();
+});
+
+test("skipping from a request records the item, closes the request and does not reopen it", async () => {
+  const { card, runtime, store } = await stoppedRun({
+    id: "NS-SKIP-DECIDE", stageId: "produce", outcome: { status: "completed" },
+    session: { messages: [{ role: "assistant", stopReason: "stop", timestamp: Date.now() - 60_000, content: [{ type: "text", text: "问题：素材库里没有这条要的画面\n原因：Scene 检索为 0\n影响：出不了片\n建议：补素材或跳过" }] }] },
+  });
+  await runtime.reconcile("NS-SKIP-DECIDE", null, { inspectSessions: true });
+  const [request] = openRequests(store, "NS-SKIP-DECIDE");
+  assert.deepEqual(request.options.map((option) => option.id), ["retry", "skip", "pause"]);
+  const decided = await runtime.decide({ decisionId: request.id, optionId: "skip", note: "没有素材，这条不做", actor: "local:Tianyi" });
+  assert.equal(decided.request.status, "decided");
+  assert.deepEqual(store.listSkippedContentItems("NS-SKIP-DECIDE").map((entry) => [entry.contentItemId, entry.reason]), [["video-1", "没有素材，这条不做"]]);
+  assert.ok(store.listEvents("NS-SKIP-DECIDE").some((event) => event.type === "decision.skipped"));
+  assert.equal(store.getInstance("NS-SKIP-DECIDE").status, "active", "skipping does not pause the project");
+  await runtime.reconcile("NS-SKIP-DECIDE", null, { inspectSessions: true });
+  assert.equal(openRequests(store, "NS-SKIP-DECIDE").length, 0, "the stopped card of a skipped item is nobody's matter");
+  assert.equal(card.status, "blocked");
+  store.close();
+});
+
+test("a stop on a project-wide stage cannot be skipped", async () => {
+  const { runtime, store } = await stoppedRun({
+    id: "NS-SKIP-PROJECT", stageId: "plan", outcome: { status: "completed" },
+    session: { messages: [{ role: "assistant", stopReason: "stop", timestamp: Date.now() - 60_000, content: [{ type: "text", text: "问题：策划案读不到\n原因：链接无权限\n影响：无法拆条目\n建议：开权限" }] }] },
+  });
+  await runtime.reconcile("NS-SKIP-PROJECT", null, { inspectSessions: true });
+  const [request] = openRequests(store, "NS-SKIP-PROJECT");
+  assert.deepEqual(request.options.map((option) => option.id), ["retry", "pause"]);
+  await assert.rejects(runtime.decide({ decisionId: request.id, optionId: "skip", actor: "local:Tianyi" }), /Unknown option skip/);
+  store.close();
+});

@@ -1,6 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { normalizeContentItems } from "./content-items.mjs";
+import { currentOptions } from "./needs-you.mjs";
 
 export class NightShiftStore {
   constructor(path = ":memory:") {
@@ -189,6 +190,15 @@ export class NightShiftStore {
         UNIQUE(card_id, attempt)
       );
       CREATE INDEX IF NOT EXISTS decision_requests_open ON decision_requests(status, instance_id);
+      CREATE TABLE IF NOT EXISTS skipped_content_items (
+        instance_id TEXT NOT NULL,
+        content_item_id TEXT NOT NULL,
+        reason TEXT,
+        actor TEXT NOT NULL,
+        decision_id TEXT,
+        skipped_at TEXT NOT NULL,
+        PRIMARY KEY (instance_id, content_item_id)
+      );
     `);
     // Production databases created by the 2026-08-25 notification build already
     // carry this column and these tables; newer ones gain them here.
@@ -308,6 +318,31 @@ export class NightShiftStore {
   }
 
   // A new attempt, or a card that moved on by itself, no longer needs the old decision.
+  // A person decided this content item will not be delivered. Its remaining
+  // stages are never planned, and the project completes without it.
+  skipContentItem({ instanceId, contentItemId, reason = null, actor, decisionId = null }, now = new Date()) {
+    if (!instanceId || !contentItemId || !actor) throw new Error("skipContentItem needs instanceId, contentItemId and actor");
+    const result = this.db.prepare(`INSERT OR IGNORE INTO skipped_content_items
+      (instance_id, content_item_id, reason, actor, decision_id, skipped_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(instanceId, contentItemId, reason, actor, decisionId, now.toISOString());
+    if (result.changes > 0) {
+      this.appendEvent({ instanceId, type: "content-item.skipped", payload: { contentItemId, reason, actor, decisionId }, now });
+    }
+    return this.listSkippedContentItems(instanceId).find((entry) => entry.contentItemId === contentItemId);
+  }
+
+  listSkippedContentItems(instanceId) {
+    return this.db.prepare("SELECT * FROM skipped_content_items WHERE instance_id = ? ORDER BY skipped_at")
+      .all(instanceId)
+      .map((row) => ({
+        contentItemId: row.content_item_id,
+        reason: row.reason,
+        actor: row.actor,
+        decisionId: row.decision_id,
+        skippedAt: row.skipped_at,
+      }));
+  }
+
   supersedeDecisionRequests(cardId, { exceptAttempt = null } = {}, now = new Date()) {
     const rows = this.db.prepare("SELECT * FROM decision_requests WHERE card_id = ? AND status = 'open'").all(cardId).map(decisionRequestRow);
     for (const row of rows) {
@@ -968,7 +1003,7 @@ function externalOperationRow(row) {
 }
 
 function decisionRequestRow(row) {
-  return {
+  const request = {
     id: row.id,
     instanceId: row.instance_id,
     cardId: row.card_id,
@@ -991,6 +1026,7 @@ function decisionRequestRow(row) {
     createdAt: row.created_at,
     decidedAt: row.decided_at,
   };
+  return { ...request, options: currentOptions(request) };
 }
 
 function auditEventRow(row) {

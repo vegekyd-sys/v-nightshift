@@ -90,7 +90,7 @@ A new attempt of the card supersedes its open request.
 `POST /api/decisions/:id` takes `{ optionId, note, actor, applyToGroup }`, and so does `nightshiftctl decisions decide`.
 
 - **retry**: the card is retried. The decision and the person's note are added to the brief for the next attempt, so the Agent does not stop at the same point again. With `applyToGroup`, every open request in the group gets the same decision.
-- **skip**: the item's remaining stages become `skipped`. `workflowComplete` treats a skipped item as finished. The completion notice reports "N 条完成，M 条跳过" with the reasons.
+- **skip**: the item is recorded as skipped (`skipped_content_items`, 2026-09-30). The engine plans nothing more for it and leaves it out of every stage that waits on all items and of `workflowComplete`. The completion notice reports the skipped items with their reasons. Only a stop on one content item offers it.
 - **pause**: the project is paused, as `projects pause` does. Its open requests stay open until the project is restarted and a decision is made.
 
 Each decision is an audit event (`decision.requested`, `decision.decided`).

@@ -197,7 +197,7 @@ async function run(input) {
   if (resource === "decisions" && action === "get" && subject) return api(`/api/decisions/${encodeURIComponent(subject)}`);
   if (resource === "decisions" && action === "decide" && subject) {
     const optionId = option(input, "--option");
-    if (!optionId) throw new Error("decisions decide requires --option <retry|pause|…>");
+    if (!optionId) throw new Error("decisions decide requires --option <retry|skip|pause|…>");
     return api(`/api/decisions/${encodeURIComponent(subject)}`, {
       body: JSON.stringify({
         optionId,

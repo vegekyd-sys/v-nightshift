@@ -13,11 +13,33 @@ export const DESCRIBE_VERSION = 2;
 const OPERATION_UNDER_WAY = new Set(["reserved", "executing"]);
 const MOVED_ON = new Set(["ready", "running", "done", "review", "scheduled", "todo", "backlog"]);
 
-// Choices every stop offers. Skip arrives with step 2 (a terminal item state).
+// Choices every stop offers. A stop on one content item may also skip that
+// item: the rest of the project delivers without it. "暂停项目" stops the whole
+// project, which is not what a person looking at one missing video wants
+// (Tianyi, 2026-09-30, on DL-0929-10's missing smoke-test footage).
+export const SKIP_OPTION = Object.freeze({
+  id: "skip",
+  label: "跳过这一条",
+  effect: "skip",
+  description: "这一条不做了，其余照常交付；完成通知会写明跳过了哪条、为什么",
+});
 export const STOP_OPTIONS = Object.freeze([
   Object.freeze({ id: "retry", label: "重新执行", effect: "retry", description: "按原任务再跑一次，可以附一句话给 agent（比如「已补素材」）" }),
-  Object.freeze({ id: "pause", label: "暂停项目", effect: "pause", description: "不再派新任务，问题解决后再恢复" }),
+  Object.freeze({ id: "pause", label: "暂停项目", effect: "pause", description: "暂停整个项目：不再派任何新任务，问题解决后再恢复" }),
 ]);
+
+export function stopOptionsFor(scope) {
+  return scope === "item" ? Object.freeze([STOP_OPTIONS[0], SKIP_OPTION, STOP_OPTIONS[1]]) : STOP_OPTIONS;
+}
+
+// Requests opened before skip existed still offer it when they concern one item.
+export function currentOptions(request) {
+  const options = Array.isArray(request?.options) ? request.options : [];
+  if (request?.scope !== "item" || options.some((option) => option.effect === "skip")) return options;
+  if (!options.some((option) => option.effect === "retry")) return options;
+  const at = options.findIndex((option) => option.effect === "retry") + 1;
+  return [...options.slice(0, at), SKIP_OPTION, ...options.slice(at)];
+}
 
 // Approvals and human review stages keep their own endpoints and choices.
 export const REVIEW_OPTIONS = Object.freeze([
@@ -120,7 +142,7 @@ export class NeedsYouTracker {
         describeVersion: DESCRIBE_VERSION,
       },
       scope: stage?.scope === "content-item" ? "item" : "project",
-      options: STOP_OPTIONS,
+      options: stopOptionsFor(stage?.scope === "content-item" ? "item" : "project"),
       groupKey: groupKey({ instanceId: instance.id, stageId, failure, problem }),
     }, new Date(now));
     if (beforeBaseline && !request.reused) this.store.markDecisionRequestsAnnounced([request.id], new Date(now));

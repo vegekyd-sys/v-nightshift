@@ -180,9 +180,10 @@ Cards blocked before the first run (baseline `needs-you-v1.baseline` in `notific
 
 **The queue.** 需要你 is open decision requests plus review cards waiting on a person, both approvals and human-review stages. `GET /api/overview` returns it as `needsYou { items, pending, countsByInstance }` for every project that is not shelved, whatever the scope.
 
-**Deciding.** `POST /api/decisions/:id { optionId, note, actor, applyToGroup }`, or `nightshiftctl decisions decide <id> --option retry|pause [--note …] [--apply-to-group]`.
+**Deciding.** `POST /api/decisions/:id { optionId, note, actor, applyToGroup }`, or `nightshiftctl decisions decide <id> --option retry|skip|pause [--note …] [--apply-to-group]`.
 - **retry** re-runs the card with `## 人工决定` and the note on top of its brief.
-- **pause** pauses the project and leaves the request open.
+- **skip** (「跳过这一条」, offered only on a stop of one content item) takes that item out of the project. Nothing more is planned for it; stages that wait on every item, such as delivery, wait only on the rest, and their brief lists the skipped items with the reason so the Agent neither waits for nor packages them. The project stays active and completes without it; the completion notice lists what was skipped and why. It is stored in `skipped_content_items` (the note, or the request's problem, is the reason) with an audit event `content-item.skipped`; `content-items.json` is not rewritten. A stopped card of a skipped item stays on the board but never opens a request again. Requests opened before skip existed offer it too.
+- **pause** pauses the whole project (no new cards at all) and leaves the request open. It is not a way to deliver the rest; use skip for that.
 - A second decision returns the first (`alreadyDecided`).
 
 **What a request says.** Each request carries the text of the accepted card layout:

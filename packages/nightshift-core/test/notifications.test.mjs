@@ -141,3 +141,15 @@ test("the sender hands the card to OpenClaw's Feishu channel", async () => {
   assert.deepEqual(args.slice(0, 7), ["/opt/openclaw/dist/index.js", "message", "send", "--channel", "feishu", "--target", GROUP]);
   assert.equal(args[args.indexOf("--presentation") + 1], JSON.stringify({ title: "t" }));
 });
+
+test("the completion notice names the items a person skipped, and why", async () => {
+  const { completionPresentation } = await import("../src/notifications.mjs");
+  const presentation = completionPresentation({
+    instance: { id: "DL-0929-10", name: "圣山染整 葡萄牙语 30条" },
+    projectUrl: "https://example.com/p",
+    summary: { done: 58, blocked: 0 },
+    skipped: [{ id: "sshr-21", title: "Fumaça atravessando a malha", reason: "素材库没有烟雾测试画面" }],
+  });
+  const text = presentation.blocks.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+  assert.match(text, /跳过 1 条（有人决定不交付）\*\*\n· Fumaça atravessando a malha：素材库没有烟雾测试画面/);
+});

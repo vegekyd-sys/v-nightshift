@@ -126,7 +126,8 @@ test("a stop with a recorded failure opens a request at once, in the Agent's wor
   assert.equal(request.scope, "item");
   assert.match(request.problem, /Makaron 两次拉取素材超时/);
   assert.doesNotMatch(request.problem, /checkpoint/);
-  assert.deepEqual(request.options.map((option) => option.id), ["retry", "pause"]);
+  // A stop on one content item may also skip it; pausing stops the whole project.
+  assert.deepEqual(request.options.map((option) => option.id), ["retry", "skip", "pause"]);
   assert.equal(store.listDecisionRequests().length, 1);
   observe(store.getDecisionRequest(request.id) && card("c1b", "video-1", { id: "c1", runId: "run-c1" }), { failure: MAKARON_STOP });
   assert.equal(store.listDecisionRequests().length, 1, "the same attempt never opens a second request");
@@ -261,7 +262,7 @@ test("the needs-you notice batches stops per project, groups them, and is sent o
   assert.ok(blocks.some((text) => /^\*\*发生了什么\*\*\n.*Makaron 两次拉取素材超时/.test(text)));
   assert.ok(blocks.some((text) => /^\*\*影响\*\*\n2 张卡停在/.test(text)));
   assert.ok(blocks.some((text) => /^\*\*建议怎么做\*\*\n建议人工决定是否更换素材/.test(text)));
-  assert.ok(blocks.some((text) => /\*\*重新执行\*\*：按原任务再跑一次/.test(text) && /\*\*暂停项目\*\*：不再派新任务/.test(text)));
+  assert.ok(blocks.some((text) => /\*\*重新执行\*\*：按原任务再跑一次/.test(text) && /\*\*跳过这一条\*\*：这一条不做了，其余照常交付/.test(text) && /\*\*暂停项目\*\*：暂停整个项目/.test(text)));
   assert.equal(sent[0].presentation.blocks.at(-1).buttons[0].label, "去看板处理");
   advance(3 * MIN);
   await pass();
