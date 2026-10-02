@@ -30,12 +30,14 @@ usage() {
 wait_for_health() {
   local attempt
   for ((attempt = 1; attempt <= 60; attempt++)); do
-    if curl -fsS --max-time 5 "$health_url" >/dev/null 2>&1; then
+    # ok turns true after the first scheduler pass on a connected Gateway.
+    if curl -fsS --max-time 5 "$health_url" 2>/dev/null | grep -q '"ok":true'; then
       return 0
     fi
     sleep 2
   done
   echo "VLab Night Shift did not become healthy after 120 seconds" >&2
+  curl -fsS --max-time 5 "$health_url" 2>/dev/null | head -c 300 >&2 || true
   systemctl show "$service_name" -p ActiveState -p NRestarts --no-pager >&2
   return 1
 }
