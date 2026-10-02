@@ -60,10 +60,15 @@ export class GatewayRestartHold {
       return this.snapshot();
     }
     if (event?.type === "accepting") {
-      // Admission reopened without a restart (a release that found the Gateway
-      // busy backs off): the same Gateway, nothing presumed lost.
-      if (this.state.status === "holding" && event.bootId && event.bootId === this.state.hold?.fromBootId) {
-        this.startResume(event.bootId, now);
+      // Admission reopened on the same Gateway: nothing restarted, so nothing
+      // was lost and the new process needs no warm-up. Night Shift goes on at
+      // once. On V on 2026-10-02 from 13:25 the Gateway closed admission for
+      // three seconds every thirty; waiting the 60 s settle after each reopen
+      // held Night Shift for good.
+      const suspension = String(this.state.hold?.reason ?? "").startsWith("gateway suspended");
+      const sameGateway = event.bootId && event.bootId === this.state.hold?.fromBootId;
+      if (suspension && sameGateway && ["holding", "resuming"].includes(this.state.status) && !this.state.resume?.bootChanged) {
+        this.release(event.bootId, now);
       }
       return this.snapshot();
     }
@@ -116,6 +121,21 @@ export class GatewayRestartHold {
     }
     if (status === "holding") this.startResume(bootId, now);
     else if (status === "resuming" && this.state.resume?.bootId !== bootId) this.startResume(bootId, now);
+  }
+
+  // Back to up without a pickup: the Gateway that held is the one now taking work.
+  release(bootId, now) {
+    const hold = this.state.hold;
+    this.state = {
+      status: "up",
+      bootId,
+      lastUpAt: iso(now),
+      hold: null,
+      resume: null,
+      last: this.state.last,
+      lastSuspension: { from: hold?.since ?? null, to: iso(now), reason: hold?.reason ?? null },
+    };
+    this.save();
   }
 
   startResume(bootId, now) {
