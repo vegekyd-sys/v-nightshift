@@ -231,6 +231,18 @@ An Agent that stops writes its closing report under the labels 问题 / 原因 /
 
 **Notice.** The `needsYou` event goes to the project's `collaboration.sourceChatId`, else to the Workflow's `notifications.needsYou.to`, else to the `instanceCompleted` target. There is one notice per project per 2-minute batch, grouped by root cause (`groupKey`). Review cards already waiting when the notice first runs are not announced (`needs-you-notice-v1.bootstrap`).
 
+## Delivery page
+
+A download project ends in a delivery page, not a zip (星擎夜班 D 0.4.0, stage `deliver-page`). Tianyi, 2026-10-02: packing every video into one zip on V took time and disk, everyone downloaded the whole package, and a Windows-illegal name in it hid 14 of 20 videos.
+
+- `nightshiftctl deliveries publish <card-id> [--source <contentItemId>=<https URL> …]` builds the page from each item's finished video. Its URL is the item's `finishedAsset.json` URL (`sourceUrl`, `videoUrl`, …) or, when the produce stage wrote only the video, the `videoUrl` its paid call recorded on the ledger. The URL must be https on an allowed host (`NIGHTSHIFT_DELIVERY_HOSTS`, default `cdn.makaron.app`) and serve the same number of bytes as the validated file. Anything else comes back as `{"ok":false,"missing":[…]}` with the reason: the stage uploads only those videos and passes their URLs with `--source`. Skipped items are left out.
+- The page is `/d/<token>` on the public board host, opened without login (the token is the key). `/d/<token>/data.json` is what it shows: titles, CDN URLs, sizes, durations; no project ID or internal path. Publishing again keeps the token, so a link already sent shows the latest videos. Stored in `deliveries`; `nightshiftctl deliveries get <project>` returns the URL.
+- The videos stream from the CDN, not from V. 「下载全部」 zips them in the viewer's browser (client-zip, ZIP64, UTF-8 names): written straight to disk in Chromium, built in memory elsewhere up to 1.5 GB, and saved one by one on phones and above that. Names are cleaned of characters Windows refuses.
+- The completion notice puts 「打开交付页」 first when the project has a page. The Base delivery row's 下载链接 is the page URL.
+- The page is its own build (`apps/nightshift-dashboard/delivery`, `vite.delivery.config.mjs`, output `dist/delivery`), so it carries none of the dashboard's code.
+
+On 2026-10-02 DL-0930-01 had a ledger URL for 19 of its 20 videos, each serving exactly the validated bytes; one had none and one was a temporary `fal.media` URL. Those two are what `missing` is for.
+
 ## Feishu completion notices
 
 When a project reaches `done`, Night Shift sends a Feishu card ("项目已完成", with done/blocked counts and a link to the project) to the person it belongs to. Enabled by `NIGHTSHIFT_FEISHU_NOTIFICATIONS=1` in the unit file; sent through `openclaw message send --channel feishu --presentation`.
