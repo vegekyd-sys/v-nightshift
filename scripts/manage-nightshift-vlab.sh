@@ -119,10 +119,21 @@ case "${1:-}" in
       fi
       echo "Release already installed: $release"
     else
+      # On 2026-10-02 a full data disk left a release of empty files that
+      # then blocked every retry. Check first, and never leave half a release.
+      free_kib=$(df --output=avail -k "$release_root" | tail -1 | tr -d ' ')
+      if [[ "$free_kib" -lt 1048576 ]]; then
+        echo "The VLab data disk has $((free_kib / 1024)) MiB free under $release_root; free space first." >&2
+        exit 1
+      fi
       install -d -o "$service_user" -g "$service_user" -m 755 "$release"
-      sudo -u "$service_user" tar -xzf "$artifact" -C "$release"
-      sudo -u "$service_user" env HOME="$base" PATH="$node_bin:/usr/local/bin:/usr/bin:/bin" \
-        "$node_bin/npm" --prefix "$release" ci --omit=dev --ignore-scripts --no-audit --no-fund
+      if ! sudo -u "$service_user" tar -xzf "$artifact" -C "$release" ||
+        ! sudo -u "$service_user" env HOME="$base" PATH="$node_bin:/usr/local/bin:/usr/bin:/bin" \
+          "$node_bin/npm" --prefix "$release" ci --omit=dev --ignore-scripts --no-audit --no-fund; then
+        rm -rf "$release"
+        echo "Install failed; removed the partial $release" >&2
+        exit 1
+      fi
     fi
     sudo -u "$service_user" "$node_bin/node" --check "$release/apps/nightshift-dashboard/server/index.mjs"
 

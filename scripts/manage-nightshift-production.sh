@@ -74,9 +74,16 @@ case "${1:-}" in
     elif [[ -d "$state_root" ]]; then
       cp -a "$state_root" "$backup/state.before"
     fi
-    sudo -u openclaw tar -xzf "$artifact" -C "$release"
-    sudo -u openclaw env PATH=/opt/node-v22.23.1/bin:/usr/local/bin:/usr/bin:/bin \
-      /opt/node-v22.23.1/bin/npm --prefix "$release" ci --omit=dev --ignore-scripts
+    # A half-installed release would block every retry as "already exists".
+    if ! sudo -u openclaw tar -xzf "$artifact" -C "$release" ||
+      ! sudo -u openclaw env PATH=/opt/node-v22.23.1/bin:/usr/local/bin:/usr/bin:/bin \
+        /opt/node-v22.23.1/bin/npm --prefix "$release" ci --omit=dev --ignore-scripts; then
+      rm -rf "$release"
+      # Nothing points at the new release yet: start the previous one again.
+      if [[ "$was_active" == 1 ]]; then systemctl start "$service_name"; fi
+      echo "Install failed; removed the partial $release and kept the previous release running" >&2
+      exit 1
+    fi
     install -o root -g root -m 644 "$release/systemd/nightshift-workboard.service" "$service_path"
     ln -sfn "$release" "$release_root/current"
     install -d -o openclaw -g openclaw -m 755 "$(dirname "$cli_path")"
