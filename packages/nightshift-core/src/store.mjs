@@ -164,6 +164,15 @@ export class NightShiftStore {
         value_json TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+      -- A project's delivery page: its videos at their CDN links, opened by token.
+      CREATE TABLE IF NOT EXISTS deliveries (
+        token TEXT PRIMARY KEY,
+        instance_id TEXT NOT NULL UNIQUE,
+        card_id TEXT,
+        manifest_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
       -- State of the service itself, not of a project (the Gateway restart hold).
       CREATE TABLE IF NOT EXISTS service_state (
         key TEXT PRIMARY KEY,
@@ -688,6 +697,38 @@ export class NightShiftStore {
     return value;
   }
 
+  // One page per project: publishing again keeps the token, so a link already
+  // sent stays valid and shows the latest videos.
+  upsertDelivery({ instanceId, cardId = null, manifest, token = null }, now = new Date()) {
+    if (!instanceId || !manifest) throw new Error("upsertDelivery needs instanceId and manifest");
+    const existing = this.getDeliveryForInstance(instanceId);
+    const stamp = now.toISOString();
+    if (existing) {
+      this.db.prepare("UPDATE deliveries SET manifest_json = ?, card_id = ?, updated_at = ? WHERE token = ?")
+        .run(JSON.stringify(manifest), cardId, stamp, existing.token);
+    } else {
+      if (!token) throw new Error("A new delivery needs a token");
+      this.db.prepare(`INSERT INTO deliveries(token, instance_id, card_id, manifest_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)`).run(token, instanceId, cardId, JSON.stringify(manifest), stamp, stamp);
+    }
+    const delivery = this.getDeliveryForInstance(instanceId);
+    this.appendEvent({
+      instanceId,
+      type: existing ? "delivery.updated" : "delivery.published",
+      payload: { token: delivery.token, cardId, items: manifest.items?.length ?? 0 },
+      now,
+    });
+    return delivery;
+  }
+
+  getDeliveryForInstance(instanceId) {
+    return deliveryRow(this.db.prepare("SELECT * FROM deliveries WHERE instance_id = ?").get(instanceId));
+  }
+
+  getDeliveryByToken(token) {
+    return deliveryRow(this.db.prepare("SELECT * FROM deliveries WHERE token = ?").get(token));
+  }
+
   getServiceState(key) {
     const row = this.db.prepare("SELECT value_json AS valueJson FROM service_state WHERE key = ?").get(key);
     return row ? JSON.parse(row.valueJson) : null;
@@ -1116,5 +1157,17 @@ function contentItemRow(row) {
     ordinal: row.ordinal,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+  };
+}
+
+function deliveryRow(row) {
+  if (!row) return null;
+  return {
+    token: row.token,
+    instanceId: row.instance_id,
+    cardId: row.card_id,
+    manifest: JSON.parse(row.manifest_json),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }

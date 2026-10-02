@@ -9,6 +9,7 @@ import { createHostPressureProbe } from "./host-pressure-probe.mjs";
 import { DispatchPressureGuard } from "./dispatch-pressure-guard.mjs";
 import { WorkboardChangeScheduler } from "./workboard-change-scheduler.mjs";
 import { GatewayRestartHold, isGatewayRestartError } from "../../../packages/nightshift-core/src/gateway-restart-hold.mjs";
+import { buildDeliveryManifest, DEFAULT_DELIVERY_HOSTS, ledgerVideoUrl, newDeliveryToken, publicDelivery } from "../../../packages/nightshift-core/src/delivery.mjs";
 import { createSessionReader } from "./session-reader.mjs";
 import { HumanAttemptController, humanCompletionEvidence, publicHumanAttempt, evidenceHash } from "../../../packages/nightshift-core/src/human-attempt.mjs";
 import { createServer } from "node:http";
@@ -62,6 +63,10 @@ import {
 const here = fileURLToPath(new URL(".", import.meta.url));
 const appRoot = resolve(here, "..");
 const distRoot = resolve(appRoot, "dist");
+// The delivery page is its own small build, served under /d/ without login.
+const deliveryDistRoot = resolve(distRoot, "delivery");
+const deliveryHosts = (process.env.NIGHTSHIFT_DELIVERY_HOSTS ?? DEFAULT_DELIVERY_HOSTS.join(","))
+  .split(",").map((entry) => entry.trim().toLowerCase()).filter(Boolean);
 const port = Number(process.env.NIGHTSHIFT_PORT ?? 24880);
 const host = process.env.NIGHTSHIFT_HOST ?? "127.0.0.1";
 const dataDir = resolve(process.env.NIGHTSHIFT_DATA_DIR ?? resolve(appRoot, "../../../tmp/nightshift"));
@@ -221,6 +226,11 @@ capacityProbeTimer.unref?.();
 
 const server = createServer(async (request, response) => {
   try {
+    // A delivery page is opened by people outside the team: its token is the key.
+    if (request.method === "GET" && /^\/d\//u.test(new URL(request.url, "http://localhost").pathname)) {
+      await serveDelivery(response, new URL(request.url, "http://localhost").pathname);
+      return;
+    }
     if (requiresPublicAuth(request, publicHost) && !verifyPublicAuth(request.headers.authorization, publicAuth)) {
       response.writeHead(401, {
         "Cache-Control": "no-store",
@@ -744,6 +754,56 @@ async function handleApi(request, response, url) {
       200,
       result,
     );
+    return;
+  }
+  // The delivery stage publishes the project's page: every finished video at
+  // its CDN link. `sources` names the URL of a video the Agent had to upload.
+  const deliveryMatch = url.pathname.match(/^\/api\/cards\/([^/]+)\/delivery$/);
+  if (request.method === "POST" && deliveryMatch) {
+    const cardId = decodeURIComponent(deliveryMatch[1]);
+    const card = cardCache.find((entry) => entry.id === cardId) ?? (await refreshCards({ cardIds: [cardId] })).find((entry) => entry.id === cardId);
+    if (!card) {
+      json(response, 404, { error: "Workboard card not found" });
+      return;
+    }
+    const { instanceId } = resolveNightShiftCardContext({ card });
+    const instance = instanceId ? store.getInstance(instanceId) : null;
+    if (!instance) {
+      json(response, 422, { error: "Card is not linked to a Night Shift project" });
+      return;
+    }
+    const body = await bodyJson(request);
+    const sources = body.sources && typeof body.sources === "object" && !Array.isArray(body.sources) ? body.sources : {};
+    const skippedIds = new Set(store.listSkippedContentItems(instance.id).map((entry) => entry.contentItemId));
+    const { manifest, missing } = await buildDeliveryManifest({
+      instance,
+      contentItems: store.listContentItems(instance.id),
+      skippedIds,
+      readAsset: (contentItemId) => readFinishedAsset(instance, contentItemId),
+      probe: probeDeliveryUrl,
+      sources,
+      allowedHosts: deliveryHosts,
+    });
+    if (missing.length > 0) {
+      json(response, 409, { error: `${missing.length} video(s) cannot be delivered yet`, missing, ready: manifest.items.length });
+      return;
+    }
+    const delivery = store.upsertDelivery({ instanceId: instance.id, cardId, manifest, token: newDeliveryToken() });
+    json(response, 200, {
+      published: true,
+      url: deliveryUrl(delivery.token),
+      items: manifest.items.length,
+      totalBytes: manifest.totalBytes,
+      updatedAt: delivery.updatedAt,
+    });
+    return;
+  }
+  const instanceDeliveryMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/delivery$/);
+  if (request.method === "GET" && instanceDeliveryMatch) {
+    const delivery = store.getDeliveryForInstance(decodeURIComponent(instanceDeliveryMatch[1]));
+    json(response, delivery ? 200 : 404, delivery
+      ? { url: deliveryUrl(delivery.token), items: delivery.manifest.items.length, totalBytes: delivery.manifest.totalBytes, updatedAt: delivery.updatedAt }
+      : { error: "This project has no delivery page" });
     return;
   }
   const operationMatch = url.pathname.match(/^\/api\/cards\/([^/]+)\/operations\/(reserve|checkpoint)$/);
@@ -1966,6 +2026,83 @@ function dashboardUrl(parameters = {}) {
     if (value) url.searchParams.set(key, value);
   }
   return url.toString();
+}
+
+function deliveryUrl(token) {
+  const origin = publicBaseUrl || (publicHost ? `https://${publicHost}` : `http://${host}:${port}`);
+  return new URL(`/d/${encodeURIComponent(token)}`, origin).toString();
+}
+
+// The finished video an item's produce handoff names, and the finishedAsset.json
+// beside it (where the produce stage records the provider's URL).
+async function readFinishedAsset(instance, contentItemId) {
+  const root = instance.inputs?.nightshift?.instanceDir ?? resolve(dataDir, "instances", instance.id);
+  const itemRoot = resolve(root, "content-items", contentItemId);
+  const handoff = await readFile(resolve(itemRoot, "handoffs", "produce.json"), "utf8").then(JSON.parse).catch(() => null);
+  const artifact = (handoff?.outputs ?? []).find((output) => output?.name === "finishedAsset")?.artifact;
+  const video = typeof artifact === "string"
+    ? resolve(root, instanceRelativeArtifactPath(artifact, [root]))
+    : resolve(itemRoot, "produce", "final.mp4");
+  if (!video.startsWith(root)) return null;
+  const readJson = (path) => readFile(path, "utf8").then(JSON.parse).catch(() => null);
+  const asset = await readJson(resolve(dirname(video), "finishedAsset.json")) ?? await readJson(resolve(itemRoot, "produce", "finishedAsset.json"));
+  const bytes = await stat(video).then((info) => info.size).catch(() => null);
+  if (!asset && !bytes) return null;
+  const probe = await readJson(resolve(dirname(video), "ffprobe.json"));
+  const stream = (probe?.streams ?? []).find((entry) => entry?.codec_type === "video");
+  return {
+    asset,
+    bytes,
+    ledgerUrl: ledgerVideoUrl(store.listExternalOperations(instance.id), contentItemId),
+    durationSec: Number(probe?.format?.duration) || null,
+    resolution: stream?.width && stream?.height ? `${stream.width}x${stream.height}` : null,
+  };
+}
+
+async function probeDeliveryUrl(target) {
+  try {
+    const answer = await fetch(target, { method: "HEAD", redirect: "follow", signal: AbortSignal.timeout(15_000) });
+    return { ok: answer.ok, status: answer.status, bytes: Number(answer.headers.get("content-length")) || null };
+  } catch (error) {
+    return { ok: false, status: error.name === "TimeoutError" ? "timeout" : error.message };
+  }
+}
+
+// /d/<token>            the page
+// /d/<token>/data.json  what it shows
+// /d/static/<file>      its script and styles
+async function serveDelivery(response, pathname) {
+  const headers = { "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex" };
+  const staticMatch = pathname.match(/^\/d\/static\/([A-Za-z0-9._-]+)$/u);
+  if (staticMatch) {
+    const filePath = resolve(deliveryDistRoot, "static", staticMatch[1]);
+    const content = await readFile(filePath).catch(() => null);
+    if (!content) {
+      response.writeHead(404, headers).end("Not found");
+      return;
+    }
+    response.writeHead(200, { ...headers, "Cache-Control": "public, max-age=31536000, immutable", "Content-Type": contentType(filePath) });
+    response.end(content);
+    return;
+  }
+  const pageMatch = pathname.match(/^\/d\/([A-Za-z0-9_-]{16,64})(\/data\.json|\/)?$/u);
+  const delivery = pageMatch ? store.getDeliveryByToken(pageMatch[1]) : null;
+  if (!delivery) {
+    response.writeHead(404, { ...headers, "Content-Type": "text/plain; charset=utf-8" }).end("这个交付链接不存在或已失效");
+    return;
+  }
+  if (pageMatch[2] === "/data.json") {
+    response.writeHead(200, { ...headers, "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(publicDelivery(delivery)));
+    return;
+  }
+  const page = await readFile(resolve(deliveryDistRoot, "index.html")).catch(() => null);
+  if (!page) {
+    response.writeHead(503, { ...headers, "Content-Type": "text/plain; charset=utf-8" }).end("交付页尚未构建");
+    return;
+  }
+  response.writeHead(200, { ...headers, "Cache-Control": "no-store", "Content-Type": "text/html; charset=utf-8" });
+  response.end(page);
 }
 
 async function serveStatic(response, pathname) {

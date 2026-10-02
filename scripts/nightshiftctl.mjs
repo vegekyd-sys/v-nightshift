@@ -208,6 +208,31 @@ async function run(input) {
       method: "POST",
     });
   }
+  // The delivery stage publishes the project's page. A video without a usable
+  // public URL is listed with the reason; upload that file and pass its URL
+  // with --source <contentItemId>=<https URL> (repeatable).
+  if (resource === "deliveries" && action === "publish" && subject) {
+    const sources = {};
+    input.forEach((value, index) => {
+      if (value !== "--source") return;
+      const pair = String(input[index + 1] ?? "");
+      const split = pair.indexOf("=");
+      if (split <= 0) throw new Error("--source takes <contentItemId>=<https URL>");
+      sources[pair.slice(0, split)] = pair.slice(split + 1);
+    });
+    const response = await fetch(new URL(`/api/cards/${encodeURIComponent(subject)}/delivery`, baseUrl), {
+      body: JSON.stringify({ sources }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    });
+    const body = await response.json().catch(() => ({}));
+    if (response.status === 409) return { ok: false, ...body };
+    if (!response.ok) throw new Error(body.error ?? `Night Shift API returned HTTP ${response.status}`);
+    return body;
+  }
+  if (resource === "deliveries" && action === "get" && subject) {
+    return api(`/api/instances/${encodeURIComponent(subject)}/delivery`);
+  }
   if (resource === "operations" && ["reserve", "checkpoint"].includes(action) && subject) {
     if (action === "reserve") {
       const requestHash = option(input, "--request-hash");
@@ -253,7 +278,7 @@ async function run(input) {
       method: "POST",
     });
   }
-  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|monitor|preflight|create|start|pause|archive|restore | projects concurrency <id> [<1-8>|default] [--reason <text>] | projects priority <id> [<n>|first|last|default] [--reason <text>] | projects order <id> [<id> …] [--reason <text>] | projects queue | projects inputs <id> --file <json> | projects collaboration <id> --to <oc_…|user:ou_…> [--by <ou_…>] | decisions list [--project <id>] [--status open|decided] | decisions get <id> | decisions decide <id> --option <id> [--note <text>] [--apply-to-group] | governance audit [--refresh] | governance archive|restore <manifest.json> [--apply] | operations reserve|checkpoint <card-id> | cards list|session|approve|changes|reject|retry");
+  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|monitor|preflight|create|start|pause|archive|restore | projects concurrency <id> [<1-8>|default] [--reason <text>] | projects priority <id> [<n>|first|last|default] [--reason <text>] | projects order <id> [<id> …] [--reason <text>] | projects queue | projects inputs <id> --file <json> | projects collaboration <id> --to <oc_…|user:ou_…> [--by <ou_…>] | decisions list [--project <id>] [--status open|decided] | decisions get <id> | decisions decide <id> --option <id> [--note <text>] [--apply-to-group] | governance audit [--refresh] | governance archive|restore <manifest.json> [--apply] | operations reserve|checkpoint <card-id> | deliveries publish <card-id> [--source <contentItemId>=<https URL> …] | deliveries get <project> | cards list|session|approve|changes|reject|retry");
 }
 
 async function resolveWorkflow(project) {
