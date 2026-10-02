@@ -1,9 +1,9 @@
 import { downloadZip } from "client-zip";
+import { readManifest, trustedUrl } from "./manifest.js";
 import "./style.css";
 
 const app = document.getElementById("app");
-const base = location.pathname.replace(/\/+$/u, "");
-const dataUrl = `${base}/data.json`;
+const manifestUrl = new URLSearchParams(location.search).get("m");
 
 const ICON_PLAY = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l13-7.5z"/></svg>';
 const ICON_SAVE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>';
@@ -21,9 +21,12 @@ load();
 
 async function load() {
   try {
-    const response = await fetch(dataUrl, { cache: "no-store" });
-    if (!response.ok) throw new Error(response.status === 404 ? "这个交付链接不存在或已失效。" : "交付信息暂时无法载入，请稍后刷新。");
-    render(await response.json());
+    if (!manifestUrl || !trustedUrl(manifestUrl)) throw new Error("这个交付链接不完整或不受信任。");
+    const response = await fetch(manifestUrl, { cache: "no-store" });
+    if (!response.ok) throw new Error(response.status === 404 || response.status === 400 ? "这个交付链接不存在或已失效。" : "交付信息暂时无法载入，请稍后刷新。");
+    const { delivery } = readManifest(await response.json());
+    if (delivery.items.length === 0) throw new Error("这个交付里还没有视频。");
+    render(delivery);
   } catch (error) {
     app.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
   } finally {
@@ -38,7 +41,7 @@ function render(delivery) {
   app.innerHTML = `
     <header class="hero">
       <div>
-        <p class="eyebrow">视频交付 · ${escapeHtml(formatDate(delivery.deliveredAt))}</p>
+        <p class="eyebrow">视频交付${delivery.deliveredAt && formatDate(delivery.deliveredAt) ? ` · ${escapeHtml(formatDate(delivery.deliveredAt))}` : ""}</p>
         <h1>${escapeHtml(delivery.title)}</h1>
         <p class="meta">${count} 条视频${totalBytes ? ` · 共 ${formatBytes(totalBytes)}` : ""}</p>
       </div>
@@ -192,7 +195,7 @@ async function downloadAll(delivery) {
       update();
       const response = await fetch(item.url, { signal: controller.signal });
       if (!response.ok) throw new Error(`第 ${current} 条下载失败（${response.status}）`);
-      yield { name: item.fileName, lastModified: new Date(delivery.deliveredAt), input: counted(response) };
+      yield { name: item.fileName, lastModified: delivery.deliveredAt ? new Date(delivery.deliveredAt) : new Date(), input: counted(response) };
     }
   }
 

@@ -117,19 +117,15 @@ export class NightShiftNotificationCoordinator {
     const skippedIds = new Set(skipped.map((entry) => entry.contentItemId));
     // A skipped item's stopped card is settled by the person's decision.
     const counted = cards.filter((card) => !skippedIds.has(contentItemLabel(card)));
-    const delivery = this.store.getDeliveryForInstance?.(instance.id) ?? null;
-    const deliveryUrl = delivery ? new URL(`/d/${encodeURIComponent(delivery.token)}`, this.baseUrl).toString() : null;
     return this.store.enqueueNotification({
       allowedOpenIds: [instance.collaboration?.createdByOpenId].filter(Boolean),
-      fallbackText: `项目已完成：${instance.name}\n${deliveryUrl ? `交付页：${deliveryUrl}\n` : ""}${projectUrl}`,
+      fallbackText: `项目已完成：${instance.name}\n${projectUrl}`,
       instanceId: instance.id,
       kind: "instance-completed",
       notificationKey: `complete:${instance.id}:${generation}`,
       presentation: completionPresentation({
         instance,
         projectUrl,
-        deliveryUrl,
-        deliveredCount: delivery?.manifest?.items?.length ?? null,
         summary: summarizeCards(counted),
         skipped: skipped.map((entry) => ({ id: entry.contentItemId, title: titles.get(entry.contentItemId) ?? entry.contentItemId, reason: entry.reason })),
       }),
@@ -287,19 +283,16 @@ export class OpenClawFeishuNotificationSender {
   }
 }
 
-export function completionPresentation({ instance, projectUrl, summary, skipped = [], deliveryUrl = null, deliveredCount = null }) {
+export function completionPresentation({ instance, projectUrl, summary, skipped = [] }) {
   const skippedLines = skipped.map((entry) => `· ${entry.title}${entry.reason ? `：${truncateText(entry.reason, 120)}` : ""}`);
   return {
     title: `项目已完成 · ${instance.name}`,
     tone: "success",
     blocks: [
       { type: "text", text: `**全部流程已经结束**\n完成 ${summary.done} 项，阻塞 ${summary.blocked} 项。` },
-      ...(deliveryUrl ? [{ type: "text", text: `**交付页**：${deliveredCount ?? ""} 条视频，可在线看、单条下载或一键下载全部；链接可直接转给客户。` }] : []),
       ...(skipped.length ? [{ type: "text", text: `**跳过 ${skipped.length} 条（有人决定不交付）**\n${skippedLines.join("\n")}` }] : []),
       { type: "context", text: `Night Shift 项目 · ${instance.id}` },
-      { type: "buttons", buttons: deliveryUrl
-        ? [{ label: "打开交付页", style: "primary", url: deliveryUrl }, { label: "查看项目", url: projectUrl }]
-        : [{ label: "查看交付", style: "primary", url: projectUrl }] },
+      { type: "buttons", buttons: [{ label: "查看交付", style: "primary", url: projectUrl }] },
     ],
   };
 }
