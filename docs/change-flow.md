@@ -57,7 +57,8 @@ npm run dashboard:build   # 改了看板或交付页时
 node <VLab 工具>/lab/vlab.mjs candidate --repo "$PWD" --owner <任务名> --plan "$PWD/lab/candidate/<场景>.plan.json"
 ```
 
-- plan 列出要带上的文件和要跑的命令。例子：`lab/candidate/nightshift-gateway-restart.plan.json`，它在私有 Gateway 上把夜班的 Gateway 重启处理真跑了一遍。格式见 platform 仓库 `lab/candidate/README.md`。
+- plan 列出要带上的文件和要跑的命令。只跑测试文件时用 `node lab/candidate/make-plan.mjs <测试文件>... > /tmp/plan.json` 生成：它会自动带上引擎和看板服务的全部源码。手写 plan 很容易漏掉被间接引用的文件，比如 `store.mjs` 会牵出半个引擎。
+- 要起私有 Gateway、跑真实时序的场景，写一个场景脚本，例子是 `lab/candidate/nightshift-gateway-restart.{mjs,plan.json}`：它在私有 Gateway 上把夜班的 Gateway 重启处理真跑了一遍。plan 格式见 platform 仓库 `lab/candidate/README.md`。
 - 结果是一份 receipt（实际跑了什么、结果、耗时），写进 PR。
 - 纯逻辑改动（单元测试已完整覆盖，不碰调度和 Gateway 交互）可以不跑，但要在 PR 里写明为什么不需要。
 
