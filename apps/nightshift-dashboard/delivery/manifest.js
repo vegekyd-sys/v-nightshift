@@ -6,6 +6,7 @@
 //   {
 //     "version": 1,
 //     "title": "客户 英语 20条",
+//     "archiveName": "DL 2026-10-02 客户 英语 20条 a1b2c3d4.zip",   optional; defaults to the title
 //     "deliveredAt": "2026-10-02T08:00:00+08:00",      optional
 //     "items": [
 //       { "title": "…", "url": "https://cdn.makaron.app/…mp4",
@@ -75,7 +76,8 @@ export function readManifest(raw, hosts = TRUSTED_HOSTS) {
     delivery: {
       title,
       deliveredAt: raw.deliveredAt ?? null,
-      archiveName: safeFileName(title, "videos", "zip"),
+      // The zip has its own naming rule (康浩源, 2026-09-30), so it may differ from the heading.
+      archiveName: safeFileName(String(raw.archiveName ?? "").trim() || title, "videos", "zip"),
       totalBytes: items.every((item) => item.bytes) ? items.reduce((sum, item) => sum + item.bytes, 0) : null,
       items,
     },

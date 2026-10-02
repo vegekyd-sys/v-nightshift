@@ -40,6 +40,13 @@ test("a manifest becomes what the page shows; untrusted videos are left out", ()
   assert.deepEqual(rejected, [{ index: 2, title: "临时地址" }]);
 });
 
+test("the zip may be named apart from the heading", () => {
+  const items = [{ title: "a", url: `${CDN}/a.mp4` }];
+  assert.equal(readManifest({ version: 1, title: "客户 英语 1条", archiveName: "DL 2026-10-02 客户 英语 1条 a1b2c3d4.zip", items }).delivery.archiveName, "DL 2026-10-02 客户 英语 1条 a1b2c3d4.zip");
+  assert.equal(readManifest({ version: 1, title: "客户 英语 1条", archiveName: "DL 2026-10-02 12:30 客户", items }).delivery.archiveName, "DL 2026-10-02 12 30 客户.zip");
+  assert.equal(readManifest({ version: 1, title: "客户 英语 1条", archiveName: "  ", items }).delivery.archiveName, "客户 英语 1条.zip");
+});
+
 test("a manifest without sizes still shows, without a total", () => {
   const { delivery } = readManifest({ version: 1, title: "x", items: [{ title: "a", url: `${CDN}/a.mp4` }] });
   assert.equal(delivery.totalBytes, null);
