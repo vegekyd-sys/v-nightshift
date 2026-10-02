@@ -134,9 +134,15 @@ case "${1:-}" in
       [[ -e "$dropin" ]] || continue
       mv "$dropin" "$backup/"
     done
+    # The seed Workflow is read from the release too. On 2026-10-02 an older
+    # drop-in still named one from a September release, which the current
+    # validator refuses, and the service crash-looped on start.
+    workflow_name=$(basename "$(systemctl show "$service_name" -p Environment --value | tr ' ' '\n' | sed -n 's/^NIGHTSHIFT_WORKFLOW_PATH=//p' | tail -1)")
+    [[ -f "$release/examples/workflows/$workflow_name" ]] || workflow_name=xingqing-content-delivery.workflow.md
     cat >"$release_dropin" <<CONF
 [Service]
 WorkingDirectory=$release
+Environment=NIGHTSHIFT_WORKFLOW_PATH=$release/examples/workflows/$workflow_name
 ExecStart=
 ExecStart=$node_bin/node --no-warnings $release/apps/nightshift-dashboard/server/index.mjs
 CONF
@@ -148,7 +154,7 @@ CONF
       wait_for_health
       echo "running=$release"
     else
-      echo "installed=$release (not started; start it for a test with: sudo $0 start)"
+      echo "installed=$release (not started; start it for a test with: sudo bash $release/scripts/manage-nightshift-vlab.sh start)"
     fi
     # The script usually runs from a temporary extraction; name the copy that
     # stays installed with the release.
