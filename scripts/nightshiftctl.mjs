@@ -2,7 +2,10 @@
 
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { validateGovernanceManifest } from "../packages/nightshift-core/src/index.mjs";
+// Import the one module this HTTP client needs, never the package index: the
+// index also loads the SQLite store, and Node prints an ExperimentalWarning on
+// stderr whenever node:sqlite is loaded.
+import { validateGovernanceManifest } from "../packages/nightshift-core/src/governance.mjs";
 
 const baseUrl = process.env.NIGHTSHIFT_URL ?? "http://127.0.0.1:24879";
 const args = process.argv.slice(2);
