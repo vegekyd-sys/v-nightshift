@@ -110,7 +110,8 @@ if [[ "$gateway_before" != "$gateway_after" ]]; then
   on "$host" "sudo -n journalctl --since '$look_back_from' --no-pager -o short-iso | grep -E 'COMMAND=.*systemctl (restart|stop|kill) openclaw-gateway|Stopping openclaw-gateway' | tail -5" >&2 || true
   die "the Gateway process changed ($gateway_before -> $gateway_after). Night Shift never restarts it; the lines above show who did. Wait for the Gateway and Night Shift to recover (nightshiftctl health), then align the VLab: scripts/ship.sh vlab $sha"
 fi
-health=$(on "$host" "curl -fsS --max-time 10 http://127.0.0.1:24879/api/health")
+# Health reads ok only after the first scheduler pass, a few seconds after start.
+health=$(on "$host" "for i in \$(seq 1 36); do h=\$(curl -fsS --max-time 10 http://127.0.0.1:24879/api/health 2>/dev/null) && echo \"\$h\" | grep -q '\"ok\":true' && break; sleep 5; done; echo \"\$h\"")
 node -e '
 const h = JSON.parse(process.argv[1]);
 if (!h.ok || !h.gatewayConnected) { console.error("ship: V Night Shift is not healthy:", JSON.stringify({ ok: h.ok, gatewayConnected: h.gatewayConnected, lastSchedulerError: h.lastSchedulerError })); process.exit(1); }
