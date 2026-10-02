@@ -14,12 +14,23 @@ test("only https URLs on the trusted CDNs are shown", () => {
   assert.equal(trustedUrl("javascript:alert(1)"), null);
 });
 
-test("file names are safe on Windows", () => {
+test("names are the Agent's; only characters Windows refuses are replaced", () => {
   // V, 2026-09-30: a title with ? and : hid 14 of 20 videos when unzipped.
-  assert.equal(safeFileName('Is it "real"? A: yes / no'), "Is it real A yes no.mp4");
-  assert.equal(safeFileName("结尾有点..."), "结尾有点.mp4");
-  assert.equal(safeFileName("clip.mp4"), "clip.mp4");
-  assert.equal(safeFileName("", "video"), "video.mp4");
+  assert.equal(safeFileName('Is it "real"? A: yes / no.mp4'), "Is it real A yes no.mp4");
+  assert.equal(safeFileName("结尾有点..."), "结尾有点");
+  const long = `DL 广东哆比 阿拉伯语 ${"很长的标题".repeat(20)} a1b2c3d4.mov`;
+  const { delivery } = readManifest({
+    version: 1,
+    title: "广东哆比 阿拉伯语 2条",
+    archiveName: "DL 2026-10-02 广东哆比 阿拉伯语 2条 a1b2c3d4",
+    items: [
+      { title: "a", url: `${CDN}/a.mov`, fileName: long },
+      { title: "封面", url: `${CDN}/cover.jpg` },
+    ],
+  });
+  assert.equal(delivery.items[0].fileName, long, "no length cut, no extension forced");
+  assert.equal(delivery.items[1].fileName, "封面.jpg", "without a fileName: the title plus the URL's extension");
+  assert.equal(delivery.archiveName, "DL 2026-10-02 广东哆比 阿拉伯语 2条 a1b2c3d4.zip");
 });
 
 test("a manifest becomes what the page shows; untrusted videos are left out", () => {
@@ -34,17 +45,10 @@ test("a manifest becomes what the page shows; untrusted videos are left out", ()
     ],
   });
   assert.equal(delivery.title, "客户 英语 3条");
-  assert.equal(delivery.archiveName, "客户 英语 3条.zip");
+  assert.equal(delivery.archiveName, "客户 英语 3条.zip", "without an archiveName the zip takes the title");
   assert.deepEqual(delivery.items.map((item) => item.fileName), ["第一条.mp4", "第一条 (2).mp4"], "two items never share a name in the zip");
   assert.equal(delivery.totalBytes, 300);
   assert.deepEqual(rejected, [{ index: 2, title: "临时地址" }]);
-});
-
-test("the zip may be named apart from the heading", () => {
-  const items = [{ title: "a", url: `${CDN}/a.mp4` }];
-  assert.equal(readManifest({ version: 1, title: "客户 英语 1条", archiveName: "DL 2026-10-02 客户 英语 1条 a1b2c3d4.zip", items }).delivery.archiveName, "DL 2026-10-02 客户 英语 1条 a1b2c3d4.zip");
-  assert.equal(readManifest({ version: 1, title: "客户 英语 1条", archiveName: "DL 2026-10-02 12:30 客户", items }).delivery.archiveName, "DL 2026-10-02 12 30 客户.zip");
-  assert.equal(readManifest({ version: 1, title: "客户 英语 1条", archiveName: "  ", items }).delivery.archiveName, "客户 英语 1条.zip");
 });
 
 test("a manifest without sizes still shows, without a total", () => {

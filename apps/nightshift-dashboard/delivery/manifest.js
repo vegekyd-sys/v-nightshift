@@ -5,14 +5,19 @@
 // Manifest, version 1:
 //   {
 //     "version": 1,
-//     "title": "客户 英语 20条",
-//     "archiveName": "DL 2026-10-02 客户 英语 20条 a1b2c3d4.zip",   optional; defaults to the title
+//     "title": "客户 英语 20条",                        the page heading
+//     "archiveName": "…zip",                           optional; the 「下载全部」 zip, else the title
 //     "deliveredAt": "2026-10-02T08:00:00+08:00",      optional
 //     "items": [
 //       { "title": "…", "url": "https://cdn.makaron.app/…mp4",
 //         "fileName": "…mp4", "bytes": 38513653, "durationSec": 20.1 }   only title and url required
 //     ]
 //   }
+//
+// Every name is the Agent's, taken as written (Tianyi, 2026-10-02: naming a
+// file must never need a change here). The page only does what no name can
+// choose: it replaces characters Windows refuses, and keeps two files in one
+// zip from sharing a name.
 //
 // Only manifests and videos on these hosts are shown, so nobody can use this
 // domain to present arbitrary content.
@@ -32,16 +37,26 @@ export function trustedUrl(value, hosts = TRUSTED_HOSTS) {
 }
 
 // Windows refuses < > : " / \ | ? * and control characters, and trailing dots
-// or spaces (on 2026-09-30 such a name hid 14 of 20 videos in a zip).
-export function safeFileName(name, fallback = "video", extension = "mp4") {
-  const clean = String(name ?? "")
+// or spaces; its own unzip skips such entries without a word (on 2026-09-30
+// a name like that hid 14 of 20 videos in a zip).
+export function safeFileName(name) {
+  return String(name ?? "")
     .replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/gu, " ")
     .replace(/\s+/gu, " ")
     .trim()
     .replace(/[. ]+$/u, "");
-  const stem = clean.replace(new RegExp(`\\.${extension}$`, "iu"), "");
-  const short = Array.from(stem).slice(0, 80).join("").trim() || fallback;
-  return `${short}.${extension}`;
+}
+
+function extensionOf(url) {
+  const last = url.pathname.split("/").pop() ?? "";
+  const dot = last.lastIndexOf(".");
+  return dot > 0 ? last.slice(dot) : "";
+}
+
+// "a.mp4" → "a (2).mp4"
+function numbered(name, n) {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? `${name.slice(0, dot)} (${n})${name.slice(dot)}` : `${name} (${n})`;
 }
 
 // Returns { delivery, rejected } or throws with a message for the viewer.
@@ -59,9 +74,10 @@ export function readManifest(raw, hosts = TRUSTED_HOSTS) {
       return;
     }
     const title = String(item.title ?? "").trim() || `视频 ${index + 1}`;
-    // Two items with the same name would overwrite each other in the zip.
-    let fileName = safeFileName(item.fileName || title);
-    for (let n = 2; names.has(fileName.toLowerCase()); n += 1) fileName = safeFileName(`${(item.fileName || title).replace(/\.mp4$/iu, "")} (${n})`);
+    // Without a fileName the item's title names it, with the extension its URL has.
+    const given = safeFileName(item.fileName) || `${safeFileName(title) || `${index + 1}`}${extensionOf(url)}`;
+    let fileName = given;
+    for (let n = 2; names.has(fileName.toLowerCase()); n += 1) fileName = numbered(given, n);
     names.add(fileName.toLowerCase());
     items.push({
       title,
@@ -76,11 +92,14 @@ export function readManifest(raw, hosts = TRUSTED_HOSTS) {
     delivery: {
       title,
       deliveredAt: raw.deliveredAt ?? null,
-      // The zip has its own naming rule (康浩源, 2026-09-30), so it may differ from the heading.
-      archiveName: safeFileName(String(raw.archiveName ?? "").trim() || title, "videos", "zip"),
+      archiveName: zipName(safeFileName(raw.archiveName) || safeFileName(title) || "视频交付"),
       totalBytes: items.every((item) => item.bytes) ? items.reduce((sum, item) => sum + item.bytes, 0) : null,
       items,
     },
     rejected,
   };
+}
+
+function zipName(name) {
+  return /\.zip$/iu.test(name) ? name : `${name}.zip`;
 }
