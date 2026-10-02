@@ -1,0 +1,36 @@
+{
+  "name": "@versa/v-nightshift",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Night Shift: workflow engine, Live Board and delivery page that run on V beside the OpenClaw Gateway",
+  "engines": {
+    "node": ">=22.23.1"
+  },
+  "scripts": {
+    "test": "node --test packages/nightshift-core/test/*.test.mjs apps/nightshift-dashboard/server/*.test.mjs apps/nightshift-dashboard/client/src/*.test.mjs apps/nightshift-dashboard/delivery/*.test.mjs",
+    "test:nightshift": "npm test",
+    "dashboard:build": "vite build --config apps/nightshift-dashboard/vite.config.mjs && vite build --config apps/nightshift-dashboard/vite.delivery.config.mjs",
+    "dashboard:dev": "vite --config apps/nightshift-dashboard/vite.config.mjs",
+    "dashboard:start": "node apps/nightshift-dashboard/server/index.mjs",
+    "nightshift:auth": "node scripts/create-nightshift-auth.mjs",
+    "nightshift:compile": "node packages/nightshift-core/src/cli.mjs compile",
+    "nightshift:ctl": "node scripts/nightshiftctl.mjs",
+    "nightshift:plan": "node packages/nightshift-core/src/cli.mjs plan",
+    "nightshift:replay:export": "node scripts/export-nightshift-replay.mjs",
+    "nightshift:replay:compat": "node scripts/replay-nightshift-compatibility.mjs",
+    "nightshift:replay:pressure": "node scripts/benchmark-nightshift-gateway-pressure.mjs",
+    "nightshift:validate": "node packages/nightshift-core/src/cli.mjs validate"
+  },
+  "dependencies": {
+    "client-zip": "2.5.1",
+    "lucide-react": "0.468.0",
+    "react": "19.1.1",
+    "react-dom": "19.1.1",
+    "yaml": "2.9.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "4.4.1",
+    "vite": "6.4.3"
+  }
+}

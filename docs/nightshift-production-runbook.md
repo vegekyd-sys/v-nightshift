@@ -4,7 +4,7 @@ Night Shift production is a separate loopback service. It uses the production Op
 
 ## Ownership
 
-- Code and release scripts: `vegekyd-sys/v-openclaw-platform`.
+- Code and release scripts: `vegekyd-sys/v-nightshift` (split from `vegekyd-sys/v-openclaw-platform` on 2026-10-02). How to change and ship it: [change-flow.md](change-flow.md).
 - V operating Skill and durable product model: `vegekyd-sys/v-core/skills/night-shift-operator`.
 - Runtime state: `/home/openclaw/.openclaw/nightshift`.
 - Immutable releases: `/home/openclaw/releases/nightshift-workboard/<commit>`.
@@ -12,6 +12,8 @@ Night Shift production is a separate loopback service. It uses the production Op
 - Native Workboard board: `nightshift`.
 
 ## Release
+
+`scripts/ship.sh v <commit>` does all of this for a merged commit with green CI, checks that the Gateway process did not change, and aligns the shared VLab ([change-flow.md](change-flow.md)). By hand:
 
 Package the exact reviewed commit. The packager builds the dashboard inside a clean archive and prints its SHA-256:
 
@@ -295,7 +297,7 @@ The 40 percent default was sized on a 16 GiB lab host. A 32 GiB production host 
 
 ## Upgrade
 
-V creates a short-lived branch, runs tests, pushes a Draft PR, and validates in VLab. A production update reuses the same accepted commit and archive checksum. Do not edit an installed release or production SQLite in place.
+Follow [change-flow.md](change-flow.md): a branch and worktree per change, tests, a VLab candidate run where real Gateway behaviour matters, a PR with green CI, Tianyi's go-ahead, then `scripts/ship.sh vlab` for the shared VLab acceptance and `scripts/ship.sh v` for production. A production update reuses the same merged commit. Do not edit an installed release or production SQLite in place.
 
 ## Test data governance
 
