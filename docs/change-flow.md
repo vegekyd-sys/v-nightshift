@@ -20,8 +20,9 @@ V 和 Claude Code 用同一套流程、同一组命令（Tianyi 2026-10-02 定�
 | | Mac（Claude Code） | V |
 |---|---|---|
 | 本仓库 | `~/v-nightshift` | `/home/openclaw/src/v-nightshift` |
-| VLab 工具（platform 仓库 dev） | `/Users/tianyicai/vlab-dev` | `/home/openclaw/src/v-openclaw-platform`，用前 `git fetch origin && git checkout --detach origin/dev` |
+| VLab 工具（platform 仓库 dev 的独立 worktree） | `/Users/tianyicai/vlab-dev` | `/home/openclaw/src/vlab-dev`，用前 `git -C /home/openclaw/src/vlab-dev fetch origin dev && git -C /home/openclaw/src/vlab-dev checkout --detach origin/dev` |
 | 连共享 VLab | `ssh vlab91` | `ssh vlab91` |
+| 提交身份 | `tianyi` | `V <v@makaron.local>`（本仓库的 `git config user.name/user.email`） |
 
 ## 1. 开工
 
@@ -59,7 +60,8 @@ node <VLab 工具>/lab/vlab.mjs candidate --repo "$PWD" --owner <任务名> --pl
 
 - plan 列出要带上的文件和要跑的命令。只跑测试文件时用 `node lab/candidate/make-plan.mjs <测试文件>... > /tmp/plan.json` 生成：它会自动带上引擎和看板服务的全部源码。手写 plan 很容易漏掉被间接引用的文件，比如 `store.mjs` 会牵出半个引擎。
 - 要起私有 Gateway、跑真实时序的场景，写一个场景脚本，例子是 `lab/candidate/nightshift-gateway-restart.{mjs,plan.json}`：它在私有 Gateway 上把夜班的 Gateway 重启处理真跑了一遍。plan 格式见 platform 仓库 `lab/candidate/README.md`。
-- 结果是一份 receipt（实际跑了什么、结果、耗时），写进 PR。
+- `make-plan.mjs` 需要本地已经 `npm ci`：candidate 的输入目录里没有 node_modules，它会把引擎要用的 `yaml` 包一起带上。
+- 结果是一份 receipt（实际跑了什么、结果、耗时），写进 PR。plan 是一次性的，不用提交进仓库；可复用的场景（如重启测试）才提交。
 - 纯逻辑改动（单元测试已完整覆盖，不碰调度和 Gateway 交互）可以不跑，但要在 PR 里写明为什么不需要。
 
 ## 5. 提 PR，等 CI，报告，停下
