@@ -56,7 +56,12 @@ export class GatewayRestartHold {
   observe(event) {
     const now = this.now();
     if (event?.type === "suspended") {
-      this.beginHold({ reason: `gateway suspended (${event.phase ?? "closed"})`, at: now });
+      // Only a running Night Shift holds for a suspension. Settling after a
+      // restart, a closure of the new Gateway's admission changes nothing: a
+      // real restart shows up as a dropped connection or a new boot id. On V
+      // on 2026-10-02 every closure sent the settle back to holding and the
+      // pickup never ran.
+      if (this.state.status === "up") this.beginHold({ reason: `gateway suspended (${event.phase ?? "closed"})`, at: now });
       return this.snapshot();
     }
     if (event?.type === "accepting") {

@@ -171,3 +171,23 @@ test("refused RPCs name a Gateway suspension or restart", () => {
   assert.equal(isGatewayRestartError("vlab.workers.status unavailable during gateway restart"), true);
   assert.equal(isGatewayRestartError(new Error("gateway timeout")), false);
 });
+
+test("closures of the new Gateway's admission do not restart the settle after a restart", () => {
+  // V, 2026-10-02: restart at 13:17, then admission closed every 30 s; each
+  // closure sent the settle back to holding and the pickup never ran.
+  const { hold, advance } = setup();
+  hold.observe({ type: "connected", bootId: "boot-a" });
+  hold.observe({ type: "disconnected" });
+  advance(90_000);
+  hold.observe({ type: "connected", bootId: "boot-b" });
+  for (let cycle = 0; cycle < 2; cycle += 1) {
+    advance(27_000);
+    hold.observe({ type: "suspended", phase: "preparing" });
+    advance(3_000);
+    hold.observe({ type: "accepting", bootId: "boot-b" });
+  }
+  assert.equal(hold.snapshot().status, "resuming");
+  const { pickup } = hold.gate({ connected: true, bootId: "boot-b" });
+  assert.equal(pickup.bootChanged, true);
+  assert.equal(pickup.reason, "gateway connection lost");
+});
