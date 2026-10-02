@@ -150,7 +150,9 @@ CONF
     else
       echo "installed=$release (not started; start it for a test with: sudo $0 start)"
     fi
-    printf '%s\n' "backup=$backup" "rollback=sudo $0 rollback $backup"
+    # The script usually runs from a temporary extraction; name the copy that
+    # stays installed with the release.
+    printf '%s\n' "backup=$backup" "rollback=sudo bash $release/scripts/manage-nightshift-vlab.sh rollback $backup"
     ;;
   start)
     guard_active "${2:-}"

@@ -95,14 +95,21 @@ if [[ "$target" == vlab ]]; then
 fi
 
 host=$(host_for v)
+# A restart begun just before the deploy still changes the PID read below.
+look_back_from=$(on "$host" "date -d '-2 min' '+%Y-%m-%d %H:%M:%S'")
 gateway_before=$(on "$host" "systemctl show openclaw-gateway -p MainPID --value")
 mode=--code-only
 [[ "$option" == --with-state-backup ]] && mode=
 echo "ship: deploying to V ($host) ${mode:-with a state backup}"
 deploy_to v $mode
 gateway_after=$(on "$host" "systemctl show openclaw-gateway -p MainPID --value")
-[[ "$gateway_before" == "$gateway_after" ]] ||
-  die "the Gateway process changed ($gateway_before -> $gateway_after). Night Shift must never restart it: find out why now."
+if [[ "$gateway_before" != "$gateway_after" ]]; then
+  # On 2026-10-02 another session on the same Mac restarted the Gateway four
+  # seconds before a deploy began. Show who did, so a collision is told apart
+  # from a deploy that touched the Gateway.
+  on "$host" "sudo -n journalctl --since '$look_back_from' --no-pager -o short-iso | grep -E 'COMMAND=.*systemctl (restart|stop|kill) openclaw-gateway|Stopping openclaw-gateway' | tail -5" >&2 || true
+  die "the Gateway process changed ($gateway_before -> $gateway_after). Night Shift never restarts it; the lines above show who did. Wait for the Gateway and Night Shift to recover (nightshiftctl health), then align the VLab: scripts/ship.sh vlab $sha"
+fi
 health=$(on "$host" "curl -fsS --max-time 10 http://127.0.0.1:24879/api/health")
 node -e '
 const h = JSON.parse(process.argv[1]);

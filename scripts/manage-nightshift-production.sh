@@ -84,7 +84,9 @@ case "${1:-}" in
     systemctl daemon-reload
     systemctl enable --now "$service_name"
     wait_for_health
-    printf '%s\n' "deployed=$release" "backup=$backup" "rollback=sudo $0 rollback $backup"
+    # The script usually runs from a temporary extraction; name the copy that
+    # stays installed with the release.
+    printf '%s\n' "deployed=$release" "backup=$backup" "rollback=sudo bash $release/scripts/manage-nightshift-production.sh rollback $backup"
     ;;
   rollback)
     backup=${2:-}
