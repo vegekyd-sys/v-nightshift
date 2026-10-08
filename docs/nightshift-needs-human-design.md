@@ -51,6 +51,16 @@ The rules:
 - **Salvage is not judgement.** Recovering written outputs completes a card when they pass; when they do not, nothing is recorded.
 - **Only positive evidence is announced.** A request opens when the Agent stopped on purpose, when its finished outputs fail the contract, when a paid operation failed or may have been charged, or when retries are used up. A card nobody can explain waits an hour, longer than the engine's 45-minute orphan rule, before it reaches a person.
 
+## What the card asks, and what the engine does itself (2026-10-08)
+
+From 2026-09-28 to 10-08 V decided 42 stops. Every one was answered with retry or skip, almost always without a note; 13 were retried by a monitoring session noting that the run had been interrupted. Only a handful needed something only a person could do: top up a provider balance (DL-0929-02 item 15), supply footage the library lacked (DL-0929-10 item 21), fix a rejected phone proxy (GeeLark Brazil, 10-07), look at a video that failed its checks (DL-1008-04 item 22). The cards never said which: they named the engine's rule and quoted the Agent's English first sentence. Retrying also looped where it could not move: a card's ledger key carries the item's revision, so the same card meets the same reserved, failed or hung operation every time (DL-1008-04 item 28, DL-0929-08 item 25, GeeLark 圣山-BR-015).
+
+The rules:
+- **The Agent says what a person must do.** Every brief asks a stopping Agent to open its final message with `需要人做：` (an instruction for someone who is not technical, saying where to do it, or `无`) and `原因：` (one sentence). Agents never see the operator skill, so the brief is the only place this can be asked.
+- **A stop that asks nothing is the engine's.** After two minutes (its Agent may still be working) the engine goes on by itself, at most twice per item and stage, and pays for at most one fresh attempt (Tianyi). After that, or when the Agent asked for something, the stop reaches a person.
+- **One way to go on.** Going on uses the same card when its external call can still move: nothing registered, a result to reuse, a task still running once. Otherwise it is a fresh attempt: the item's revision goes up, the stage (and later stages that ran on it) start over with new cards, and their paid call is a new operation. Old operations are never touched.
+- **The card asks, it does not report.** It shows what to do and one sentence of why, then the answers: 继续 (labelled 处理好了，继续 after an ask, 再试一次 otherwise, with its cost in the description), 这条不做了, 暂停项目. A paid result that exists but failed its checks offers 用这次的结果 or 重新生成 instead of 继续. A published post is never published again.
+
 ## Model
 
 A new table, `decision_requests`, holds one row per card attempt that needs a person:
@@ -89,7 +99,9 @@ A new attempt of the card supersedes its open request.
 
 `POST /api/decisions/:id` takes `{ optionId, note, actor, applyToGroup }`, and so does `nightshiftctl decisions decide`.
 
-- **retry**: the card is retried. The decision and the person's note are added to the brief for the next attempt, so the Agent does not stop at the same point again. With `applyToGroup`, every open request in the group gets the same decision.
+- **continue**: the engine goes on (see above): the same card retried, or a fresh attempt under a new revision. The decision and the person's note reach the next attempt's brief. With `applyToGroup`, every open request in the group that offers it gets the same decision.
+- **retry** (用这次的结果, and requests opened before 2026-10-08): the same card is retried.
+- **redo** (重新生成): a fresh attempt under a new revision, whatever the ledger says.
 - **skip**: the item is recorded as skipped (`skipped_content_items`, 2026-09-30). The engine plans nothing more for it and leaves it out of every stage that waits on all items and of `workflowComplete`. The completion notice reports the skipped items with their reasons. Only a stop on one content item offers it.
 - **pause**: the project is paused, as `projects pause` does. Its open requests stay open until the project is restarted and a decision is made.
 
