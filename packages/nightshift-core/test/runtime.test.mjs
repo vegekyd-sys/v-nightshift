@@ -1884,8 +1884,12 @@ test("a paid card whose run timed out before any reservation is retried: the led
   store.close();
 });
 
-test("a paid card whose run failed with a reservation still open asks a person: it may have been charged", async () => {
-  const { card, runtime, store } = await stoppedRun({
+test("a paid card whose run failed before submitting goes on by itself as one fresh, paid attempt", async () => {
+  // wsfood-es-28 on V, 2026-10-08: the run died on a model error after
+  // registering its paid call and before submitting it. Retrying the same card
+  // met the same registration; only a fresh attempt can go on. That is the
+  // one extra payment the engine may make by itself (Tianyi, 2026-10-08).
+  const { card, runtime, store, workboard, advance } = await stoppedRun({
     id: "NS-RUN-PAID-OPEN", stageId: "produce", outcome: { status: "failed", error: "Agent run failed" },
   });
   store.reserveExternalOperation({
@@ -1896,12 +1900,21 @@ test("a paid card whose run failed with a reservation still open asks a person: 
     ownerCardId: card.id,
     requestHash: "request-sha",
   });
+  store.upsertContentItemRun({ instanceId: "NS-RUN-PAID-OPEN", contentItemId: "video-1", stageId: "produce", attempt: 1, cardId: card.id, status: "blocked" });
   await runtime.reconcile("NS-RUN-PAID-OPEN", null, { inspectSessions: true });
   const [event] = attemptFailures(store, "NS-RUN-PAID-OPEN");
   assert.equal(event.payload.failure.automaticRetry, false);
-  assert.equal(openRequests(store, "NS-RUN-PAID-OPEN").length, 1);
+  assert.equal(openRequests(store, "NS-RUN-PAID-OPEN").length, 0, "nothing a person can do");
+  advance(3 * 60_000);
+  await runtime.reconcile("NS-RUN-PAID-OPEN", null, { inspectSessions: true });
+  const [recovered] = store.listEvents("NS-RUN-PAID-OPEN").filter((entry) => entry.type === "stage.stop.recovered");
+  assert.deepEqual([recovered.payload.how, recovered.payload.paid], ["fresh", true]);
+  assert.equal(store.listContentItemRevisions("NS-RUN-PAID-OPEN").length, 1);
+  assert.equal(card.status, "blocked", "the stopped card is left; the planner makes the new one");
+  assert.equal(workboard.cards.length, 1);
   store.close();
 });
+
 
 test("a blocked card whose run is still going is left alone: not failed, not salvaged, not announced", async () => {
   // DL-0929-01 item 9: blocked at 16:38 while its Agent kept working; it
@@ -1925,12 +1938,13 @@ test("a run that ended normally is still judged by the Agent's report and reache
   // ended normally. This is what 需要你 is for.
   const { runtime, store } = await stoppedRun({
     id: "NS-RUN-REPORT", stageId: "plan", outcome: { status: "completed" },
-    session: { messages: [{ role: "assistant", stopReason: "stop", timestamp: Date.now() - 60_000, content: [{ type: "text", text: "问题：素材撑不起 30 条混剪\n原因：只有 1 段视频\n影响：出片会失败\n建议：补素材后重新执行" }] }] },
+    session: { messages: [{ role: "assistant", stopReason: "stop", timestamp: Date.now() - 60_000, content: [{ type: "text", text: "需要人做：请在 Scene 里补至少 5 段不同的视频素材\n原因：只有 1 段视频，撑不起 30 条混剪" }] }] },
   });
   await runtime.reconcile("NS-RUN-REPORT", null, { inspectSessions: true });
   const [request] = openRequests(store, "NS-RUN-REPORT");
   assert.ok(request, "the Agent's own stop is announced");
-  assert.match(request.problem, /素材撑不起/);
+  assert.equal(request.problem, "请在 Scene 里补至少 5 段不同的视频素材");
+  assert.equal(request.cause, "只有 1 段视频，撑不起 30 条混剪");
   store.close();
 });
 
@@ -1957,8 +1971,8 @@ test("a run the Gateway saw end normally is never read as a start failure, even 
   await runtime.reconcile("NS-RUN-EMPTY-DONE", null, { inspectSessions: true });
   assert.equal(attemptFailures(store, "NS-RUN-EMPTY-DONE").length, 0, "not a failure of the substrate");
   assert.ok(store.listEvents("NS-RUN-EMPTY-DONE").some((entry) => entry.type === "stage.terminal.blocked"));
-  const [request] = openRequests(store, "NS-RUN-EMPTY-DONE");
-  assert.equal(request?.evidence.failure.kind, "contract_error");
+  // It asked no person for anything: the engine goes on with it by itself.
+  assert.equal(openRequests(store, "NS-RUN-EMPTY-DONE").length, 0);
   store.close();
 });
 
@@ -2134,11 +2148,11 @@ test("delivery waits for every item until one is skipped, then goes ahead withou
 test("skipping from a request records the item, closes the request and does not reopen it", async () => {
   const { card, runtime, store } = await stoppedRun({
     id: "NS-SKIP-DECIDE", stageId: "produce", outcome: { status: "completed" },
-    session: { messages: [{ role: "assistant", stopReason: "stop", timestamp: Date.now() - 60_000, content: [{ type: "text", text: "问题：素材库里没有这条要的画面\n原因：Scene 检索为 0\n影响：出不了片\n建议：补素材或跳过" }] }] },
+    session: { messages: [{ role: "assistant", stopReason: "stop", timestamp: Date.now() - 60_000, content: [{ type: "text", text: "需要人做：素材库里没有这条要的画面，请补拍上传，或者这条不做\n原因：Scene 检索为 0" }] }] },
   });
   await runtime.reconcile("NS-SKIP-DECIDE", null, { inspectSessions: true });
   const [request] = openRequests(store, "NS-SKIP-DECIDE");
-  assert.deepEqual(request.options.map((option) => option.id), ["retry", "skip", "pause"]);
+  assert.deepEqual(request.options.map((option) => option.id), ["continue", "skip", "pause"]);
   const decided = await runtime.decide({ decisionId: request.id, optionId: "skip", note: "没有素材，这条不做", actor: "local:Tianyi" });
   assert.equal(decided.request.status, "decided");
   assert.deepEqual(store.listSkippedContentItems("NS-SKIP-DECIDE").map((entry) => [entry.contentItemId, entry.reason]), [["video-1", "没有素材，这条不做"]]);
@@ -2153,11 +2167,12 @@ test("skipping from a request records the item, closes the request and does not 
 test("a stop on a project-wide stage cannot be skipped", async () => {
   const { runtime, store } = await stoppedRun({
     id: "NS-SKIP-PROJECT", stageId: "plan", outcome: { status: "completed" },
-    session: { messages: [{ role: "assistant", stopReason: "stop", timestamp: Date.now() - 60_000, content: [{ type: "text", text: "问题：策划案读不到\n原因：链接无权限\n影响：无法拆条目\n建议：开权限" }] }] },
+    session: { messages: [{ role: "assistant", stopReason: "stop", timestamp: Date.now() - 60_000, content: [{ type: "text", text: "需要人做：请给 V 开策划案文档的阅读权限\n原因：链接无权限" }] }] },
   });
   await runtime.reconcile("NS-SKIP-PROJECT", null, { inspectSessions: true });
   const [request] = openRequests(store, "NS-SKIP-PROJECT");
-  assert.deepEqual(request.options.map((option) => option.id), ["retry", "pause"]);
+  assert.deepEqual(request.options.map((option) => option.id), ["continue", "pause"]);
+  assert.equal(request.options[0].label, "处理好了，继续");
   await assert.rejects(runtime.decide({ decisionId: request.id, optionId: "skip", actor: "local:Tianyi" }), /Unknown option skip/);
   store.close();
 });
@@ -2403,7 +2418,7 @@ test("a redo card that stops reaches a person like any card: it is the newest at
   fresh.status = "blocked";
   fresh.metadata = { ...(fresh.metadata ?? {}), automation: { ...(fresh.metadata?.automation ?? {}), summary: "Makaron export failed" } };
   store.upsertContentItemRun({ instanceId: id, contentItemId: "video-1", stageId: "produce", attempt: 2, cardId: fresh.id, status: "blocked",
-    failure: { kind: "contract_error", retryable: false, automaticRetry: false, rawError: "Makaron export failed", agentReport: "问题：导出失败" } });
+    failure: { kind: "contract_error", retryable: false, automaticRetry: false, rawError: "Makaron export failed", agentReport: "需要人做：请在 Makaron 后台看一下导出为什么失败\n原因：导出失败" } });
   advance(2 * 60 * 60_000);
   await runtime.reconcile(id, null, { inspectSessions: false });
   const open = store.listDecisionRequests({ instanceId: id }).filter((entry) => entry.status === "open");
@@ -2411,10 +2426,11 @@ test("a redo card that stops reaches a person like any card: it is the newest at
   store.close();
 });
 
-// 重做这一条 (2026-10-08, DL-1008-04): a paid stop that retrying cannot move.
-// The ledger key carries the item's revision, so the same card retried meets
-// the same reserved, failed or succeeded operation every time.
-async function stoppedPaidItem(id, operationStatus) {
+// A stopped paid stage (2026-10-08, DL-1008-04). The ledger key carries the
+// item's revision, so the same card retried meets the same reserved, failed or
+// succeeded operation every time; going on after a failed or never-submitted
+// call takes a fresh attempt.
+async function stoppedPaidItem(id, operationStatus, { report = "需要人做：无\n原因：480p generation failed", observe = true } = {}) {
   const store = new NightShiftStore();
   const workboard = new FakeWorkboard();
   let clock = Date.now();
@@ -2429,36 +2445,37 @@ async function stoppedPaidItem(id, operationStatus) {
     store.upsertContentItemRun({ instanceId: id, contentItemId: "video-1", stageId, attempt: 1, cardId: `card-${stageId}`, status: "done" });
     workboard.cards.push({ id: `card-${stageId}`, status: "done", labels: [`instance:${id}`, `stage:${stageId}`, "content-item:video-1"] });
   }
-  const failure = { kind: "contract_error", retryable: false, automaticRetry: false, rawError: "External side effect has no succeeded Night Shift operation checkpoint", agentReport: "问题：生成失败\n原因：480p generation failed\n影响：没有成片\n建议：重做" };
+  const failure = { kind: "contract_error", retryable: false, automaticRetry: false, rawError: "External side effect has no succeeded Night Shift operation checkpoint", agentReport: report };
   store.upsertContentItemRun({ instanceId: id, contentItemId: "video-1", stageId: "produce", attempt: 1, cardId: "card-produce-old", status: "blocked", failure });
   workboard.cards.push({ id: "card-produce-old", status: "blocked", runId: "run-old", updatedAt: clock, labels: [`instance:${id}`, "stage:produce", "content-item:video-1"] });
   const oldKey = `${release.workflowSha256}:run:old`;
   store.reserveExternalOperation({ idempotencyKey: oldKey, instanceId: id, contentItemId: "video-1", stageId: "produce", ownerCardId: "card-produce-old", requestHash: "a".repeat(64) });
   if (operationStatus !== "reserved") store.checkpointExternalOperation(oldKey, { status: operationStatus, externalTaskId: "task-1", result: { reason: "480p generation failed" } });
   const stage = release.manifest.spec.stages.find((entry) => entry.id === "produce");
-  const request = needsYou.observe({
+  const request = observe ? needsYou.observe({
     card: workboard.cards.at(-1), instance: store.getInstance(id), stage, stageId: "produce", contentItemId: "video-1", status: "blocked", failure,
     operation: store.getExternalOperation(oldKey),
-  });
+  }) : null;
   return { release, request, runtime, store, workboard, oldKey, advance: (ms) => { clock += ms; } };
 }
 
-test("重做这一条 starts a stopped paid stage over under a new revision, so its paid call is a new operation", async () => {
-  const id = "NS-STOP-REDO";
+const produceCards = (workboard) => workboard.cards.filter((card) => (card.labels ?? []).includes("stage:produce"));
+const recoveries = (store, id) => store.listEvents(id).filter((event) => event.type === "stage.stop.recovered");
+
+test("继续 after a failed paid call starts a fresh attempt under a new revision, so its paid call is a new operation", async () => {
+  const id = "NS-STOP-FRESH";
   const { release, request, runtime, store, workboard, oldKey, advance } = await stoppedPaidItem(id, "failed");
-  assert.deepEqual(request.options.map((option) => option.id), ["redo", "skip", "pause"]);
-  const decided = await runtime.decide({ decisionId: request.id, optionId: "redo", note: "换一个模型试试", actor: "local:Tianyi" });
+  assert.deepEqual(request.options.map((option) => option.id), ["continue", "skip", "pause"]);
+  assert.match(request.options[0].description, /会再付一次钱/);
+  const decided = await runtime.decide({ decisionId: request.id, optionId: "continue", note: "已充值", actor: "local:Tianyi" });
   assert.equal(decided.request.status, "decided");
-  assert.deepEqual(decided.redo, { redone: true, revision: 1, stageIds: ["produce"] });
 
   await runtime.tick(id, { dispatch: false });
-  const produce = workboard.cards.filter((card) => (card.labels ?? []).includes("stage:produce"));
-  assert.equal(produce.length, 2, "a new card; the stopped one is left as it was");
-  const fresh = produce.find((card) => card.id !== "card-produce-old");
+  assert.equal(produceCards(workboard).length, 2, "a new card; the stopped one is left as it was");
+  const fresh = produceCards(workboard).find((card) => card.id !== "card-produce-old");
   assert.equal(fresh.status, "ready");
-  assert.match(fresh.notes, /Redo requested \(revision 1\): local:Tianyi chose 重做这一条 after the previous attempt of this item stopped/);
-  assert.match(fresh.notes, /«换一个模型试试»/);
-  assert.doesNotMatch(fresh.notes, /reviewed the previous result/);
+  assert.match(fresh.notes, /Redo requested \(revision 1\): local:Tianyi started a fresh attempt after the previous attempt of this item stopped at produce/);
+  assert.match(fresh.notes, /已充值/);
 
   // The new card's ledger key carries the revision: reserving it is a fresh operation.
   const contentItem = runtime.contentItemsWithRevisions(id).find((entry) => entry.id === "video-1");
@@ -2468,28 +2485,27 @@ test("重做这一条 starts a stopped paid stage over under a new revision, so 
   assert.equal(reserved.reused, false);
   assert.equal(store.getExternalOperation(oldKey).status, "failed", "the old operation is left as it was");
 
-  // The old stopped card is nobody's matter any more.
   advance(2 * 60 * 60_000);
   await runtime.reconcile(id, null, { inspectSessions: false });
-  assert.equal(store.listDecisionRequests({ instanceId: id, status: "open" }).length, 0);
-  assert.ok(store.listEvents(id).some((event) => event.type === "content-item.redo.requested" && event.payload.reason === "stop"));
+  assert.equal(store.listDecisionRequests({ instanceId: id, status: "open" }).length, 0, "the old stop is nobody's matter");
   store.close();
 });
 
-test("a succeeded paid operation stays immutable when the item is redone", async () => {
+test("a paid result that did not pass its checks offers to use it or to pay for a new one; the old success stays immutable", async () => {
   const id = "NS-STOP-REDO-OK";
-  const { request, runtime, store, oldKey } = await stoppedPaidItem(id, "succeeded");
-  assert.deepEqual(request.options.map((option) => option.id), ["retry", "redo", "skip", "pause"]);
+  const { request, runtime, store, oldKey } = await stoppedPaidItem(id, "succeeded", { report: "需要人做：请看一下这条视频能不能用：https://example.com/v.mp4\n原因：开头 2.8 秒黑屏" });
+  assert.equal(request.problem, "请看一下这条视频能不能用：https://example.com/v.mp4");
+  assert.deepEqual(request.options.map((option) => option.label), ["用这次的结果", "重新生成", "这条不做了", "暂停项目"]);
   await runtime.decide({ decisionId: request.id, optionId: "redo", actor: "local:Tianyi" });
   assert.equal(store.getExternalOperation(oldKey).status, "succeeded");
   assert.throws(() => store.checkpointExternalOperation(oldKey, { status: "failed" }), /immutable/);
   store.close();
 });
 
-test("重做这一条 is refused where it does not apply, and twice in a row does not stack", async () => {
+test("a fresh attempt is refused where it does not apply, and twice in a row does not stack", async () => {
   const id = "NS-STOP-REDO-TWICE";
   const { request, runtime, store, workboard } = await stoppedPaidItem(id, "reserved");
-  await runtime.decide({ decisionId: request.id, optionId: "redo", actor: "a" });
+  await runtime.decide({ decisionId: request.id, optionId: "continue", actor: "a" });
   assert.equal(store.listContentItemRevisions(id).length, 1);
   await assert.rejects(runtime.redoStoppedStage({ actor: "a", cardId: "card-produce-old", contentItemId: "video-1", instanceId: id, stageId: "produce" }), /already being redone/);
   workboard.cards.find((card) => card.id === "card-brief").status = "done";
@@ -2498,18 +2514,85 @@ test("重做这一条 is refused where it does not apply, and twice in a row doe
   store.close();
 });
 
-test("every Agent brief asks for the four-line stop report; a paid one says what each ledger answer means", async () => {
+test("a stop that asks nothing of a person goes on by itself, paying for at most one fresh attempt, then reaches a person", async () => {
+  const id = "NS-STOP-SELF";
+  const { runtime, store, workboard, advance } = await stoppedPaidItem(id, "failed", { observe: false });
+  await runtime.reconcile(id, null, { inspectSessions: false });
+  assert.equal(store.listDecisionRequests({ instanceId: id }).length, 0);
+  assert.equal(recoveries(store, id).length, 0, "it waits first: the Agent may still be working");
+  advance(3 * 60_000);
+  await runtime.reconcile(id, null, { inspectSessions: false });
+  assert.deepEqual(recoveries(store, id).map((event) => [event.payload.how, event.payload.paid]), [["fresh", true]]);
+  await runtime.tick(id, { dispatch: false });
+  const fresh = produceCards(workboard).find((card) => card.id !== "card-produce-old");
+  assert.match(fresh.notes, /Night Shift started a fresh attempt/);
+
+  // The fresh attempt fails the same way: the one extra payment is spent.
+  fresh.status = "blocked";
+  fresh.runId = "run-fresh";
+  const failure = { kind: "contract_error", retryable: false, automaticRetry: false, rawError: "External side effect has no succeeded Night Shift operation checkpoint", agentReport: "需要人做：无\n原因：480p generation failed" };
+  store.upsertContentItemRun({ instanceId: id, contentItemId: "video-1", stageId: "produce", attempt: 2, cardId: fresh.id, status: "blocked", failure });
+  store.reserveExternalOperation({ idempotencyKey: "fresh-key", instanceId: id, contentItemId: "video-1", stageId: "produce", ownerCardId: fresh.id, requestHash: "b".repeat(64) });
+  store.checkpointExternalOperation("fresh-key", { status: "failed", externalTaskId: "task-2" });
+  await runtime.reconcile(id, null, { inspectSessions: false });
+  advance(3 * 60_000);
+  await runtime.reconcile(id, null, { inspectSessions: false });
+  assert.equal(recoveries(store, id).length, 1, "no second payment by itself");
+  const [request] = store.listDecisionRequests({ instanceId: id, status: "open" });
+  assert.equal(request.cardId, fresh.id);
+  assert.equal(request.problem, "这一条没做成：要再试一次，还是不做了？");
+  assert.equal(request.cause, "480p generation failed");
+  assert.deepEqual(request.options.map((option) => option.label), ["再试一次", "这条不做了", "暂停项目"]);
+  assert.match(request.options[0].description, /会再付一次钱/);
+  store.close();
+});
+
+test("a stop that asks a person for something reaches them at once and is never retried by itself", async () => {
+  const id = "NS-STOP-ASK";
+  const { runtime, store, advance } = await stoppedPaidItem(id, "failed", { observe: false, report: "需要人做：请给 seedance 视频服务充值\n原因：额度不足，两次提交都被拒" });
+  await runtime.reconcile(id, null, { inspectSessions: false });
+  advance(3 * 60_000);
+  await runtime.reconcile(id, null, { inspectSessions: false });
+  assert.equal(recoveries(store, id).length, 0);
+  const [request] = store.listDecisionRequests({ instanceId: id, status: "open" });
+  assert.equal(request.problem, "请给 seedance 视频服务充值");
+  assert.equal(request.options[0].label, "处理好了，继续");
+  store.close();
+});
+
+test("a stop with nothing paid goes on with the same card, at most twice", async () => {
+  const id = "NS-STOP-SAME";
+  const { runtime, store, workboard, advance } = await stoppedRun({
+    id, stageId: "plan", outcome: { status: "completed" },
+    session: { messages: [{ role: "assistant", stopReason: "stop", timestamp: Date.now() - 60_000, content: [{ type: "text", text: "需要人做：无\n原因：模型返回了不完整的工具调用" }] }] },
+  });
+  const card = workboard.cards[0];
+  store.upsertStageRun({ instanceId: id, stageId: "plan", attempt: 1, cardId: card.id, status: "blocked" });
+  for (let round = 0; round < 3; round += 1) {
+    await runtime.reconcile(id, null, { inspectSessions: true });
+    advance(3 * 60_000);
+    await runtime.reconcile(id, null, { inspectSessions: true });
+    if (card.status === "ready") {
+      card.status = "blocked";
+      card.runId = `run-${round}`;
+    }
+  }
+  assert.deepEqual(recoveries(store, id).map((event) => event.payload.how), ["same", "same"]);
+  assert.equal(store.listDecisionRequests({ instanceId: id, status: "open" }).length, 1, "the third stop reaches a person");
+  store.close();
+});
+
+test("every Agent brief asks for the stop report; a paid one says what a failed or unusable result means", async () => {
   const id = "NS-STOP-BRIEF";
-  const { release, runtime, store } = await stoppedPaidItem(id, "failed");
+  const { release, runtime, store } = await stoppedPaidItem(id, "failed", { observe: false });
   const stages = release.manifest.spec.stages;
   const item = runtime.contentItemsWithRevisions(id)[0];
   const brief = buildAgentBrief(release.manifest, store.getInstance(id), stages.find((stage) => stage.id === "brief"), item);
-  assert.match(brief, /begin your final message with these four lines, in Chinese: 问题：.*原因：.*影响：.*建议：/);
+  assert.match(brief, /begin your final message with two lines in Chinese, written for someone who is not technical: 需要人做：.*or 无 when no person is needed.* 原因：/);
   assert.match(brief, /not the name of a Night Shift rule/);
   assert.doesNotMatch(brief, /reused\+failed/, "a stage without side effects has no ledger rules");
   const paid = buildAgentBrief(release.manifest, store.getInstance(id), stages.find((stage) => stage.id === "produce"), item);
   assert.match(paid, /If it is reused\+failed, .*do not submit again/);
-  assert.match(paid, /重做这一条/);
-  assert.match(paid, /reused\+succeeded.*does not pass this stage's checks, block/);
+  assert.match(paid, /reused\+succeeded.*does not pass this stage's checks, block.*asking a person to look at the result/);
   store.close();
 });

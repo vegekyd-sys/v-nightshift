@@ -1,14 +1,15 @@
-// Pre-merge candidate for 重做这一条 and the four-line stop report (2026-10-08).
+// Pre-merge candidate for going on after a paid stop, and the stop report (2026-10-08).
 //
 // Runs a private Gateway from the candidate runtime and drives this branch's
 // Night Shift runtime against its real Workboard:
 //   1. a paid produce card stops with a reservation it never submitted (the
-//      wsfood-es-28 case). 「重新执行」 is shown to meet the same operation
-//      again; 「重做这一条」 must make a new card whose ledger key, read back
-//      from the real board the way the dashboard's reserve endpoint reads it,
-//      is a new operation, and the old card's request must not come back;
+//      wsfood-es-28 case). Retrying the same card is shown to meet the same
+//      operation again; 「继续」 must go on as a fresh attempt: a new card
+//      whose ledger key, read back from the real board the way the dashboard's
+//      reserve endpoint reads it, is a new operation, and the old card's
+//      request must not come back;
 //   2. a real Agent run of a stage it cannot finish must open its final
-//      message with 问题 / 原因 / 影响 / 建议, and describeStop must read them.
+//      message with 需要人做 and 原因, and the card must show them.
 // It does not run Night Shift's HTTP service or any paid provider: the produce
 // card is never dispatched.
 
@@ -118,7 +119,7 @@ const exited = (child, ms) => new Promise((resolve) => {
 const { WorkboardGatewayAdapter } = await import(path.join(repo, "packages/nightshift-core/src/workboard-gateway-adapter.mjs"));
 const { NightShiftStore } = await import(path.join(repo, "packages/nightshift-core/src/store.mjs"));
 const { NightShiftRuntime } = await import(path.join(repo, "packages/nightshift-core/src/runtime.mjs"));
-const { NeedsYouTracker, describeStop } = await import(path.join(repo, "packages/nightshift-core/src/needs-you.mjs"));
+const { NeedsYouTracker, describeStop, readStopReport } = await import(path.join(repo, "packages/nightshift-core/src/needs-you.mjs"));
 const { buildAgentBrief } = await import(path.join(repo, "packages/nightshift-core/src/orchestrator.mjs"));
 const { resolveNightShiftOperationKeys, findNightShiftExternalOperation } = await import(path.join(repo, "packages/nightshift-core/src/card-context.mjs"));
 
@@ -192,10 +193,10 @@ try {
   const failure = { kind: "contract_error", retryable: false, automaticRetry: false, rawError: "External side effect has no succeeded Night Shift operation checkpoint" };
   const stage = release.spec.stages.find((entry) => entry.id === "produce");
   const request = needsYou.observe({ card: stopped, instance: store.getInstance(instanceId), stage, stageId: "produce", contentItemId: "video-1", status: "blocked", failure, operation: store.getExternalOperation(reserved.idempotencyKey) });
-  result.request = { problem: request.problem, impact: request.impact, suggestion: request.suggestion, options: request.options.map((option) => option.label) };
-  result.checks.requestOffersRedoNotRetry = request.options.map((option) => option.id).join(",") === "redo,skip,pause";
+  result.request = { problem: request.problem, cause: request.cause, options: request.options.map((option) => `${option.label}：${option.description}`) };
+  result.checks.requestOffersOnePricedContinue = request.options.map((option) => option.id).join(",") === "continue,skip,pause" && /会再付一次钱/.test(request.options[0].description);
 
-  const decided = await runtime.decide({ decisionId: request.id, optionId: "redo", note: "candidate redo note", actor: "candidate" });
+  const decided = await runtime.decide({ decisionId: request.id, optionId: "continue", note: "candidate redo note", actor: "candidate" });
   await runtime.tick(instanceId, { dispatch: false, inspectSessions: false });
   const cards = await workboard.listCards({ cardIds: runtime.instanceCardIds(instanceId) });
   const produceCards = cards.filter((card) => (card.labels ?? []).includes("stage:produce"));
@@ -205,9 +206,9 @@ try {
   await runtime.reconcile(instanceId, null, { inspectSessions: false });
   const runs = store.listContentItemRuns(instanceId).filter((run) => run.stageId === "produce");
   result.redo = {
-    decided: decided.redo,
+    decided: decided.affectedCardIds.length,
     produceCards: produceCards.map((card) => ({ id: card.id.slice(0, 8), status: card.status })),
-    briefSaysRedo: /Redo requested \(revision 1\): candidate chose 重做这一条/.test(fresh.notes ?? "") && /«candidate redo note»/.test(fresh.notes ?? ""),
+    briefSaysRedo: /Redo requested \(revision 1\): candidate started a fresh attempt/.test(fresh.notes ?? "") && /candidate redo note/.test(fresh.notes ?? ""),
     newOperation: { reused: freshOperation.reused, keyDiffers: freshOperation.idempotencyKey !== reserved.idempotencyKey },
     oldOperationStatus: store.getExternalOperation(reserved.idempotencyKey).status,
     runs: runs.map((run) => ({ attempt: run.attempt, card: run.cardId?.slice(0, 8) ?? null, status: run.status })),
@@ -242,8 +243,10 @@ try {
   const [cardAfter] = await workboard.listCards({ cardIds: [created.card.id] });
   const described = describeStop({ failure: { kind: "contract_error", rawError: "Stage handoff is required: brief", agentReport: text } });
   result.agent = { agentId, run: outcome.status, card: cardAfter?.status, opening: text.split("\n").slice(0, 6).join("\n").slice(0, 900), described };
-  result.checks.agentOpensWithFourLines = /^\s*(\*\*)?问题(\*\*)?[：:]/.test(text) && ["原因", "影响", "建议"].every((label) => new RegExp(`^\\s*(\\*\\*)?${label}(\\*\\*)?[：:]`, "m").test(text));
-  result.checks.cardReadsAgentLines = Boolean(described.problem && described.cause && described.impact && described.suggestion) && !/agent 的说法/.test(described.cause);
+  const read = readStopReport(text);
+  result.agent.read = read;
+  result.checks.agentOpensWithTwoLines = /^\s*(\*\*)?需要人做(\*\*)?[：:]/.test(text) && /^\s*(\*\*)?原因(\*\*)?[：:]/m.test(text);
+  result.checks.cardShowsWhatToDo = read.action !== null && Boolean(described.cause) && (!read.action || described.problem === read.action.slice(0, 200) || described.problem.startsWith(read.action.slice(0, 100)));
   result.ok = Object.values(result.checks).every(Boolean);
 } catch (error) {
   result.error = redact(error.stack ?? error.message);

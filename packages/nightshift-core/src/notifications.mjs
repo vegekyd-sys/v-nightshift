@@ -189,13 +189,12 @@ export function needsYouGroups({ items, stages = [], store = null }) {
     const count = members.length;
     if (first.kind === "decision") {
       const request = store?.getDecisionRequest(first.id) ?? first;
-      const where = `${count} 张卡停在「${stageTitle}」`;
       return {
         kind: "decision",
-        heading: `${stageTitle}停下了：${count} 张卡${count > 1 ? "，同一个原因" : ""}`,
+        heading: `${stageTitle}停下了：${count} 张卡${count > 1 ? "，同一件事" : ""}`,
         problem: request.problem,
         cause: request.cause || "",
-        impact: [where, request.impact].filter(Boolean).join("。"),
+        impact: request.impact || "",
         suggestion: request.suggestion || "",
         options: request.options ?? first.options,
       };
@@ -213,14 +212,15 @@ export function needsYouGroups({ items, stages = [], store = null }) {
   });
 }
 
-// The accepted layout (Tianyi, 2026-09-28): what happened, why, impact and
-// what to do, then every choice with what it does, and a link to the board.
+// What the person is asked to do first, then one sentence of why, then every
+// answer with what it does, and a link to the board (Tianyi, 2026-10-08: the
+// card must say what to do, not what the system saw).
 export function needsYouPresentation({ instance, groups, projectUrl, now = new Date() }) {
   const blocks = [];
   for (const group of groups) {
     blocks.push({ type: "text", text: `**${group.heading}**` });
     if (group.kind === "decision") {
-      blocks.push({ type: "text", text: `**发生了什么**\n${group.problem}` });
+      blocks.push({ type: "text", text: `**需要你做**\n${group.problem}` });
       if (group.cause) blocks.push({ type: "text", text: `**为什么**\n${group.cause}` });
       if (group.impact) blocks.push({ type: "text", text: `**影响**\n${group.impact}` });
       if (group.suggestion) blocks.push({ type: "text", text: `**建议怎么做**\n${group.suggestion}` });
@@ -233,13 +233,13 @@ export function needsYouPresentation({ instance, groups, projectUrl, now = new D
   if (options.size) {
     blocks.push({
       type: "text",
-      text: `**可选操作**\n${[...options.values()].map((option) => `· **${option.label}**${option.description ? `：${option.description}` : ""}`).join("\n")}`,
+      text: `**做完后选**\n${[...options.values()].map((option) => `· **${option.label}**${option.description ? `：${option.description}` : ""}`).join("\n")}`,
     });
   }
   const at = now.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Shanghai" });
   blocks.push({ type: "context", text: `项目 ${instance.id} · ${at} · 同一原因的卡会合并在这一条里` });
   blocks.push({ type: "buttons", buttons: [{ label: "去看板处理", style: "primary", url: projectUrl }] });
-  return { title: `需要你决定 · ${instance.name}`, tone: "warning", blocks };
+  return { title: `需要你处理 · ${instance.name}`, tone: "warning", blocks };
 }
 
 function notificationSettings(release) {

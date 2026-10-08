@@ -421,14 +421,13 @@ export function buildAgentBrief(release, instance, stage, contentItem = null, co
     ...((stage.completeWhen ?? []).length ? [] : ["Completion checks: human decision"]),
     `Safety: ${(stage.sideEffects ?? []).length ? `declared external side effects: ${stage.sideEffects.join(", ")}; ${stage.approval?.before ? `requires ${stage.approval.before} approval` : "no separate human approval gate"}` : "no declared external side effect"}`,
     ...((stage.sideEffects ?? []).length ? [
-      `External-operation gate: before the first paid/public/external call, compute a stable SHA-256 of the exact external request and run \`node ${NIGHTSHIFTCTL_SCRIPT} operations reserve <Card id from Worker protocol> --request-hash <sha256>\`. If the response is reused+succeeded, reuse its result and do not call the provider again; if that result does not pass this stage's checks, block with the stop report rather than paying again. If it is reused+executing with an externalTaskId, resume by reading that external task and never submit a replacement. If it is reused+reserved without an externalTaskId, treat the outcome as ambiguous and block for readback instead of resubmitting. If it is reused+failed, the call under this key already failed: do not submit again (that would be a second charge nobody approved); block with the stop report, and a person can choose 重做这一条, which gives this item a new key. After provider submission run \`operations checkpoint ... --status executing --external-task-id <id>\`; after verified success run \`operations checkpoint ... --status succeeded --result-json '<json>'\`. The ledger is the only external side-effect checkpoint.`,
+      `External-operation gate: before the first paid/public/external call, compute a stable SHA-256 of the exact external request and run \`node ${NIGHTSHIFTCTL_SCRIPT} operations reserve <Card id from Worker protocol> --request-hash <sha256>\`. If the response is reused+succeeded, reuse its result and do not call the provider again; if that result does not pass this stage's checks, block with the stop report rather than paying again, asking a person to look at the result. If it is reused+executing with an externalTaskId, resume by reading that external task and never submit a replacement. If it is reused+reserved without an externalTaskId, treat the outcome as ambiguous and block for readback instead of resubmitting. If it is reused+failed, the call under this key already failed: do not submit again under it; block with the stop report, and Night Shift starts a fresh attempt with a new key. After provider submission run \`operations checkpoint ... --status executing --external-task-id <id>\`; after verified success run \`operations checkpoint ... --status succeeded --result-json '<json>'\`. The ledger is the only external side-effect checkpoint.`,
     ] : []),
     "Workboard completion safety: this attempt owns only this card. When the outputs are written, call workboard_complete exactly once (in an isolated Worker without that tool, `openclaw gateway call workboard.cards.complete` once with the real card id and claim token), or block once for a real blocker. Never probe, test, or enumerate completion RPCs, never use placeholder input such as summary=test, never touch another card, do not search source code or inspect plugin internals, and never print the claim token.",
-    // The person deciding reads these four lines on the 需要你 card. Agents
-    // never see the operator skill that asked for them, so before this line
-    // they wrote long English reports and the card quoted their first
-    // sentence (DL-1008-04 on V, 2026-10-08).
-    "Stop report: if you end without completing this stage (you block the card, or something it needs is missing or failed), begin your final message with these four lines, in Chinese: 问题：<one sentence: what is wrong> 原因：<what actually happened, with the concrete evidence such as the provider's error or the QC finding; not the name of a Night Shift rule> 影响：<whether anything was charged or published, with the external task id, and what this item now lacks> 建议：<the next step for a person: 重新执行 (the same card and the same external operation: it can only resume or reuse it), 重做这一条 (a new attempt with a new paid or external operation), 跳过这一条, or 暂停项目, and why>. Details may follow after a blank line.",
+    // The 需要你 card shows these two lines. Agents never see the operator
+    // skill, so before this line they wrote long English reports and the card
+    // could not say what a person should do (DL-1008-04 on V, 2026-10-08).
+    "Stop report: if you end without completing this stage, begin your final message with two lines in Chinese, written for someone who is not technical: 需要人做：<the one thing only a person can do so this can go on — such as topping up a provider balance, supplying missing footage, fixing an account or proxy, or looking at a result and deciding whether it is usable (give its link) — as an instruction that says where to do it; or 无 when no person is needed, such as a crash, a timeout or a provider error a new attempt may fix: Night Shift then tries again by itself> 原因：<one sentence on what actually happened; not the name of a Night Shift rule>. Details may follow after a blank line.",
     "Return a concise result with evidence links or an explicit blocker. Do not invent missing evidence.",
   ];
   const brief = lines.join("\n");
@@ -439,7 +438,7 @@ export function buildAgentBrief(release, instance, stage, contentItem = null, co
 }
 
 // Why this stage runs again for the item: a person sent its review back with
-// changes (要求修改), or chose 重做这一条 after it stopped.
+// changes (要求修改), or a stopped stage went on as a fresh attempt.
 function redoLine(release, stage, contentItem) {
   const request = contentItem.revisionRequest;
   const note = `Their note, verbatim: «${String(request.note ?? "(no note)").slice(0, 1500)}».`;
@@ -450,7 +449,7 @@ function redoLine(release, stage, contentItem) {
   const ledger = (stage.sideEffects ?? []).length
     ? " This revision has its own external-operation key, so `operations reserve` returns a new operation; a paid or external call made under it is a new one the person accepted to pay for. Do not reuse the previous attempt's provider result."
     : "";
-  return `Redo requested (revision ${contentItem.revision}): ${request.actor} chose 重做这一条 after the previous attempt of this item stopped at ${from.id}. ${note} Do this stage again${stage.id === from.id ? "" : " on the redone result"}: write new outputs and a new stage handoff over the previous ones.${ledger}`;
+  return `Redo requested (revision ${contentItem.revision}): ${request.actor} started a fresh attempt after the previous attempt of this item stopped at ${from.id}. ${note} Do this stage again${stage.id === from.id ? "" : " on the redone result"}: write new outputs and a new stage handoff over the previous ones.${ledger}`;
 }
 
 // What the completion validator derives by itself, so the agent never has to

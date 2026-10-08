@@ -8,6 +8,7 @@ import {
 import { actionKey, buildAgentBrief, nativeActionKey, planNextActions, projectConcurrencyLimit, requiredApproval, resolveApprovalBinding, stageTimeoutSeconds, WORKBOARD_NOTES_LIMIT } from "./orchestrator.mjs";
 import { classifyRunOutcome, classifyTerminalFailure, infrastructureFailureSummary, runEndedNormally, scheduleAutomaticRetry } from "./failure-policy.mjs";
 import { normalizeProjectCollaboration } from "./project.mjs";
+import { cardAttempt, continuation, ledgerOf, readStopReport } from "./needs-you.mjs";
 
 // A blocked card with an empty Session is read as never started only after this
 // long, so a transcript still being written is not mistaken for one.
@@ -218,6 +219,11 @@ export class NightShiftRuntime {
           });
         }
       }
+      // The Agent's report is read once per attempt; later passes rebuild the
+      // failure from its event, so keep the words already read.
+      if (failure && !failure.agentReport && storedRun?.failure?.agentReport) {
+        failure = { ...failure, agentReport: storedRun.failure.agentReport };
+      }
       if (this.needsYou && status === "blocked" && failure && !failure.agentReport && !failure.automaticRetry &&
         stage.actor === "agent" && card.sessionKey && typeof this.workboard.getSession === "function" &&
         this.needsYou.wantsReport({ card, instance }) && !this.reportReads.has(`${card.id}:${terminalAttempt(card)}`) &&
@@ -249,7 +255,12 @@ export class NightShiftRuntime {
         const operation = stage.sideEffects?.length
           ? this.store.listExternalOperations(instanceId).filter((entry) => entry.ownerCardId === card.id).at(-1) ?? null
           : null;
-        this.needsYou.observe({ card, instance, stage, stageId, contentItemId, status, failure, summary, operation });
+        const self = status === "blocked" && failure
+          ? await this.recoverStopByItself({ card, contentItemId, failure, instance, operation, stage, stageId })
+          : null;
+        // Gone on by itself: the retry or the redo already recorded the run.
+        if (self === "recovered") continue;
+        if (self !== "waiting") this.needsYou.observe({ card, instance, stage, stageId, contentItemId, status, failure, summary, operation });
       }
       const run = {
         instanceId,
@@ -610,6 +621,35 @@ export class NightShiftRuntime {
         throw Object.assign(new Error("Only a stop on one content item can be skipped"), { statusCode: 400 });
       }
       return { request: this.store.getDecisionRequest(decisionId), affectedCardIds, alreadyDecided: false, errors: [] };
+    }
+    if (option.effect === "continue") {
+      // One answer, "继续": the engine picks how (see goOn).
+      const targets = applyToGroup
+        ? this.store.listDecisionRequests({ instanceId: request.instanceId, status: "open" })
+          .filter((entry) => entry.groupKey === request.groupKey && (entry.id === request.id || entry.options.some((choice) => choice.effect === "continue")))
+        : [request];
+      const affectedCardIds = [];
+      const errors = [];
+      for (const target of targets) {
+        try {
+          await this.goOn({
+            actor,
+            cardId: target.cardId,
+            contentItemId: target.contentItemId,
+            instanceId: target.instanceId,
+            stageId: target.stageId,
+            note: [`${actor} 的决定：${option.label}`, note].filter(Boolean).join("\n"),
+          });
+          this.store.decideRequest(target.id, { optionId, note, actor });
+          affectedCardIds.push(target.cardId);
+        } catch (error) {
+          errors.push({ decisionId: target.id, cardId: target.cardId, error: error.message });
+        }
+      }
+      if (affectedCardIds.length === 0 && errors.length) {
+        throw Object.assign(new Error(errors[0].error), { statusCode: 409, errors });
+      }
+      return { request: this.store.getDecisionRequest(decisionId), affectedCardIds, alreadyDecided: false, errors };
     }
     if (option.effect === "redo") {
       // One item at a time: each redo is a new paid or external call.
@@ -1331,13 +1371,90 @@ export class NightShiftRuntime {
     return this.startRevision({ actor, contentItemId, instanceId, fromStageId: stageId, stageIds, note: evidence, reason: "review" });
   }
 
-  // 「重做这一条」 on a stop: the stopped stage of one content item, and any
+  // Going on with a stopped card: the same card when its external call can
+  // still move (nothing registered, a result to reuse, a task still running),
+  // a fresh attempt when it cannot (needs-you continuation). Returns how.
+  async goOn({ actor, cardId, contentItemId, instanceId, stageId, note = null, hung = false }) {
+    const instance = this.store.getInstance(instanceId);
+    const release = instance ? this.store.getRelease(instance.workflowSha256)?.manifest : null;
+    const stage = release?.spec?.stages?.find((entry) => entry.id === stageId);
+    const operation = this.store.listExternalOperations(instanceId).filter((entry) => entry.ownerCardId === cardId).at(-1) ?? null;
+    const ledger = ledgerOf(stage, operation);
+    const fresh = contentItemId && (stage?.scope ?? "project") === "content-item" &&
+      (continuation(ledger) === "fresh" || (hung && ledger?.state === "executing"));
+    if (fresh) {
+      const redo = await this.redoStoppedStage({ actor, cardId, contentItemId, instanceId, stageId, note });
+      return { how: "fresh", paid: Boolean(ledger), revision: redo.revision };
+    }
+    await this.retry({ actor, cardId, contentItemId, instanceId, stageId, evidence: note, decisionNote: note });
+    return { how: "same", paid: false };
+  }
+
+  // A stop whose Agent asked nothing of a person is the engine's: a crash, a
+  // timeout, a provider error that a new attempt may fix. On V 42 of 42
+  // decided stops (2026-09-28 to 10-08) were answered with retry or skip and
+  // no word; 13 of them by a monitoring session noting the run had been
+  // interrupted. The engine goes on by itself, at most twice per item and
+  // stage, and pays for at most one fresh attempt (Tianyi, 2026-10-08); after
+  // that, or when the Agent asked for something, a person decides. It waits
+  // two minutes first: a card can read blocked while its Agent still works.
+  // Returns "recovered", "waiting", or null when a person decides.
+  async recoverStopByItself({ card, contentItemId, failure, instance, operation, stage, stageId }) {
+    if (failure.automaticRetry) return null;
+    if (!["agent", "system"].includes(stage.actor)) return null;
+    if (card.labels?.includes("nightshift:approval")) return null;
+    if (this.hasHumanTakeover({ cardId: card.id, contentItemId, instanceId: instance.id, stageId })) return null;
+    // Whether a person is needed is the Agent's to say: wait for its words.
+    if (!failure.agentReport && card.sessionKey && !this.reportReads.has(`${card.id}:${terminalAttempt(card)}`)) return "waiting";
+    if (readStopReport(failure.agentReport).action) return null;
+    // A stop already in front of a person stays theirs.
+    if (this.store.getDecisionRequestForCard(card.id, String(cardAttempt(card)))) return null;
+    if (instance.status !== "active") return null;
+    const now = this.now();
+    const key = `${card.id}:${cardAttempt(card)}`;
+    this.stopsSeen ??= new Map();
+    if (!this.stopsSeen.has(key)) this.stopsSeen.set(key, now);
+    if (now - this.stopsSeen.get(key) < STOP_SETTLE_MS) return "waiting";
+    const earlier = this.store.listEvents(instance.id, 1000).filter((event) => event.type === "stage.stop.recovered" &&
+      event.payload?.stageId === stageId && (event.payload?.contentItemId ?? null) === (contentItemId ?? null));
+    if (earlier.length >= SELF_RECOVERY_LIMIT) return null;
+    const ledger = ledgerOf(stage, operation);
+    // A task resumed once already and stopped again is not going to finish
+    // (tc-dl-0929-08-25: 23 hours "running" with no output).
+    const hung = earlier.some((event) => event.payload?.cardId === card.id && event.payload?.how === "same" && ledger?.state === "executing");
+    const wantsFresh = contentItemId && (continuation(ledger) === "fresh" || hung);
+    if (wantsFresh && ledger && earlier.some((event) => event.payload?.paid)) return null;
+    if (continuation(ledger) === "fresh" && !wantsFresh) return null;
+    const cause = readStopReport(failure.agentReport).cause || failure.rawError || failure.kind || "stopped";
+    try {
+      const done = await this.goOn({
+        actor: "Night Shift",
+        cardId: card.id,
+        contentItemId,
+        instanceId: instance.id,
+        stageId,
+        hung,
+        note: `Night Shift 自动重试：上次停下时没有需要人做的事（${String(cause).slice(0, 300)}）。`,
+      });
+      this.store.appendEvent({
+        instanceId: instance.id,
+        type: "stage.stop.recovered",
+        payload: { cardId: card.id, contentItemId, stageId, how: done.how, paid: done.paid && done.how === "fresh", cause: String(cause).slice(0, 300) },
+      });
+      this.stopsSeen.delete(key);
+      return "recovered";
+    } catch {
+      return null;
+    }
+  }
+
+  // A fresh attempt of a stopped stage: the stage of one content item, and any
   // later stage of the item that already ran on its result, start over under
   // a new revision. The revision is part of the item's ledger key
   // (orchestrator.actionKey), so the new card's paid or external call is a new
   // operation: the old one, reserved, failed or succeeded, is left as it was.
-  // 「重新执行」 cannot do this: the same card keeps the same key, and retrying
-  // wsfood-es-28 on V (2026-10-08) met the same reservation and blocked again.
+  // Retrying the same card cannot do this: it keeps the same key, and
+  // retrying wsfood-es-28 on V (2026-10-08) met the same reservation again.
   async redoStoppedStage({ actor, cardId, contentItemId, instanceId, stageId, note = null }) {
     if (!contentItemId) throw Object.assign(new Error("Only a stop on one content item can be redone"), { statusCode: 400 });
     const instance = this.store.getInstance(instanceId);
@@ -1350,7 +1467,7 @@ export class NightShiftRuntime {
     }
     const card = (await this.workboard.listCards({ cardIds: [cardId] })).find((entry) => entry.id === cardId);
     if (!card || card.status !== "blocked") {
-      throw Object.assign(new Error("重做这一条 needs the stopped card: this one is not blocked"), { statusCode: 409 });
+      throw Object.assign(new Error("A fresh attempt needs the stopped card: this one is not blocked"), { statusCode: 409 });
     }
     if (this.isContentItemSkipped(instanceId, contentItemId)) {
       throw Object.assign(new Error("This item was skipped"), { statusCode: 409 });
@@ -1544,6 +1661,11 @@ export function stagesAfter(stages, stageId, instance) {
       (stage.scope ?? "project") === "content-item" && stageEnabled(stage, instance?.inputs ?? {}))
     .map((stage) => stage.id);
 }
+
+// How long a stopped card waits before the engine goes on by itself, and how
+// often it may for one item's stage.
+const STOP_SETTLE_MS = 2 * 60_000;
+const SELF_RECOVERY_LIMIT = 2;
 
 // Runs killed while the Gateway drained end just before its shutdown broadcast.
 const RESTART_WINDOW_MARGIN_MS = 3 * 60_000;
