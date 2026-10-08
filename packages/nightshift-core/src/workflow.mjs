@@ -132,7 +132,7 @@ export function validateWorkflow(document) {
   }
   validateIdentifier(spec.ownerAgentRole, "spec.ownerAgentRole", issues);
   validateCommandList(spec.requiredCommands, "spec.requiredCommands", issues);
-  validateNotificationContract(spec.notifications, issues);
+  validateNotificationContract(spec.notifications, issues, Array.isArray(spec.stages) ? spec.stages : []);
   const contentRoutes = validateContentItemContract(spec.contentItems, issues);
   validateInputContracts(spec.inputs, issues);
   if (spec.completion !== undefined && (!isObject(spec.completion) || spec.completion.mode !== "strict-v1")) {
@@ -635,7 +635,7 @@ function sha256(value) {
 const NOTIFICATION_EVENTS = new Set(["instanceCompleted", "needsYou"]);
 const FEISHU_NOTIFY_TARGET = /^(oc_[A-Za-z0-9_-]+|user:ou_[A-Za-z0-9_-]+)$/;
 
-function validateNotificationContract(notifications, issues) {
+function validateNotificationContract(notifications, issues, stages = []) {
   if (notifications === undefined) return;
   if (!isObject(notifications)) {
     issues.push(issue("notifications.invalid", "spec.notifications", "notifications must be an object"));
@@ -656,7 +656,24 @@ function validateNotificationContract(notifications, issues) {
     if (value.to !== undefined && (typeof value.to !== "string" || !FEISHU_NOTIFY_TARGET.test(value.to))) {
       issues.push(issue("notifications.to.invalid", `${path}.to`, "to must be a Feishu group (oc_…) or a person (user:ou_…)"));
     }
+    if (value.link !== undefined) validateNotificationLink(value.link, `${path}.link`, stages, issues);
   }
+}
+
+// A link on the card: { label, stage, output } names one output of a project
+// stage whose JSON carries an https `url` (a delivery page). The engine reads
+// it when the card is sent; without it the card links the board.
+function validateNotificationLink(link, path, stages, issues) {
+  const invalid = (where, message) => issues.push(issue("notifications.link.invalid", where, message));
+  if (!isObject(link)) return invalid(path, "link must be { label, stage, output }");
+  if (typeof link.label !== "string" || link.label.trim() === "" || [...link.label].length > 12) {
+    invalid(`${path}.label`, "label must be a short button text (at most 12 characters)");
+  }
+  const stage = stages.find((entry) => entry?.id === link.stage);
+  if (!stage || (stage.scope ?? "project") !== "project") {
+    return invalid(`${path}.stage`, "stage must name a project-scope stage");
+  }
+  if (!stringArray(stage.outputs).includes(link.output)) invalid(`${path}.output`, `output must be one of the outputs of ${stage.id}`);
 }
 
 function issue(code, path, message) {
