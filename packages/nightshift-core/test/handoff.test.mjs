@@ -9,6 +9,7 @@ import {
   loadWorkflow,
   normalizeStageHandoff,
   presentStageHandoff,
+  readProjectStageOutput,
   stageHandoffContract,
   stageHandoffPath,
 } from "../src/index.mjs";
@@ -100,4 +101,30 @@ test("records a human review as the output handed to publication", async () => {
   assert.deepEqual(manifest.outputs.map((entry) => entry.name), ["approvedAssetVersion"]);
   assert.equal(manifest.outputs[0].summary, "Approved after visual review");
   assert.equal(manifest.outputs[0].artifact, "workboard-approval:card-1");
+});
+
+test("a project stage's declared output is read through its handoff, inside the project only", async () => {
+  const { mkdtemp, mkdir, writeFile } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const instanceDir = await mkdtemp(join(tmpdir(), "ns-output-"));
+  await mkdir(join(instanceDir, "handoffs"));
+  await mkdir(join(instanceDir, "deliver-page"));
+  await writeFile(join(instanceDir, "deliver-page", "delivery-page.json"), JSON.stringify({ published: true, url: "https://x/deliver/?m=1" }));
+  const handoff = (artifact) => writeFile(join(instanceDir, "handoffs", "deliver-page.json"), JSON.stringify({
+    version: 1, instanceId: "DL-1", contentItemId: null, stageId: "deliver-page", inputs: [],
+    outputs: [{ name: "deliveryPage", sourceStage: "deliver-page", summary: "s", artifact }],
+  }));
+  const read = (output = "deliveryPage") => readProjectStageOutput({ instanceDir, stageId: "deliver-page", output });
+
+  await handoff("deliver-page/delivery-page.json");
+  assert.deepEqual(await read(), { published: true, url: "https://x/deliver/?m=1" });
+  assert.equal(await read("other"), null, "an output the handoff does not list");
+  await handoff(join(instanceDir, "deliver-page", "delivery-page.json"));
+  assert.equal((await read()).url, "https://x/deliver/?m=1", "an absolute path inside the project");
+  await handoff("../../etc/hosts");
+  assert.equal(await read(), null, "never outside the project");
+  await handoff("deliver-page/missing.json");
+  assert.equal(await read(), null);
+  assert.equal(await readProjectStageOutput({ instanceDir, stageId: "never-ran", output: "x" }), null);
 });

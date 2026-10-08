@@ -1,4 +1,5 @@
-import { dirname, join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 export function stageHandoffContract(release, stageId) {
   const stages = release?.spec?.stages ?? [];
@@ -176,4 +177,21 @@ function clean(value) {
 function requiredContentItemId(value) {
   if (!value) throw new Error("Content item stage handoff requires contentItemId");
   return value;
+}
+
+// The JSON a project stage recorded for one of its outputs: its handoff names
+// the artifact, which must lie inside the project. Null when the stage has not
+// written it, the handoff does not list it, or it cannot be read.
+export async function readProjectStageOutput({ instanceDir, stageId, output }) {
+  try {
+    const handoff = JSON.parse(await readFile(join(instanceDir, "handoffs", `${stageId}.json`), "utf8"));
+    const entry = (handoff?.outputs ?? []).find((candidate) => candidate?.name === output);
+    if (typeof entry?.artifact !== "string" || entry.artifact.length === 0) return null;
+    const path = isAbsolute(entry.artifact) ? resolve(entry.artifact) : resolve(instanceDir, entry.artifact);
+    const inside = relative(resolve(instanceDir), path);
+    if (!inside || inside.startsWith("..") || isAbsolute(inside)) return null;
+    return JSON.parse(await readFile(path, "utf8"));
+  } catch {
+    return null;
+  }
 }
