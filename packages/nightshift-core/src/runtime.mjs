@@ -1410,11 +1410,6 @@ export class NightShiftRuntime {
     // A stop already in front of a person stays theirs.
     if (this.store.getDecisionRequestForCard(card.id, String(cardAttempt(card)))) return null;
     if (instance.status !== "active") return null;
-    const now = this.now();
-    const key = `${card.id}:${cardAttempt(card)}`;
-    this.stopsSeen ??= new Map();
-    if (!this.stopsSeen.has(key)) this.stopsSeen.set(key, now);
-    if (now - this.stopsSeen.get(key) < STOP_SETTLE_MS) return "waiting";
     const earlier = this.store.listEvents(instance.id, 1000).filter((event) => event.type === "stage.stop.recovered" &&
       event.payload?.stageId === stageId && (event.payload?.contentItemId ?? null) === (contentItemId ?? null));
     if (earlier.length >= SELF_RECOVERY_LIMIT) return null;
@@ -1425,6 +1420,12 @@ export class NightShiftRuntime {
     const wantsFresh = contentItemId && (continuation(ledger) === "fresh" || hung);
     if (wantsFresh && ledger && earlier.some((event) => event.payload?.paid)) return null;
     if (continuation(ledger) === "fresh" && !wantsFresh) return null;
+    // Only a stop the engine will act on waits: the person is told at once.
+    const now = this.now();
+    const key = `${card.id}:${cardAttempt(card)}`;
+    this.stopsSeen ??= new Map();
+    if (!this.stopsSeen.has(key)) this.stopsSeen.set(key, now);
+    if (now - this.stopsSeen.get(key) < STOP_SETTLE_MS) return "waiting";
     const cause = readStopReport(failure.agentReport).cause || failure.rawError || failure.kind || "stopped";
     try {
       const done = await this.goOn({

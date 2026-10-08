@@ -2582,6 +2582,25 @@ test("a stop with nothing paid goes on with the same card, at most twice", async
   store.close();
 });
 
+// Shared VLab, 2026-10-09: the third stop was judged at 16:55 and its request
+// opened at 17:00. The two-minute wait guards the engine acting by itself; a
+// stop the engine will not act on has nothing to wait for.
+test("a stop with no recovery left reaches a person on the pass that first sees it", async () => {
+  const id = "NS-STOP-SPENT";
+  const { runtime, store, workboard } = await stoppedRun({
+    id, stageId: "plan", outcome: { status: "completed" },
+    session: { messages: [{ role: "assistant", stopReason: "stop", timestamp: Date.now() - 60_000, content: [{ type: "text", text: "需要人做：无\n原因：模型返回了不完整的工具调用" }] }] },
+  });
+  const card = workboard.cards[0];
+  store.upsertStageRun({ instanceId: id, stageId: "plan", attempt: 1, cardId: card.id, status: "blocked" });
+  for (const how of ["same", "same"]) {
+    store.appendEvent({ instanceId: id, type: "stage.stop.recovered", payload: { cardId: card.id, contentItemId: null, stageId: "plan", how, paid: false } });
+  }
+  await runtime.reconcile(id, null, { inspectSessions: true });
+  assert.equal(store.listDecisionRequests({ instanceId: id, status: "open" }).length, 1);
+  store.close();
+});
+
 test("every Agent brief asks for the stop report; a paid one says what a failed or unusable result means", async () => {
   const id = "NS-STOP-BRIEF";
   const { release, runtime, store } = await stoppedPaidItem(id, "failed", { observe: false });
