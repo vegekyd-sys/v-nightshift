@@ -15,7 +15,7 @@ const fixture = resolve(here, "../../../examples/workflows/xingqing-content-deli
 const GROUP = "oc_88d96b7e42cbdfd33e6d096477a8cac8";
 const PERSON = "user:ou_cb133fd4414f0607e8b46a3195c7b9d8";
 
-async function setup({ notifications = { instanceCompleted: { enabled: true } }, sendResults = [] } = {}) {
+async function setup({ notifications = { instanceCompleted: { enabled: true } }, sendResults = [], readStageOutput } = {}) {
   const store = new NightShiftStore(":memory:");
   const release = compileWorkflow(await loadWorkflow(fixture));
   store.saveRelease(release, "workflow");
@@ -31,7 +31,7 @@ async function setup({ notifications = { instanceCompleted: { enabled: true } },
   };
   let clock = Date.parse("2026-09-25T12:00:00Z");
   const coordinator = new NightShiftNotificationCoordinator({
-    baseUrl: "https://nightshift.example", now: () => new Date(clock += 1_000), sender, store,
+    baseUrl: "https://nightshift.example", now: () => new Date(clock += 1_000), sender, store, readStageOutput,
   });
   const releases = [{ workflowSha256: sha, manifest: { spec: { notifications } } }];
   const create = (id, collaboration) => store.createInstance({ id, name: `项目 ${id}`, workflowSha256: sha, collaboration });
@@ -152,4 +152,41 @@ test("the completion notice names the items a person skipped, and why", async ()
   });
   const text = presentation.blocks.filter((block) => block.type === "text").map((block) => block.text).join("\n");
   assert.match(text, /跳过 1 条（有人决定不交付）\*\*\n· Fumaça atravessando a malha：素材库没有烟雾测试画面/);
+});
+
+// V, 2026-10-08: DL-1008-03 published its delivery page, but the completion card
+// only linked the board, so nobody receiving it could open the delivery.
+const DELIVERY_LINK = { label: "打开交付网页", stage: "deliver-page", output: "deliveryPage" };
+
+async function finish(readStageOutput) {
+  const run = await setup({ notifications: { instanceCompleted: { enabled: true, link: DELIVERY_LINK } }, readStageOutput });
+  run.create("DL-1", { sourceChatId: GROUP });
+  await run.pass();
+  run.store.updateInstanceStatus("DL-1", "done");
+  await run.pass([{ id: "c1", status: "done", labels: ["instance:DL-1"] }]);
+  return run.sent[0];
+}
+
+test("a Workflow can put its delivery link on the completion card", async () => {
+  const reads = [];
+  const card = await finish(async (request) => {
+    reads.push(request);
+    return { published: true, url: "https://nightshift.tianyi.live/deliver/?m=manifest" };
+  });
+  assert.deepEqual(reads, [{ instanceId: "DL-1", stageId: "deliver-page", output: "deliveryPage" }]);
+  const buttons = card.presentation.blocks.at(-1).buttons;
+  assert.deepEqual(buttons.map((button) => [button.label, button.url]), [
+    ["打开交付网页", "https://nightshift.tianyi.live/deliver/?m=manifest"],
+    ["查看项目", "https://nightshift.example/?project=DL-1&view=workflows"],
+  ]);
+  assert.equal(buttons[0].style, "primary");
+  assert.match(card.fallbackText, /deliver\/\?m=manifest/);
+});
+
+test("without a readable https link the completion card keeps the board link", async () => {
+  for (const read of [async () => null, async () => ({ url: "http://example.com/x" }), async () => ({}), async () => { throw new Error("no handoff"); }]) {
+    const card = await finish(read);
+    const buttons = card.presentation.blocks.at(-1).buttons;
+    assert.deepEqual(buttons.map((button) => [button.label, button.url]), [["查看交付", "https://nightshift.example/?project=DL-1&view=workflows"]]);
+  }
 });

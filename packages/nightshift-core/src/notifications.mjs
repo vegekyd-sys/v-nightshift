@@ -19,7 +19,10 @@ const NEEDS_YOU_BATCH_MS = 120_000;
 // Carried over from the 2026-08-25 build (5cb239f), which reached V from a side
 // branch, never reached dev, and was replaced by the next release built from dev.
 export class NightShiftNotificationCoordinator {
-  constructor({ baseUrl, now = () => new Date(), sender, store, needsYouBatchMs = NEEDS_YOU_BATCH_MS }) {
+  // readStageOutput({ instanceId, stageId, output }) returns the parsed JSON a
+  // project stage declared for that output, or null. It lets a Workflow put
+  // one of its own outputs (a delivery page) on the completion card.
+  constructor({ baseUrl, now = () => new Date(), sender, store, needsYouBatchMs = NEEDS_YOU_BATCH_MS, readStageOutput = null }) {
     if (!baseUrl) throw new Error("Night Shift public base URL is required for notifications");
     if (!sender) throw new Error("Night Shift notification sender is required");
     if (!store) throw new Error("Night Shift store is required for notifications");
@@ -28,6 +31,7 @@ export class NightShiftNotificationCoordinator {
     this.sender = sender;
     this.store = store;
     this.needsYouBatchMs = needsYouBatchMs;
+    this.readStageOutput = readStageOutput;
   }
 
   async reconcile({ cards, instances, releases }) {
@@ -53,6 +57,7 @@ export class NightShiftNotificationCoordinator {
         cards: projectCards,
         generation: transition.generation,
         instance,
+        link: await this.completionLink(instance, settings.instanceCompleted.link),
         target: completionTarget(instance, settings),
       }));
     }
@@ -123,7 +128,20 @@ export class NightShiftNotificationCoordinator {
     return queued;
   }
 
-  enqueueCompletion({ cards, generation, instance, target }) {
+  // The link a Workflow declared for its completion card, when its stage wrote
+  // one: an https URL in the output's `url`. Anything else keeps the board link.
+  async completionLink(instance, link) {
+    if (!link || !this.readStageOutput) return null;
+    try {
+      const output = await this.readStageOutput({ instanceId: instance.id, stageId: link.stage, output: link.output });
+      const url = new URL(String(output?.url ?? ""));
+      return url.protocol === "https:" ? { label: link.label, url: url.toString() } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  enqueueCompletion({ cards, generation, instance, link = null, target }) {
     const projectUrl = dashboardUrl(this.baseUrl, { project: instance.id, view: "workflows" });
     const skipped = this.store.listSkippedContentItems?.(instance.id) ?? [];
     const titles = new Map((this.store.listContentItems?.(instance.id) ?? []).map((item) => [item.id, item.title]));
@@ -132,12 +150,13 @@ export class NightShiftNotificationCoordinator {
     const counted = cards.filter((card) => !skippedIds.has(contentItemLabel(card)));
     return this.store.enqueueNotification({
       allowedOpenIds: [instance.collaboration?.createdByOpenId].filter(Boolean),
-      fallbackText: `项目已完成：${instance.name}\n${projectUrl}`,
+      fallbackText: `项目已完成：${instance.name}\n${link ? `${link.label}：${link.url}\n` : ""}${projectUrl}`,
       instanceId: instance.id,
       kind: "instance-completed",
       notificationKey: `complete:${instance.id}:${generation}`,
       presentation: completionPresentation({
         instance,
+        link,
         projectUrl,
         summary: summarizeCards(counted),
         skipped: skipped.map((entry) => ({ id: entry.contentItemId, title: titles.get(entry.contentItemId) ?? entry.contentItemId, reason: entry.reason })),
@@ -296,7 +315,7 @@ export class OpenClawFeishuNotificationSender {
   }
 }
 
-export function completionPresentation({ instance, projectUrl, summary, skipped = [] }) {
+export function completionPresentation({ instance, link = null, projectUrl, summary, skipped = [] }) {
   const skippedLines = skipped.map((entry) => `· ${entry.title}${entry.reason ? `：${truncateText(entry.reason, 120)}` : ""}`);
   return {
     title: `项目已完成 · ${instance.name}`,
@@ -305,7 +324,9 @@ export function completionPresentation({ instance, projectUrl, summary, skipped 
       { type: "text", text: `**全部流程已经结束**\n完成 ${summary.done} 项，阻塞 ${summary.blocked} 项。` },
       ...(skipped.length ? [{ type: "text", text: `**跳过 ${skipped.length} 条（有人决定不交付）**\n${skippedLines.join("\n")}` }] : []),
       { type: "context", text: `Night Shift 项目 · ${instance.id}` },
-      { type: "buttons", buttons: [{ label: "查看交付", style: "primary", url: projectUrl }] },
+      { type: "buttons", buttons: link
+        ? [{ label: link.label, style: "primary", url: link.url }, { label: "查看项目", url: projectUrl }]
+        : [{ label: "查看交付", style: "primary", url: projectUrl }] },
     ],
   };
 }

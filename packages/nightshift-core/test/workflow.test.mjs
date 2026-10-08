@@ -654,3 +654,18 @@ test("a project's own limit wins over the Workflow's, within 1 to the maximum", 
   assert.equal(projectConcurrencyLimit(release, { perInstanceLimit: 0 }), 2);
   assert.equal(projectConcurrencyLimit({ spec: {} }), 1);
 });
+
+test("a completion link names a project stage and one of its declared outputs", async () => {
+  const issues = async (link) => {
+    const workflow = await loadWorkflow(fixture);
+    workflow.spec.notifications = { instanceCompleted: { enabled: true, link } };
+    return validateWorkflow(workflow).filter((entry) => entry.code === "notifications.link.invalid").map((entry) => entry.path);
+  };
+  assert.deepEqual(await issues({ label: "打开交付", stage: "plan", output: "planUrl" }), []);
+  assert.deepEqual(await issues({ label: "打开交付", stage: "nope", output: "planUrl" }), ["spec.notifications.instanceCompleted.link.stage"]);
+  assert.deepEqual(await issues({ label: "打开交付", stage: "plan", output: "nope" }), ["spec.notifications.instanceCompleted.link.output"]);
+  // A content-item stage writes one output per item; one card has one link.
+  assert.deepEqual(await issues({ label: "打开交付", stage: "brief", output: "finishedVideoBrief" }), ["spec.notifications.instanceCompleted.link.stage"]);
+  assert.deepEqual(await issues({ stage: "plan", output: "planUrl" }), ["spec.notifications.instanceCompleted.link.label"]);
+  assert.deepEqual(await issues("plan"), ["spec.notifications.instanceCompleted.link"]);
+});

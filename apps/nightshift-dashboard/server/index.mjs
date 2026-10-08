@@ -30,6 +30,7 @@ import {
   findNightShiftExternalOperation,
   humanStageHandoff,
   NightShiftNotificationCoordinator,
+  readProjectStageOutput,
   NightShiftRuntime,
   NightShiftStore,
   OpenClawFeishuNotificationSender,
@@ -164,6 +165,9 @@ const notificationCoordinator = notificationsEnabled
       baseUrl: publicBaseUrl || `http://${host}:${port}`,
       sender: new OpenClawFeishuNotificationSender(),
       store,
+      // A Workflow may put one of its outputs (a delivery page) on the card.
+      readStageOutput: ({ instanceId, stageId, output }) =>
+        readProjectStageOutput({ instanceDir: resolve(dataDir, "instances", instanceId), stageId, output }),
     })
   : null;
 const schedulerCircuit = new SchedulerCircuit({ cooldownMs: schedulerFailureCooldownMs, startWithProbe: true });

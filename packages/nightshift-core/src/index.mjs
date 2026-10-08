@@ -43,6 +43,7 @@ export {
   humanStageHandoff,
   normalizeStageHandoff,
   presentStageHandoff,
+  readProjectStageOutput,
   stageHandoffContract,
   stageHandoffPath,
 } from "./handoff.mjs";

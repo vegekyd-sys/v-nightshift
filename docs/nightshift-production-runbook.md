@@ -257,6 +257,17 @@ A project is announced only if its Workflow declares `spec.notifications.instanc
 
 Set or change a running project's target with `nightshiftctl projects collaboration <id> --to <oc_…|user:ou_…> [--by <ou_…>]`.
 
+The card links the project on the board. A Workflow whose project ends in something a person opens (a delivery page) can put that on the card instead, by naming the output that holds it:
+
+```yaml
+notifications:
+  instanceCompleted:
+    enabled: true
+    link: {label: 打开交付网页, stage: deliver-page, output: deliveryPage}
+```
+
+`stage` must be a project-scope stage and `output` one of its declared outputs. When the card is sent, Night Shift reads that stage's handoff, opens the artifact it names for the output (inside the project directory only) and takes its `url`. An https `url` becomes the card's primary button, with 查看项目 beside it; anything else (the stage was skipped, the file is missing, the URL is not https) leaves the card as it was. Added 2026-10-08, after DL-1008-03 published its delivery page and the card linked only the board.
+
 Each transition to `done` is sent once. A failed send is retried on later passes, up to five attempts. Failures appear as `notifications.lastError` in `/api/health` and never as a scheduler error. The first pass after an upgrade records every project's current state and sends nothing, so projects finished before the upgrade are not announced.
 
 This feature first shipped on 2026-08-25 from a side branch (`5cb239f`), never reached dev, and was replaced by the next release built from dev. Review cards (approve/reject from Feishu) from that build are not carried over.
