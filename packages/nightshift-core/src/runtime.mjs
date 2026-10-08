@@ -1404,11 +1404,13 @@ export class NightShiftRuntime {
     if (!["agent", "system"].includes(stage.actor)) return null;
     if (card.labels?.includes("nightshift:approval")) return null;
     if (this.hasHumanTakeover({ cardId: card.id, contentItemId, instanceId: instance.id, stageId })) return null;
+    // A stop already in front of a person stays theirs. First: which reports
+    // were read is kept only in memory, so after a restart such a stop would
+    // otherwise wait for a report it never reads again (V, 2026-10-09).
+    if (this.store.getDecisionRequestForCard(card.id, String(cardAttempt(card)))) return null;
     // Whether a person is needed is the Agent's to say: wait for its words.
     if (!failure.agentReport && card.sessionKey && !this.reportReads.has(`${card.id}:${terminalAttempt(card)}`)) return "waiting";
     if (readStopReport(failure.agentReport).action) return null;
-    // A stop already in front of a person stays theirs.
-    if (this.store.getDecisionRequestForCard(card.id, String(cardAttempt(card)))) return null;
     if (instance.status !== "active") return null;
     const earlier = this.store.listEvents(instance.id, 1000).filter((event) => event.type === "stage.stop.recovered" &&
       event.payload?.stageId === stageId && (event.payload?.contentItemId ?? null) === (contentItemId ?? null));
