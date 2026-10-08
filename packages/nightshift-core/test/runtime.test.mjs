@@ -10,6 +10,8 @@ import {
 } from "../src/index.mjs";
 import { instanceCardIds } from "../src/scheduler-pass.mjs";
 import { stagesToRedo } from "../src/runtime.mjs";
+import { buildAgentBrief } from "../src/orchestrator.mjs";
+import { resolveNightShiftOperationKeys } from "../src/card-context.mjs";
 import { gatewayIdempotencyLabel } from "../src/workboard-gateway-adapter.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -2406,5 +2408,108 @@ test("a redo card that stops reaches a person like any card: it is the newest at
   await runtime.reconcile(id, null, { inspectSessions: false });
   const open = store.listDecisionRequests({ instanceId: id }).filter((entry) => entry.status === "open");
   assert.deepEqual(open.map((entry) => entry.cardId), [fresh.id]);
+  store.close();
+});
+
+// 重做这一条 (2026-10-08, DL-1008-04): a paid stop that retrying cannot move.
+// The ledger key carries the item's revision, so the same card retried meets
+// the same reserved, failed or succeeded operation every time.
+async function stoppedPaidItem(id, operationStatus) {
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  let clock = Date.now();
+  const needsYou = new NeedsYouTracker({ store, now: () => clock });
+  const runtime = new NightShiftRuntime({ store, workboard, needsYou, now: () => clock });
+  const release = runtime.publish(await readFile(workflowPath, "utf8"));
+  runtime.startInstance({ id, workflowSha256: release.workflowSha256, agentBindings: { "content-operator": "main" }, inputs: { authorizationScope: { paidProduction: true } } });
+  runtime.setContentItems(id, [{ id: "video-1", title: "Video", route: "AI_GENERATE" }]);
+  store.upsertStageRun({ instanceId: id, stageId: "plan", attempt: 1, cardId: "card-plan", status: "done" });
+  workboard.cards.push({ id: "card-plan", status: "done", labels: [`instance:${id}`, "stage:plan"] });
+  for (const stageId of ["route", "materials", "brief"]) {
+    store.upsertContentItemRun({ instanceId: id, contentItemId: "video-1", stageId, attempt: 1, cardId: `card-${stageId}`, status: "done" });
+    workboard.cards.push({ id: `card-${stageId}`, status: "done", labels: [`instance:${id}`, `stage:${stageId}`, "content-item:video-1"] });
+  }
+  const failure = { kind: "contract_error", retryable: false, automaticRetry: false, rawError: "External side effect has no succeeded Night Shift operation checkpoint", agentReport: "问题：生成失败\n原因：480p generation failed\n影响：没有成片\n建议：重做" };
+  store.upsertContentItemRun({ instanceId: id, contentItemId: "video-1", stageId: "produce", attempt: 1, cardId: "card-produce-old", status: "blocked", failure });
+  workboard.cards.push({ id: "card-produce-old", status: "blocked", runId: "run-old", updatedAt: clock, labels: [`instance:${id}`, "stage:produce", "content-item:video-1"] });
+  const oldKey = `${release.workflowSha256}:run:old`;
+  store.reserveExternalOperation({ idempotencyKey: oldKey, instanceId: id, contentItemId: "video-1", stageId: "produce", ownerCardId: "card-produce-old", requestHash: "a".repeat(64) });
+  if (operationStatus !== "reserved") store.checkpointExternalOperation(oldKey, { status: operationStatus, externalTaskId: "task-1", result: { reason: "480p generation failed" } });
+  const stage = release.manifest.spec.stages.find((entry) => entry.id === "produce");
+  const request = needsYou.observe({
+    card: workboard.cards.at(-1), instance: store.getInstance(id), stage, stageId: "produce", contentItemId: "video-1", status: "blocked", failure,
+    operation: store.getExternalOperation(oldKey),
+  });
+  return { release, request, runtime, store, workboard, oldKey, advance: (ms) => { clock += ms; } };
+}
+
+test("重做这一条 starts a stopped paid stage over under a new revision, so its paid call is a new operation", async () => {
+  const id = "NS-STOP-REDO";
+  const { release, request, runtime, store, workboard, oldKey, advance } = await stoppedPaidItem(id, "failed");
+  assert.deepEqual(request.options.map((option) => option.id), ["redo", "skip", "pause"]);
+  const decided = await runtime.decide({ decisionId: request.id, optionId: "redo", note: "换一个模型试试", actor: "local:Tianyi" });
+  assert.equal(decided.request.status, "decided");
+  assert.deepEqual(decided.redo, { redone: true, revision: 1, stageIds: ["produce"] });
+
+  await runtime.tick(id, { dispatch: false });
+  const produce = workboard.cards.filter((card) => (card.labels ?? []).includes("stage:produce"));
+  assert.equal(produce.length, 2, "a new card; the stopped one is left as it was");
+  const fresh = produce.find((card) => card.id !== "card-produce-old");
+  assert.equal(fresh.status, "ready");
+  assert.match(fresh.notes, /Redo requested \(revision 1\): local:Tianyi chose 重做这一条 after the previous attempt of this item stopped/);
+  assert.match(fresh.notes, /«换一个模型试试»/);
+  assert.doesNotMatch(fresh.notes, /reviewed the previous result/);
+
+  // The new card's ledger key carries the revision: reserving it is a fresh operation.
+  const contentItem = runtime.contentItemsWithRevisions(id).find((entry) => entry.id === "video-1");
+  const keys = resolveNightShiftOperationKeys({ card: fresh, release: release.manifest, instance: store.getInstance(id), contentItem });
+  assert.match(keys.logicalIdempotencyKey, /:revision-1$/);
+  const reserved = store.reserveExternalOperation({ idempotencyKey: keys.preferredIdempotencyKey, instanceId: id, contentItemId: "video-1", stageId: "produce", ownerCardId: fresh.id, requestHash: "a".repeat(64) });
+  assert.equal(reserved.reused, false);
+  assert.equal(store.getExternalOperation(oldKey).status, "failed", "the old operation is left as it was");
+
+  // The old stopped card is nobody's matter any more.
+  advance(2 * 60 * 60_000);
+  await runtime.reconcile(id, null, { inspectSessions: false });
+  assert.equal(store.listDecisionRequests({ instanceId: id, status: "open" }).length, 0);
+  assert.ok(store.listEvents(id).some((event) => event.type === "content-item.redo.requested" && event.payload.reason === "stop"));
+  store.close();
+});
+
+test("a succeeded paid operation stays immutable when the item is redone", async () => {
+  const id = "NS-STOP-REDO-OK";
+  const { request, runtime, store, oldKey } = await stoppedPaidItem(id, "succeeded");
+  assert.deepEqual(request.options.map((option) => option.id), ["retry", "redo", "skip", "pause"]);
+  await runtime.decide({ decisionId: request.id, optionId: "redo", actor: "local:Tianyi" });
+  assert.equal(store.getExternalOperation(oldKey).status, "succeeded");
+  assert.throws(() => store.checkpointExternalOperation(oldKey, { status: "failed" }), /immutable/);
+  store.close();
+});
+
+test("重做这一条 is refused where it does not apply, and twice in a row does not stack", async () => {
+  const id = "NS-STOP-REDO-TWICE";
+  const { request, runtime, store, workboard } = await stoppedPaidItem(id, "reserved");
+  await runtime.decide({ decisionId: request.id, optionId: "redo", actor: "a" });
+  assert.equal(store.listContentItemRevisions(id).length, 1);
+  await assert.rejects(runtime.redoStoppedStage({ actor: "a", cardId: "card-produce-old", contentItemId: "video-1", instanceId: id, stageId: "produce" }), /already being redone/);
+  workboard.cards.find((card) => card.id === "card-brief").status = "done";
+  await assert.rejects(runtime.redoStoppedStage({ actor: "a", cardId: "card-brief", contentItemId: "video-1", instanceId: id, stageId: "brief" }), /stopped card/);
+  await assert.rejects(runtime.redoStoppedStage({ actor: "a", cardId: "card-plan", contentItemId: null, instanceId: id, stageId: "plan" }), /content item/);
+  store.close();
+});
+
+test("every Agent brief asks for the four-line stop report; a paid one says what each ledger answer means", async () => {
+  const id = "NS-STOP-BRIEF";
+  const { release, runtime, store } = await stoppedPaidItem(id, "failed");
+  const stages = release.manifest.spec.stages;
+  const item = runtime.contentItemsWithRevisions(id)[0];
+  const brief = buildAgentBrief(release.manifest, store.getInstance(id), stages.find((stage) => stage.id === "brief"), item);
+  assert.match(brief, /begin your final message with these four lines, in Chinese: 问题：.*原因：.*影响：.*建议：/);
+  assert.match(brief, /not the name of a Night Shift rule/);
+  assert.doesNotMatch(brief, /reused\+failed/, "a stage without side effects has no ledger rules");
+  const paid = buildAgentBrief(release.manifest, store.getInstance(id), stages.find((stage) => stage.id === "produce"), item);
+  assert.match(paid, /If it is reused\+failed, .*do not submit again/);
+  assert.match(paid, /重做这一条/);
+  assert.match(paid, /reused\+succeeded.*does not pass this stage's checks, block/);
   store.close();
 });

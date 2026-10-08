@@ -9,7 +9,7 @@ const DAY_MS = 86_400_000;
 const BASELINE_KEY = "needs-you-v1.baseline";
 // Bumped whenever the words a request shows are produced differently, so open
 // requests are rewritten under the current rules instead of keeping old text.
-export const DESCRIBE_VERSION = 2;
+export const DESCRIBE_VERSION = 3;
 const OPERATION_UNDER_WAY = new Set(["reserved", "executing"]);
 const MOVED_ON = new Set(["ready", "running", "done", "review", "scheduled", "todo", "backlog"]);
 
@@ -28,8 +28,21 @@ export const STOP_OPTIONS = Object.freeze([
   Object.freeze({ id: "pause", label: "暂停项目", effect: "pause", description: "暂停整个项目：不再派任何新任务，问题解决后再恢复" }),
 ]);
 
-export function stopOptionsFor(scope) {
-  return scope === "item" ? Object.freeze([STOP_OPTIONS[0], SKIP_OPTION, STOP_OPTIONS[1]]) : STOP_OPTIONS;
+// The choices a stop offers follow what the paid-operation ledger says. The
+// ledger key of a card's external call carries the item's revision, not the
+// attempt, so 「重新执行」 meets the same operation again: a reservation never
+// submitted blocks again, a failed call stays failed, a succeeded one is
+// reused (DL-1008-04 on V, 2026-10-08: 「重新执行」 on wsfood-es-28 looped).
+// 「重做这一条」 gives the item a new revision, hence a new operation.
+export function stopOptionsFor(scope, { stage = null, operation = null } = {}) {
+  const ledger = ledgerOf(stage, operation);
+  const retry = { ...STOP_OPTIONS[0], ...(ledger ? { description: retryDescription(ledger) } : {}) };
+  const options = [];
+  if (!ledger || !NO_NEW_ATTEMPT.has(ledger.state) || scope !== "item") options.push(Object.freeze(retry));
+  if (scope === "item" && canRedo(ledger)) options.push(Object.freeze({ id: "redo", label: "重做这一条", effect: "redo", description: `从这一步重新做：${ledger.words.again}；附言会带给 agent（比如这次要怎么改）` }));
+  if (scope === "item") options.push(SKIP_OPTION);
+  options.push(STOP_OPTIONS[1]);
+  return Object.freeze(options);
 }
 
 // Requests opened before skip existed still offer it when they concern one item.
@@ -97,11 +110,13 @@ export class NeedsYouTracker {
       // the report arrives, so the person reads the Agent's words.
       const staleWords = existing.evidence?.describeVersion !== DESCRIBE_VERSION;
       const newReport = failure?.agentReport && !existing.evidence?.failure?.agentReport;
-      if (existing.status === "open" && existing.source === "engine" && failure && (staleWords || newReport)) {
-        const text = describeStop({ failure, summary });
+      const ledgerMoved = (existing.evidence?.operation?.status ?? null) !== (operation?.status ?? null);
+      if (existing.status === "open" && existing.source === "engine" && failure && (staleWords || newReport || ledgerMoved)) {
+        const text = describeStop({ failure, summary, operation, stage });
         return this.store.updateDecisionRequestText(existing.id, {
           ...text,
-          evidence: { ...existing.evidence, failure, describeVersion: DESCRIBE_VERSION },
+          options: stopOptionsFor(existing.scope, { stage, operation }),
+          evidence: { ...existing.evidence, failure, operation: operationEvidence(operation), describeVersion: DESCRIBE_VERSION },
         }, new Date(now));
       }
       return existing;
@@ -122,7 +137,8 @@ export class NeedsYouTracker {
       }
     }
     this.pending.delete(card.id);
-    const { problem, cause, impact, suggestion, detail } = describeStop({ failure, summary });
+    const { problem, cause, impact, suggestion, detail } = describeStop({ failure, summary, operation, stage });
+    const scope = stage?.scope === "content-item" ? "item" : "project";
     const request = this.store.openDecisionRequest({
       instanceId: instance.id,
       cardId: card.id,
@@ -138,11 +154,11 @@ export class NeedsYouTracker {
       evidence: {
         failure,
         summary,
-        operation: operation ? { status: operation.status, externalTaskId: operation.externalTaskId ?? null } : null,
+        operation: operationEvidence(operation),
         describeVersion: DESCRIBE_VERSION,
       },
-      scope: stage?.scope === "content-item" ? "item" : "project",
-      options: stopOptionsFor(stage?.scope === "content-item" ? "item" : "project"),
+      scope,
+      options: stopOptionsFor(scope, { stage, operation }),
       groupKey: groupKey({ instanceId: instance.id, stageId, failure, problem }),
     }, new Date(now));
     if (beforeBaseline && !request.reused) this.store.markDecisionRequestsAnnounced([request.id], new Date(now));
@@ -234,63 +250,201 @@ export function eligibleProject(instance, now = Date.now(), shelveAfterMs = 3 * 
 // Agent's own words beat the engine's classification: on DL-0928-07 the
 // recorded failure said "External side effect has no succeeded checkpoint"
 // while the Agent had written exactly why Makaron could not fetch the footage.
-// An Agent that stops writes its report under the labels 问题 / 原因 / 影响 /
-// 建议 (the operator skill asks for it); unlabeled reports fall back to their
-// sentences, and a missing suggestion to one that fits the kind of stop.
-export function describeStop({ failure = null, summary = null }) {
-  if (failure?.agentReport) {
-    const report = String(failure.agentReport);
-    const sections = labeledSections(report);
-    const sentences = splitSentences(report);
-    // An unlabeled closing message is not a stop report: on V an Agent that had
-    // published wrote "Card completed — ✅ PUBLISHED" while the engine refused
-    // its artifact path. What the engine saw leads; the Agent's claim follows.
-    if (!sections.problem && failure.kind === "contract_error") {
-      const explained = explainContractError(failure.rawError || summary || "");
-      const claim = truncate(sections.cause || firstSentence(report), 220);
-      return {
-        problem: explained.problem,
-        cause: `agent 的说法：${claim}`,
-        impact: truncate(sections.impact || "", 300),
-        suggestion: truncate(sections.suggestion || sentences.find((sentence) => /建议|需要人工|请人工|应当|下一步/.test(sentence)) || explained.suggestion, 300),
-        detail: report,
-      };
-    }
-    const problem = truncate(sections.problem || firstSentence(report), 200);
-    const cause = truncate(sections.cause || sentences.find((sentence) => /原因|因为|由于|失败点|根因|导致/.test(sentence)) || "", 300);
-    return {
-      problem,
-      cause: sameText(cause, problem) ? "" : cause,
-      impact: truncate(sections.impact || "", 300),
-      suggestion: truncate(sections.suggestion || sentences.find((sentence) => /建议|需要人工|请人工|应当|下一步/.test(sentence)) || defaultSuggestion(failure), 300),
-      detail: report,
-    };
+// Every Agent brief asks a stopping Agent to open its final message with the
+// lines 问题 / 原因 / 影响 / 建议 (buildAgentBrief); reports without them fall
+// back to their sentences, and to what the engine knows.
+//
+// For a stage with external side effects the engine knows more than any
+// report: whether the call was registered, submitted (its external task id),
+// failed or succeeded, and so whether 「重新执行」 can make a new attempt at
+// all. Those facts lead what happened and the impact, and a suggestion that
+// would loop is corrected before the Agent's own is shown.
+export function describeStop({ failure = null, summary = null, operation = null, stage = null } = {}) {
+  const ledger = ledgerOf(stage, operation);
+  const scope = stage?.scope === "content-item" ? "item" : "project";
+  const report = failure?.agentReport ? String(failure.agentReport) : "";
+  const sections = report ? labeledSections(report) : {};
+  const sentences = report ? splitSentences(report) : [];
+  const agentCause = sections.cause || sentences.find((sentence) => CAUSE_WORDS.test(sentence)) || "";
+  const agentSuggestion = sections.suggestion || sentences.find((sentence) => SUGGESTION_WORDS.test(sentence)) || "";
+  const raw = failure?.rawError || summary || failure?.message || "";
+  const contract = !failure?.kind || failure.kind === "contract_error";
+  // The engine's check that refused the card. A missing handoff, artifact or
+  // ledger success is what any Agent that stops leaves behind, so it says
+  // nothing about why it stopped (wsfood-es-22 blocked on its QC and the card
+  // read "没有写好交接记录"); a path or a completion rule it broke does.
+  const check = failure && contract && raw ? explainContractError(raw) : null;
+  const refusedBy = check && !STOP_LEFTOVER.test(raw) ? check.problem : null;
+  const facts = ledger ? ledgerFacts(ledger, { scope, sideEffectRule: SIDE_EFFECT_RULE.test(raw), refusedBy }) : null;
+
+  // What happened: the Agent's 问题, else what the ledger shows, else (for an
+  // Agent that stopped on its own) its first sentence, else the engine's check.
+  let problem;
+  let engineLed = true;
+  let explained = null;
+  if (sections.problem) {
+    problem = sections.problem;
+    engineLed = false;
+  } else if (facts?.problem) {
+    problem = facts.problem;
+  } else if (report && !contract) {
+    problem = firstSentence(report);
+    engineLed = false;
+  } else if (failure && !contract) {
+    problem = firstSentence(infrastructureFailureSummary(failure));
+  } else if (failure) {
+    // An unlabeled closing message is not a stop report: on V an Agent that
+    // had published wrote "Card completed — ✅ PUBLISHED" while the engine
+    // refused its artifact path. What the engine saw leads; the Agent's claim follows.
+    explained = explainContractError(raw);
+    problem = explained.problem;
+  } else {
+    const text = String(summary ?? "").trim();
+    problem = text ? firstSentence(text) : "Agent 停下了，没有给出原因";
   }
-  if (failure) {
-    if (failure.kind && failure.kind !== "contract_error") {
-      return {
-        problem: firstSentence(infrastructureFailureSummary(failure)),
-        cause: "",
-        impact: "",
-        suggestion: defaultSuggestion(failure),
-        detail: [summary, failure.rawError].filter(Boolean).join("\n\n"),
-      };
-    }
-    const explained = explainContractError(failure.rawError || summary || failure.message || "");
-    return {
-      ...explained,
-      impact: "",
-      detail: [summary, failure.rawError].filter(Boolean).join("\n\n"),
-    };
+  problem = truncate(problem, 200);
+
+  // Why: the Agent's 原因, else the sentence of its report that says what
+  // failed, else its first sentence; marked as the Agent's when the engine's
+  // words lead.
+  let cause = agentCause || (engineLed && report ? firstSentence(report) : "");
+  if (!cause && explained) cause = explained.cause;
+  else if (cause && engineLed && !sections.problem) cause = `agent 的说法：${cause}`;
+  cause = truncate(cause, 300);
+  if (sameText(cause, problem)) cause = "";
+
+  const impact = truncate([facts?.impact, sections.impact].filter(Boolean).join(" "), 400);
+
+  let suggestion;
+  if (facts?.correctsRetry) {
+    suggestion = `${facts.suggestion}${agentSuggestion ? ` agent 的建议：${truncate(agentSuggestion, 160)}` : ""}`;
+  } else {
+    suggestion = agentSuggestion || facts?.suggestion || explained?.suggestion || defaultSuggestion(failure);
   }
-  const text = String(summary ?? "").trim();
+
   return {
-    problem: text ? firstSentence(text) : "Agent 停下了，没有给出原因",
-    cause: "",
-    impact: "",
-    suggestion: defaultSuggestion(null),
-    detail: text,
+    problem,
+    cause,
+    impact,
+    suggestion: truncate(suggestion, 480),
+    detail: report || [summary, failure?.rawError].filter(Boolean).join("\n\n") || String(summary ?? "").trim(),
   };
+}
+
+const CAUSE_WORDS = /原因|因为|由于|失败|根因|导致|被拒|不可用|超时|failed|because|rejected|refused|\berror\b/i;
+const SUGGESTION_WORDS = /建议|需要人工|请人工|应当|下一步/;
+const SIDE_EFFECT_RULE = /external side effect has no succeeded|operation checkpoint|ledger/i;
+const STOP_LEFTOVER = /external side effect has no succeeded|operation checkpoint|ledger|handoff|artifact not found|declared output .* is missing|is not a file/i;
+// Ledger states in which 「重新执行」 cannot start a new external call.
+const NO_NEW_ATTEMPT = new Set(["unsubmitted", "unknown", "failed"]);
+
+// The ledger's answer for this card's external call, in the words of the
+// stage's side effect. Null when the stage has none.
+function ledgerOf(stage, operation) {
+  const effects = Array.isArray(stage?.sideEffects) ? stage.sideEffects : [];
+  if (effects.length === 0) return null;
+  const words = effects.includes("paid-production")
+    ? { noun: "付费生成", verb: "生成", again: "新开一次生成，会再付一次钱", spent: "钱已经花了" }
+    : effects.includes("external-publication")
+      ? { noun: "发布", verb: "发布", again: "重新提交一次发布", spent: "已经发布出去了" }
+      : { noun: "外部操作", verb: "执行外部操作", again: "新开一次外部操作，上一次的不再沿用", spent: "外部操作已经生效" };
+  const paidOnly = effects.every((effect) => effect === "paid-production");
+  if (!operation) return { state: "none", words, paidOnly };
+  const taskId = operation.externalTaskId ?? null;
+  const reason = resultReason(operation.result);
+  if (operation.status === "succeeded") return { state: "succeeded", taskId, words, paidOnly };
+  if (operation.status === "failed") return { state: "failed", taskId, reason, words, paidOnly };
+  if (operation.status === "executing" && taskId) return { state: "executing", taskId, words, paidOnly };
+  if (operation.status === "unknown") return { state: "unknown", taskId, words, paidOnly };
+  return { state: "unsubmitted", taskId: null, words, paidOnly };
+}
+
+// A new revision makes a new external call. After a success that is only
+// wanted for paid generation (a result that did not pass its checks); a
+// second publication of a published post is never what a person meant.
+function canRedo(ledger) {
+  if (!ledger) return false;
+  if (NO_NEW_ATTEMPT.has(ledger.state)) return true;
+  return ledger.state === "succeeded" && ledger.paidOnly;
+}
+
+function retryDescription(ledger) {
+  const { noun, verb } = ledger.words;
+  switch (ledger.state) {
+    case "none": return `按原任务再跑一次：还没有提交过${noun}，不会重复扣费；可以附一句话给 agent（比如「已修好代理」）`;
+    case "executing": return `接着查外部任务 ${ledger.taskId} 的结果：不重新提交，也不会再扣费`;
+    case "succeeded": return `沿用已经成功的结果（外部任务 ${ledger.taskId}），不会再${verb}、不会再扣费，只让 agent 补齐交付`;
+    default: return `按原任务再跑一次：同一个登记不会重新提交${noun}`;
+  }
+}
+
+function ledgerFacts(ledger, { scope, sideEffectRule, refusedBy = null }) {
+  const { noun, verb, again, spent } = ledger.words;
+  const task = ledger.taskId ? `外部任务 ${ledger.taskId}` : "";
+  const redo = scope === "item" && canRedo(ledger);
+  const skip = scope === "item" ? "；这一条不做了就「跳过这一条」" : "";
+  switch (ledger.state) {
+    case "none":
+      return {
+        problem: sideEffectRule ? `${noun}没有提交，这一步停下了` : null,
+        impact: `没有登记过${noun}：没有提交，也没有扣费。`,
+        suggestion: `还没有提交过${noun}，「重新执行」不会重复扣费：先把 agent 说的问题处理好，再「重新执行」${skip}。`,
+      };
+    case "executing":
+      return {
+        problem: `${noun}已经提交（${task}），还没有记下结果`,
+        impact: `${task} 已经提交，可能已经扣费；结果还没有记下来。`,
+        suggestion: `「重新执行」会接着查${task} 的结果，不会重新提交，也不会再扣费。`,
+      };
+    case "succeeded":
+      return {
+        problem: `${noun}已经成功（${task}），但${refusedBy ? `${/^[A-Za-z]/.test(refusedBy) ? " " : ""}${refusedBy}` : "没有通过这一步的验收"}`,
+        impact: `${task} 已经成功，${spent}。`,
+        correctsRetry: true,
+        suggestion: `「重新执行」只会沿用这次的结果，不会重新${verb}：问题只在交付（交接记录、文件位置）时用它。${redo
+          ? `问题在结果本身（比如没过质检）就选「重做这一条」：${again}${skip}。`
+          : "结果本身有问题需要人工处理。"}`,
+      };
+    case "failed":
+      return {
+        problem: `${noun}失败了${task ? `（${task}）` : ""}${ledger.reason ? `：${ledger.reason}` : ""}`,
+        impact: `${task ? `${task} ` : noun}已经提交并失败：可能已经扣费，以外部平台为准。`,
+        correctsRetry: true,
+        suggestion: `「重新执行」不会重新${verb}：这次${noun}已经失败，同一个登记不会再提交。${redo
+          ? `要再${verb}一次就选「重做这一条」（${again}）${skip.replace("；这一条不做了", "；不想再花钱")}。`
+          : "需要有人在外部平台核对后处理，或者「暂停项目」。"}`,
+      };
+    case "unknown":
+      return {
+        problem: `${noun}的结果不明${task ? `（${task}）` : ""}`,
+        impact: `${task ? `${task} ` : noun}的结果没有记下来：可能已经扣费，以外部平台为准。`,
+        correctsRetry: true,
+        suggestion: `先在外部平台核对${task ? `${task} ` : "这一步"}的结果。「重新执行」会再停在这里。${redo
+          ? `确认它没有成功后选「重做这一条」（${again}）${skip}。`
+          : "确认后需要人工处理台账，或者「暂停项目」。"}`,
+      };
+    default:
+      return {
+        problem: `${noun}登记了，但没有提交出去（台账上没有外部任务号）`,
+        impact: "台账上只有登记、没有外部任务号：引擎没有看到它被提交，也没有扣费记录。",
+        correctsRetry: true,
+        suggestion: `「重新执行」会再停在同一个登记上，不会提交（同一个登记不能安全地重新提交）。${redo
+          ? `先确认外部平台上确实没有这一条的任务（agent 的报告里通常已经查过），再选「重做这一条」：${again}${skip}。`
+          : "需要有人在外部平台核对后处理台账，或者「暂停项目」。"}`,
+      };
+  }
+}
+
+// What a failed call's recorded result says went wrong, when it says so in a
+// field any provider would use.
+function resultReason(result) {
+  if (!result || typeof result !== "object") return "";
+  const value = [result.reason, result.error, result.message].find((entry) => typeof entry === "string" && entry.trim());
+  return value ? truncate(value.trim(), 120) : "";
+}
+
+function operationEvidence(operation) {
+  return operation ? { status: operation.status, externalTaskId: operation.externalTaskId ?? null } : null;
 }
 
 // The engine's own completion checks, in words a person can act on. The
@@ -356,17 +510,39 @@ const SECTION_LABELS = [
   ["impact", /^(影响|影响范围)$/],
   ["suggestion", /^(建议|建议怎么做|建议人工处置|下一步|处理建议)$/],
 ];
+// The headings Agents wrote in English before the brief asked for the four
+// lines (DL-1008-04: "**Why blocked — machine QC failed …:**", "## Recommended
+// human action"). A label must end the line or be followed by a separator, so
+// a sentence that merely starts with "Next step is …" is not one.
+const ENGLISH_LABELS = [
+  ["cause", /^(why blocked|why it (?:stopped|blocked)|root cause|cause|reason|blocker)\b/i],
+  ["impact", /^(impact)\b/i],
+  ["suggestion", /^(suggested (?:human )?next steps?|recommended (?:human )?(?:action|next steps?)|next steps?|suggestion)\b/i],
+];
+
+function sectionLabel(line) {
+  const match = line.match(/^([^：:]{1,8})[：:]\s*(.*)$/);
+  const label = match ? SECTION_LABELS.find(([, pattern]) => pattern.test(match[1].trim()))?.[0] : null;
+  if (label) return { label, rest: match[2] };
+  for (const [name, pattern] of ENGLISH_LABELS) {
+    const english = line.match(pattern);
+    if (!english) continue;
+    const after = line.slice(english[0].length);
+    const separated = after.match(/^\s*(?:[—–:：-]\s*|$)([\s\S]*)$/);
+    if (separated) return { label: name, rest: separated[1].replace(/[:：]\s*$/, "").trim() };
+  }
+  return null;
+}
 
 function labeledSections(text) {
   const sections = {};
   let current = null;
   for (const raw of String(text).split("\n")) {
     const line = raw.replace(/\*\*|__|`/g, "").replace(/^\s*(#+|>|[-*·•]|\d+[.)、])\s*/, "").trim();
-    const match = line.match(/^([^：:]{1,8})[：:]\s*(.*)$/);
-    const label = match ? SECTION_LABELS.find(([, pattern]) => pattern.test(match[1].trim()))?.[0] : null;
-    if (label) {
-      current = label;
-      sections[label] = match[2] ? [match[2]] : [];
+    const found = sectionLabel(line);
+    if (found) {
+      current = found.label;
+      sections[current] = found.rest ? [found.rest] : [];
       continue;
     }
     if (current && line) sections[current].push(line);
@@ -376,7 +552,9 @@ function labeledSections(text) {
 }
 
 function splitSentences(text) {
+  // Table rows are evidence, not sentences: "| ⑩ Readback | 失败原因=null |".
   return String(text)
+    .split("\n").filter((line) => !/^\s*\|/.test(line)).join("\n")
     .replace(/\*\*|__|`/g, "")
     .split(/(?<=[。！？])|\n/)
     .map((sentence) => sentence.replace(/^\s*(#+|>|[-*·•]|\d+[.)、])\s*/, "").trim())

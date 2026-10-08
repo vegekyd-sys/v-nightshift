@@ -611,9 +611,30 @@ export class NightShiftRuntime {
       }
       return { request: this.store.getDecisionRequest(decisionId), affectedCardIds, alreadyDecided: false, errors: [] };
     }
+    if (option.effect === "redo") {
+      // One item at a time: each redo is a new paid or external call.
+      const redo = await this.redoStoppedStage({
+        actor,
+        cardId: request.cardId,
+        contentItemId: request.contentItemId,
+        instanceId: request.instanceId,
+        stageId: request.stageId,
+        note,
+      });
+      this.store.decideRequest(request.id, { optionId, note, actor });
+      this.store.appendEvent({
+        instanceId: request.instanceId,
+        type: "decision.redone",
+        payload: { decisionId: request.id, cardId: request.cardId, contentItemId: request.contentItemId, actor, note, revision: redo.revision },
+      });
+      return { request: this.store.getDecisionRequest(decisionId), affectedCardIds: [request.cardId], alreadyDecided: false, errors: [], redo };
+    }
     if (option.effect !== "retry") throw Object.assign(new Error(`Option effect ${option.effect} is not supported yet`), { statusCode: 400 });
+    // A group shares a root cause, not always a ledger state: a stop whose
+    // paid call cannot be retried does not offer retry and is left out.
     const targets = applyToGroup
-      ? this.store.listDecisionRequests({ instanceId: request.instanceId, status: "open" }).filter((entry) => entry.groupKey === request.groupKey)
+      ? this.store.listDecisionRequests({ instanceId: request.instanceId, status: "open" })
+        .filter((entry) => entry.groupKey === request.groupKey && (entry.id === request.id || entry.options.some((choice) => choice.effect === "retry")))
       : [request];
     const affectedCardIds = [];
     const errors = [];
@@ -1307,12 +1328,51 @@ export class NightShiftRuntime {
     if (!stageIds.some((id) => stages.find((entry) => entry.id === id)?.actor === "agent")) {
       return { redone: false, why: "no Agent stage before this review" };
     }
+    return this.startRevision({ actor, contentItemId, instanceId, fromStageId: stageId, stageIds, note: evidence, reason: "review" });
+  }
+
+  // 「重做这一条」 on a stop: the stopped stage of one content item, and any
+  // later stage of the item that already ran on its result, start over under
+  // a new revision. The revision is part of the item's ledger key
+  // (orchestrator.actionKey), so the new card's paid or external call is a new
+  // operation: the old one, reserved, failed or succeeded, is left as it was.
+  // 「重新执行」 cannot do this: the same card keeps the same key, and retrying
+  // wsfood-es-28 on V (2026-10-08) met the same reservation and blocked again.
+  async redoStoppedStage({ actor, cardId, contentItemId, instanceId, stageId, note = null }) {
+    if (!contentItemId) throw Object.assign(new Error("Only a stop on one content item can be redone"), { statusCode: 400 });
+    const instance = this.store.getInstance(instanceId);
+    if (!instance) throw Object.assign(new Error(`Unknown instance ${instanceId}`), { statusCode: 404 });
+    const release = this.store.getRelease(instance.workflowSha256)?.manifest;
+    const stages = release?.spec?.stages ?? [];
+    const stage = stages.find((entry) => entry.id === stageId);
+    if (!stage || !["agent", "system"].includes(stage.actor) || (stage.scope ?? "project") !== "content-item") {
+      throw Object.assign(new Error("Only a content item's executable stage can be redone"), { statusCode: 400 });
+    }
+    const card = (await this.workboard.listCards({ cardIds: [cardId] })).find((entry) => entry.id === cardId);
+    if (!card || card.status !== "blocked") {
+      throw Object.assign(new Error("重做这一条 needs the stopped card: this one is not blocked"), { statusCode: 409 });
+    }
+    if (this.isContentItemSkipped(instanceId, contentItemId)) {
+      throw Object.assign(new Error("This item was skipped"), { statusCode: 409 });
+    }
+    const ran = new Set(this.store.listContentItemRuns(instanceId)
+      .filter((entry) => entry.contentItemId === contentItemId).map((entry) => entry.stageId));
+    const stageIds = [stageId, ...stagesAfter(stages, stageId, instance).filter((id) => ran.has(id))];
+    const redo = this.startRevision({ actor, contentItemId, instanceId, fromStageId: stageId, stageIds, note, reason: "stop" });
+    if (!redo.redone) throw Object.assign(new Error(redo.why), { statusCode: 409 });
+    return redo;
+  }
+
+  // A new revision of one content item: each of stageIds gets a new attempt in
+  // "redo", and the planner makes fresh cards for them in order; their brief
+  // carries the person's note. A paid stage pays again.
+  startRevision({ actor, contentItemId, instanceId, fromStageId, stageIds, note = null, reason }) {
     const runs = this.store.listContentItemRuns(instanceId).filter((entry) => entry.contentItemId === contentItemId);
     const latest = (id) => runs.filter((entry) => entry.stageId === id).sort((a, b) => (b.attempt ?? 1) - (a.attempt ?? 1))[0] ?? null;
     const busy = stageIds.map(latest).find((entry) => entry && ["ready", "running", "redo"].includes(entry.status));
     if (busy) return { redone: false, why: `${busy.stageId} is already being redone` };
     const revision = this.store.addContentItemRevision({
-      instanceId, contentItemId, reviewStageId: stageId, stageIds, note: evidence ?? null, actor,
+      instanceId, contentItemId, reviewStageId: fromStageId, stageIds, note: note ?? null, actor,
     });
     for (const id of stageIds) {
       const previous = latest(id);
@@ -1323,13 +1383,13 @@ export class NightShiftRuntime {
         attempt: (previous?.attempt ?? 0) + 1,
         cardId: null,
         status: "redo",
-        summary: `Redo requested by ${actor}: ${evidence ?? "no note"}`,
+        summary: `Redo requested by ${actor}: ${note ?? "no note"}`,
       });
     }
     this.store.appendEvent({
       instanceId,
       type: "content-item.redo.requested",
-      payload: { actor, contentItemId, reviewStageId: stageId, stageIds, revision: revision.revision, note: evidence ?? null },
+      payload: { actor, contentItemId, reviewStageId: fromStageId, stageIds, revision: revision.revision, note: note ?? null, reason },
     });
     return { redone: true, revision: revision.revision, stageIds };
   }
@@ -1343,7 +1403,7 @@ export class NightShiftRuntime {
     return this.store.listContentItems(instanceId).map((item) => {
       const entry = latest.get(item.id);
       return entry
-        ? { ...item, revision: entry.revision, revisionRequest: { note: entry.note, actor: entry.actor, stageIds: entry.stageIds, requestedAt: entry.requestedAt } }
+        ? { ...item, revision: entry.revision, revisionRequest: { note: entry.note, actor: entry.actor, stageIds: entry.stageIds, fromStageId: entry.reviewStageId, requestedAt: entry.requestedAt } }
         : item;
     });
   }
@@ -1464,6 +1524,25 @@ export function stagesToRedo(stages, review, instance) {
     .filter((id) => itemStage(id) && reviewAncestors.has(id) &&
       roots.some((root) => root === id || ancestorsOf(id).has(root)));
   return [...chain, review.id];
+}
+
+// The content-item stages that depend, directly or through others, on stageId,
+// in Workflow order.
+export function stagesAfter(stages, stageId, instance) {
+  const after = new Set([stageId]);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const stage of stages) {
+      if (after.has(stage.id) || !(stage.needs ?? []).some((need) => after.has(need))) continue;
+      after.add(stage.id);
+      grew = true;
+    }
+  }
+  return stages
+    .filter((stage) => stage.id !== stageId && after.has(stage.id) &&
+      (stage.scope ?? "project") === "content-item" && stageEnabled(stage, instance?.inputs ?? {}))
+    .map((stage) => stage.id);
 }
 
 // Runs killed while the Gateway drained end just before its shutdown broadcast.

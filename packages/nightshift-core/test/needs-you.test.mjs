@@ -10,9 +10,11 @@ import {
   NightShiftStore,
   buildNeedsYou,
   compileWorkflow,
+  DESCRIBE_VERSION,
   describeStop,
   groupKey,
   loadWorkflow,
+  stopOptionsFor,
 } from "../src/index.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -387,7 +389,8 @@ test("a stop recorded without the Agent's words gets them from the Session, and 
   };
   const stopped = card("old-stop", "video-1", { sessionKey: "agent:main:subagent:old-stop" });
   const opened = observe(stopped, { failure });
-  assert.match(opened.problem, /外部操作.*没有成功记录/);
+  // Nothing on the ledger for a paid stage: nothing was submitted.
+  assert.match(opened.problem, /付费生成没有提交/);
   store.upsertContentItemRun({ instanceId: "NS-NY", contentItemId: "video-1", stageId: "produce", attempt: 1, cardId: "old-stop", status: "blocked", summary: "blocked", failure });
   workboard.sessions = new Map([["agent:main:subagent:old-stop", { messages: [
     { role: "user", content: "brief" },
@@ -437,6 +440,118 @@ test("open requests written under older rules are rewritten under the current on
   store.updateDecisionRequestText(opened.id, { problem: "Card 58dbc363 completed — ✅ PUBLISHED", evidence: { failure, describeVersion: 1 } });
   const rewritten = observe(stopped, { failure });
   assert.match(rewritten.problem, /项目目录之外/);
-  assert.equal(rewritten.evidence.describeVersion, 2);
+  assert.equal(rewritten.evidence.describeVersion, DESCRIBE_VERSION);
+  store.close();
+});
+
+// DL-1008-04 and GeeLark timed publishing on V, 2026-10-08: the cards named a
+// rule ("交接记录", "外部操作没有成功记录"), quoted an English first sentence as
+// the cause, and suggested 「重新执行」 for stops where retrying cannot make a
+// new attempt: the paid operation's key is the same for the same card, so a
+// reserved one blocks again, a failed one stays failed and a succeeded one is
+// reused. The engine knows the ledger state; the card says it.
+const STOPS = JSON.parse(await readFile(resolve(here, "fixtures/needs-you-stops-20261008.json"), "utf8"));
+const PAID_STAGE = { id: "produce", scope: "content-item", actor: "agent", sideEffects: ["paid-production"] };
+const PUBLISH_STAGE = { id: "publish", scope: "content-item", actor: "agent", sideEffects: ["external-publication"] };
+function stopOf(contentItemId, operationExtra = {}) {
+  const stop = STOPS.find((entry) => entry.contentItemId === contentItemId);
+  const stage = stop.stageId === "publish" ? PUBLISH_STAGE : PAID_STAGE;
+  const operation = stop.operation ? { ...stop.operation, ...operationExtra } : null;
+  const described = describeStop({ failure: stop.failure, operation, stage });
+  return { ...described, options: stopOptionsFor("item", { stage, operation }).map((option) => option.id), stop };
+}
+
+test("a paid result that did not pass its checks says it was paid for, and offers a new generation", () => {
+  const card = stopOf("wsfood-es-22");
+  assert.match(card.problem, /付费生成已经成功.*没有通过这一步的验收/);
+  assert.doesNotMatch(card.problem, /交接记录/);
+  assert.match(card.cause, /black frames/, "the Agent's 'Why blocked' section, not its first sentence");
+  assert.doesNotMatch(card.cause, /^agent 的说法：Done/);
+  assert.match(card.impact, /5d2328da-ccd0-47c4-876c-0529513ec52b.*已经成功.*钱已经花了/);
+  assert.match(card.suggestion, /「重新执行」只会沿用这次的结果/);
+  assert.match(card.suggestion, /「重做这一条」.*再付一次钱/);
+  assert.deepEqual(card.options, ["retry", "redo", "skip", "pause"]);
+});
+
+test("a reservation never submitted says nothing was charged and never suggests the retry that loops", () => {
+  const card = stopOf("wsfood-es-28");
+  assert.match(card.problem, /付费生成登记了，但没有提交出去/);
+  assert.match(card.impact, /没有外部任务号.*没有扣费记录/);
+  assert.doesNotMatch(card.suggestion, /没成就「重新执行」/);
+  assert.match(card.suggestion, /「重新执行」会再停在同一个登记上/);
+  assert.match(card.suggestion, /「重做这一条」/);
+  assert.deepEqual(card.options, ["redo", "skip", "pause"], "retry would block again on the same reservation");
+});
+
+test("a failed paid generation says it failed, with the provider's reason, and that it may have been charged", () => {
+  const card = stopOf("wsfood-es-29", { result: { status: "failed", reason: "480p generation failed" } });
+  assert.match(card.problem, /付费生成失败了（外部任务 video-pipeline-7e5d5cf6-bdaa-44ef-8994-f2d335ac54c5）：480p generation failed/);
+  assert.match(card.cause, /视频渲染失败/, "the sentence that says what failed, not 已按规则执行并结束本卡");
+  assert.match(card.impact, /可能已经扣费，以外部平台为准/);
+  assert.match(card.suggestion, /「重新执行」不会重新生成/);
+  assert.deepEqual(card.options, ["redo", "skip", "pause"]);
+});
+
+test("a publication that failed offers to publish again; a broken proxy that submitted nothing offers a plain retry", () => {
+  const failed = stopOf("recvvWKAc37Cpf");
+  assert.match(failed.problem, /发布失败了（外部任务 638962277126532250）/);
+  assert.deepEqual(failed.options, ["redo", "skip", "pause"]);
+  const proxy = stopOf("recvvWKAc3HnDK");
+  assert.doesNotMatch(proxy.problem, /无法确认它是否真的完成了/, "nothing was registered, so nothing is in doubt");
+  assert.match(proxy.problem, /发布没有提交/);
+  assert.match(proxy.cause, /代理不可用/);
+  assert.match(proxy.impact, /没有登记过发布：没有提交，也没有扣费/);
+  assert.match(proxy.suggestion, /「重新执行」/);
+  assert.deepEqual(proxy.options, ["retry", "skip", "pause"]);
+});
+
+test("a publication that succeeded is never offered as a redo: that would post twice", () => {
+  const options = stopOptionsFor("item", { stage: PUBLISH_STAGE, operation: { status: "succeeded", externalTaskId: "639243610537094298" } });
+  assert.deepEqual(options.map((option) => option.id), ["retry", "skip", "pause"]);
+  assert.match(options[0].description, /沿用已经成功的结果.*不会再/);
+  // GeeLark 圣山-US-009: published, then the engine refused the artifact path.
+  // The refusal is the news; a table row reading "失败原因=null" is not a cause.
+  const card = describeStop({
+    failure: {
+      kind: "contract_error",
+      rawError: "Artifact path must stay inside the instance directory",
+      agentReport: "Card 58dbc363 completed — ✅ PUBLISHED (terminal, recorded=true).\n\n| Step | Result |\n|---|---|\n| ⑩ Readback | 状态=已发布, 认领=null, 失败原因=null |\n\nNo failure → no alert (alertsSent=0).",
+    },
+    operation: { status: "succeeded", externalTaskId: "639243610537094298" },
+    stage: PUBLISH_STAGE,
+  });
+  assert.match(card.problem, /^发布已经成功（外部任务 639243610537094298），但 agent 交付的文件放到了项目目录之外/);
+  assert.match(card.cause, /^agent 的说法：Card 58dbc363 completed/);
+  assert.match(card.suggestion, /「重新执行」只会沿用这次的结果，不会重新发布/);
+});
+
+test("the Agent's four lines lead, and a suggestion that would loop is corrected first", () => {
+  const report = "问题：成片有 2.8 秒黑屏\n原因：Makaron 的时间线编辑插入了黑帧，修了两次被拒\n影响：这一条没有可交付的成片\n建议：重新执行\n\n## 详细\n…";
+  const reserved = describeStop({
+    failure: { kind: "contract_error", rawError: "External side effect has no succeeded Night Shift operation checkpoint", agentReport: report },
+    operation: { status: "reserved", externalTaskId: null },
+    stage: PAID_STAGE,
+  });
+  assert.equal(reserved.problem, "成片有 2.8 秒黑屏");
+  assert.equal(reserved.cause, "Makaron 的时间线编辑插入了黑帧，修了两次被拒");
+  assert.match(reserved.impact, /^台账上只有登记/);
+  assert.match(reserved.impact, /这一条没有可交付的成片/);
+  assert.match(reserved.suggestion, /^「重新执行」会再停在同一个登记上/);
+  assert.match(reserved.suggestion, /agent 的建议：重新执行$/);
+  const free = describeStop({ failure: { kind: "contract_error", rawError: "Stage handoff is required: produce", agentReport: report } });
+  assert.equal(free.suggestion, "重新执行", "outside a paid ledger the Agent's own suggestion stands");
+});
+
+test("an open request is rewritten with the ledger's facts and the options they allow", async () => {
+  const { card, observe, store } = await fixture();
+  const stopped = card("es-29", "video-1");
+  const failure = STOPS.find((entry) => entry.contentItemId === "wsfood-es-29").failure;
+  const opened = observe(stopped, { failure });
+  // Simulate what the previous rules wrote on V.
+  store.updateDecisionRequestText(opened.id, { problem: "外部操作（付费生成、发布或上传）没有成功记录，无法确认它是否真的完成了", evidence: { failure, describeVersion: 2 } });
+  const rewritten = observe(stopped, { failure, operation: { status: "failed", externalTaskId: "video-pipeline-7e5d", result: { reason: "480p generation failed" } } });
+  assert.match(rewritten.problem, /付费生成失败了/);
+  assert.deepEqual(rewritten.options.map((option) => option.id), ["redo", "skip", "pause"]);
+  assert.equal(rewritten.evidence.describeVersion, DESCRIBE_VERSION);
   store.close();
 });

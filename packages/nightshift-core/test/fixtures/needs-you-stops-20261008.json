@@ -1,0 +1,129 @@
+[
+  {
+    "decisionId": "ea96c621-cf79-4564-86a7-28380e89a90f",
+    "instanceId": "GEE-TIMED-PUB-20260925",
+    "contentItemId": "recvvWKAc37Cpf",
+    "stageId": "publish",
+    "before": {
+      "problem": "外部操作（付费生成、发布或上传）没有成功记录，无法确认它是否真的完成了",
+      "cause": "agent 的说法：Card done — outcome: publish attempt ran to a real terminal state and the failure was fully recorded (no false \"published\", no re-submission).",
+      "impact": "",
+      "suggestion": "先看 agent 的记录，确认外部平台上这一步成没成：没成就「重新执行」；如果其实成了只是没记上，需要人工核对后再继续。",
+      "options": [
+        "重新执行",
+        "跳过这一条",
+        "暂停项目"
+      ]
+    },
+    "failure": {
+      "kind": "contract_error",
+      "rawError": "External side effect has no succeeded Night Shift operation checkpoint",
+      "agentReport": "Card **done** — outcome: publish attempt ran to a real terminal state and the failure was fully recorded (no false \"published\", no re-submission).\n\n## 结果：TERMINAL = FAILED（已如实记录）\n\n**圣山-BR-008 · user7861460965407** (`recvvWKAc37Cpf`) · 设备 `636394121380095586` · publishAt `2026-09-25T23:59:00Z`\n\n| 步骤 | 证据 |\n|---|---|\n| ① 提交前先查 | `+record-get` → `GeeLark任务ID` 为空 → 本轮 fresh，**add-task 仅一次**（红线遵守） |\n| ② 代理直连复检 | `curl --max-time 15 -x socks5h://…@203.0.113.10:37857 https://api.ipify.org` → `203.0.113.10`，passed=true（未用会误报的 `geelark-cli proxy check`） |\n| ③ 台账 reserve | hash `b0518054…` → `reused=false, status=reserved`（新建，非复用） |\n| ④ 取件上传 | ss-08.mp4（sha256 `18e392ac…`）→ `resourceUrl …/open-upload/627419719317665894/20260926/WZxxYw0r.mp4` |\n| ⑤ 提交 | taskId **638962277126532250** |\n| ⑥ checkpoint | `executing --external-task-id 638962277126532250` + 回写 Base `GeeLark任务ID` |\n| ⑦ 轮询终态 | `1 → 2 → 4 Failed`，failCode **20206**（\"Failed to upload when clicking on the album page\"），`shareLink` 为空 |\n| ⑧⑨ 失败收口 | 台账 `checkpoint --status failed`；Base 回写 `状态=失败` + `失败原因`(含 failCode) + 清空 `认领` |\n| ⑩ 回读校验 | 读到 状态=失败 / 失败原因含 20206 / 认领=null，一致 ✅ |\n| ⑪ 浅校验 | `shareLinkSource: \"missing\"` 已定性；无链接（账号一致性 N/A）；caption 139 ≤4000 |\n| ⑫ 失败告警 | 向 `alertChatId` 发 **1 条**（`om_REDACTED`） |\n\n**关键守则**：失败路径**未触发** 8b Apify 主页反查（那是仅 `shareLink` 空+发布成功的场景）→ **零额外付费**；全程 add-task 只调用一次，无重提。\n\n**产物**\n- `content-items/recvvWKAc37Cpf/publish-result.json`（`recorded: true`, `status: \"failed\"`）\n- `content-items/recvvWKAc37Cpf/handoffs/publish.json`\n- 记录链接：https://example.feishu.example/record/REDACTED → 实际为 https://example.feishu.example/record/REDACTED\n\n该行现为 `失败`（非 `已排期`），按工作流约定不再被下轮扫描自动重试，需人工处理（可选：清回 `已排期` 让下轮投递重试）。"
+    },
+    "operation": {
+      "status": "failed",
+      "externalTaskId": "638962277126532250"
+    }
+  },
+  {
+    "decisionId": "f9c66901-0858-4dfa-a644-fb7514f34484",
+    "instanceId": "GEE-TIMED-PUB-20261007",
+    "contentItemId": "recvvWKAc3HnDK",
+    "stageId": "publish",
+    "before": {
+      "problem": "外部操作（付费生成、发布或上传）没有成功记录，无法确认它是否真的完成了",
+      "cause": "agent 的说法：Done. Card blocked on a real, evidenced blocker — the row itself was safely re-queued. 结果：代理不可用，未提交（不是发布失败） 内容项：圣山-BR-031 · user2873135466065（recvvWKAc3HnDK），env 639449416343758658，publishAt 2026-10-…",
+      "impact": "",
+      "suggestion": "先看 agent 的记录，确认外部平台上这一步成没成：没成就「重新执行」；如果其实成了只是没记上，需要人工核对后再继续。",
+      "options": [
+        "重新执行",
+        "跳过这一条",
+        "暂停项目"
+      ]
+    },
+    "failure": {
+      "kind": "contract_error",
+      "rawError": "External side effect has no succeeded Night Shift operation checkpoint",
+      "agentReport": "Done. Card **blocked** on a real, evidenced blocker — the row itself was safely re-queued.\n\n## 结果：代理不可用，未提交（不是发布失败）\n\n**内容项**：圣山-BR-031 · user2873135466065（`recvvWKAc3HnDK`），env `639449416343758658`，publishAt `2026-10-07T21:52:00Z`（刚到点）\n\n**按卡执行（先查再动）**\n1. **提交前先查** → `GeeLark任务ID` 为空、`状态=发布中`、`认领=本实例` → 走全新发布路径。`add-task` 调用 **0 次**（零提交）。\n2. **代理直连复检**（卡指定的方法，非 `geelark-cli proxy check`）：设备代理 `203.0.113.10:47487`（Brazil）**TCP 可达但 SOCKS5 认证被拒**，6/6 次全部 `curl exit 97 \"User was rejected by the SOCKS5 server (1 1)\"`。凭据通过 0600 `--config` 传入，未出现在 argv/日志。\n   - **交叉验证**定因：同机同法对 US 设备 `proxy.example:22193` 正常（egress 203.0.113.10）；两台 BR 设备（`203.0.113.10` 的 47487/37857）均被拒 → **巴西代理凭据被拒，非本机出口问题**。\n3. 按铁律：**不 reserve / 不下载 / 不上传 / 不提交 / 无台账 checkpoint**。\n\n**收口动作**\n- **回写 + 回读校验**（`+record-get`）：`状态=已排期`、`认领` 已清空、`失败原因=代理不可用 203.0.113.10:47487@2026-10-07T21:53:20Z`、`GeeLark任务ID` 未动 → 该行回到队列，**下一轮投递会重试**。\n- **失败告警一条** → `alertChatId`：`om_REDACTED`（条目标识 / taskId=未提交 / failCode=proxy-unavailable / 记录链接 `https://example.feishu.example/record/REDACTED`）。\n- **产物**：`content-items/recvvWKAc3HnDK/publish-result.json`（status=failed, recorded=true）+ `handoffs/publish.json`。\n\n**为何 block 而非 complete**：本次未发生任何外部发布，卡声明的 side effect（external-publication）在台账里没有 succeeded checkpoint，所以无法按“已发布”收口——这正确反映了真实状态（可重试的阻塞），且该行的重试不依赖卡片状态（Base 已回 `已排期`）。"
+    },
+    "operation": null
+  },
+  {
+    "decisionId": "5f5f9b18-e06b-431a-8b86-f7700b6340ea",
+    "instanceId": "DL-1008-04",
+    "contentItemId": "wsfood-es-22",
+    "stageId": "produce",
+    "before": {
+      "problem": "这一步没有写好交给下一步的交接记录",
+      "cause": "agent 的说法：Done — the card is blocked (not completed), with full evidence recorded.",
+      "impact": "",
+      "suggestion": "「重新执行」，让 agent 补齐交接记录。",
+      "options": [
+        "重新执行",
+        "跳过这一条",
+        "暂停项目"
+      ]
+    },
+    "failure": {
+      "kind": "contract_error",
+      "rawError": "Stage handoff is required: produce",
+      "agentReport": "Done — the card is **blocked** (not completed), with full evidence recorded.\n\n## Outcome: wsfood-es-22 produce — blocked\n\n**What ran (one paid submission per content item):**\n- reserved the paid operation (`8f54fd85…`), then submitted `makaron-cli chat --project auto --media-manifest … --skill tiktok-video` → project `46098d8b-6bb1-496f-a1ea-f095af0701fa`, 4/4 frozen clips imported.\n- First run `fdfa3afc` produced no video (AI Spanish VO unverifiable) → per card rules I confirmed **in the same project**, run `d3371d71` used pure music + the 4 given Spanish captions and queued the MP4 export (`0a8660f1`), downloaded to `produce/final.mp4`.\n- Ledger: reserve → checkpoint executing (fdfa3afc / d3371d71 / 5d2328da) → checkpoint succeeded (result carries `machineQcStatus=failed`).\n\n**Why blocked — machine QC failed (`produce/machineQc.json`, `qc.out`, `qc-frames/`):**\n1. **≈2.79 s of fully black frames (1.458–4.25 s, ~19 % of the 15 s video)**, reproduced on two independent downloads (sha256 `db39be44…`). The frozen source range for clip 1 (`ast_39b9a8e5…`, 10–14.25 s) is **not** black (YAVG 92–123) → the black was introduced by Makaron's timeline edit, not the frozen material.\n2. Clip 4 keeps the **GOGLIO / fres-co** third-party marks the brief red line requires cropped/replaced.\n\nI made two in-project repair rounds (`5d2328da`, `c5ae0683`); Makaron refused both, stating its video-mode instructions forbid patching the saved composition draft, and did not re-export. With the card's constraints (one paid generation, no new project, no self-redo) no valid `finishedAsset` can be produced → blocked, with the block reason as the audit note.\n\n**Evidence:** `content-items/wsfood-es-22/produce/{machineQc.json, REPORT.md, qc.out, qc-frames/, composition-export-job.json, poll.log, operations-*.json}`.\n\n**Suggested human next step:** re-issue the repair as an explicit video-editin..."
+    },
+    "operation": {
+      "status": "succeeded",
+      "externalTaskId": "5d2328da-ccd0-47c4-876c-0529513ec52b"
+    }
+  },
+  {
+    "decisionId": "0476fe4c-0d45-40fd-b12a-5e1e0b962314",
+    "instanceId": "DL-1008-04",
+    "contentItemId": "wsfood-es-28",
+    "stageId": "produce",
+    "before": {
+      "problem": "外部操作（付费生成、发布或上传）没有成功记录，无法确认它是否真的完成了",
+      "cause": "agent 的说法：Done — I could not safely submit this card's paid Makaron generation, so I blocked it once with a full readback record, per the card's external-operation gate.",
+      "impact": "",
+      "suggestion": "先看 agent 的记录，确认外部平台上这一步成没成：没成就「重新执行」；如果其实成了只是没记上，需要人工核对后再继续。",
+      "options": [
+        "重新执行",
+        "跳过这一条",
+        "暂停项目"
+      ]
+    },
+    "failure": {
+      "kind": "contract_error",
+      "rawError": "External side effect has no succeeded Night Shift operation checkpoint",
+      "agentReport": "Done — I could not safely submit this card's paid Makaron generation, so I blocked it once with a full readback record, per the card's external-operation gate.\n\n## What happened\n\n**State: `blocked`** (card `80b5384a-f10e-46a4-b7e8-5995ca04c67c`, DL-1008-04 / wsfood-es-28 / produce / AI_GENERATE).\n\n1. I built the AI_GENERATE request deterministically from the frozen brief: `media-manifest.json` (3 conditioning anchors — ref01 化验室检测 / ref02 质量标准图表 / ref03 无菌灌装检查), `prompt.txt` = `finishedVideoBrief.md` **verbatim**, plus `request.json` / `request-payload.json` / `request-hash.txt`.\n2. First `operations reserve` returned **fresh** (`reused=false`, `reserved`, no `externalTaskId`) at `2026-10-08T12:46:16Z`. My next turn then died on a model-provider error (`deepseek/deepseek-flash request failed`) **before any provider call**.\n3. After the operator's 「重新执行」, re-reserving the **same** request hash returned **`reused=true` / `status=reserved` / `externalTaskId=null`** — exactly the gate's third branch: *\"reused+reserved without an externalTaskId → ambiguous → block for readback instead of resubmitting.\"* The human retry does not mint a new ledger operation key (revision unchanged).\n\n## Readback evidence (no external task / no charge)\n- `produce/` contains **no `chat-submit.*` artifacts** → `makaron-cli chat` was never invoked.\n- `makaron-cli list` shows projects for **every `wsfood-es-01…30` except `wsfood-es-28`** → no project, no paid call.\n\nI made **no** paid/external call, opened **no** new project, replaced **no** frozen material, and did no self-redo. Raw ledger responses are saved (`operations-reserve.out.json`, `operations-reserve-2.out.json`), and I left `produce/BLOCKED.md` documenting the state and the ready-to-submit artifacts for whoever reconciles it.\n\n## Recommended human action\nReconcile/clear this card's `reserved` ledger operation (confirmed uncharged),..."
+    },
+    "operation": {
+      "status": "reserved",
+      "externalTaskId": null
+    }
+  },
+  {
+    "decisionId": "a5bf38fa-9441-41f6-a25f-1ef372faed89",
+    "instanceId": "DL-1008-04",
+    "contentItemId": "wsfood-es-29",
+    "stageId": "produce",
+    "before": {
+      "problem": "外部操作（付费生成、发布或上传）没有成功记录，无法确认它是否真的完成了",
+      "cause": "agent 的说法：已按 Night Shift produce 阶段规则执行并结束本卡。",
+      "impact": "",
+      "suggestion": "先看 agent 的记录，确认外部平台上这一步成没成：没成就「重新执行」；如果其实成了只是没记上，需要人工核对后再继续。",
+      "options": [
+        "重新执行",
+        "跳过这一条",
+        "暂停项目"
+      ]
+    },
+    "failure": {
+      "kind": "contract_error",
+      "rawError": "External side effect has no succeeded Night Shift operation checkpoint",
+      "agentReport": "已按 Night Shift produce 阶段规则执行并结束本卡。\n\n## 结果：blocked（无法取得成片）\n\n**内容项** wsfood-es-29「中国番茄酱到墨西哥：通关与物流路线图」（route=AI_GENERATE / DL-1008-04）\n\n**执行经过**\n1. 用 `makaron` skill 把 `finishedVideoBrief.md` **原文**作消息 + `frozenInputManifest.json` 的 3 段授权视频作参考锚（标注 anchor-only、不入成片）提交：\n   `makaron-cli chat --project auto --media-manifest … --skill tiktok-video` → run `18a944eb…`，project `429cefd4…`，3/3 参考锚导入成功，credits 0。\n2. 该轮 Makaron 仅回文本，要求确认 15s 西语分镜（«¿Confirmas este guion…?»）→ 按卡片指示**在同一项目内**回复确认（不算新提交）→ run `b11264a3…`。\n3. 该确认轮触发**唯一一次**付费生成（seedance-2.5-eco，672 credits，balance 85608→83465），视频渲染失败：task `video-pipeline-7e5d5cf6…`，error **`480p generation failed.`**\n4. 复核 project media：`media_1..3` 参考锚 completed；`media_4` 生成视频 failed、url=null → **无任何可下载成片**。\n\n**为何 block 而非重试**：本卡明确「一条视频只产出一次付费生成」「不新开项目、不自行重做」「确实拿不到视频再 block 写明原因」；Makaron 的后续动作（Adjust & retry / Review the cause）均为 `policy=confirm`，重试即第二次付费，超出本卡授权。\n\n**台账（唯一外部副作用检查点）**：`reserve 4cfa10a7…` → `checkpoint executing(18a944eb…)` → `checkpoint failed(video-pipeline-7e5d5cf6…, 672)`。未重投、未新开项目、未自行重做。\n\n**证据**（`/home/openclaw/.openclaw/nightshift/instances/DL-1008-04/content-items/wsfood-es-29/produce/`）：`request.json`、`request-hash.txt`、`media-manifest.json`、`chat-submit.json`、`chat-confirm.json`、`run-status.json`、`poll.log`、`project-media.json`、`failure.json`、`operations-*.json`。"
+    },
+    "operation": {
+      "status": "failed",
+      "externalTaskId": "video-pipeline-7e5d5cf6-bdaa-44ef-8994-f2d335ac54c5"
+    }
+  }
+]

@@ -317,7 +317,7 @@ function DecisionPanel({ request, onResolve }) {
             </button>)}
           </div>
           {chosen && <>
-            <textarea className="decision-note" aria-label="附言" value={note} onChange={(event) => setNote(event.target.value)} placeholder={chosen.effect === "retry" ? "附一句话给 Agent（可选），比如「已补素材」" : "暂停原因（可选）"} />
+            <textarea className="decision-note" aria-label="附言" value={note} onChange={(event) => setNote(event.target.value)} placeholder={NOTE_PLACEHOLDERS[chosen.effect] ?? "暂停原因（可选）"} />
             {request.groupSize > 1 && chosen.effect === "retry" && <label className="decision-group"><input type="checkbox" checked={applyToGroup} onChange={(event) => setApplyToGroup(event.target.checked)} />同样处理这组 {request.groupSize} 条</label>}
             {submitError && <p className="decision-error">{submitError}</p>}
             <button className="primary decision-submit" disabled={submitting} onClick={submit}>{submitting ? "提交中…" : `确认：${chosen.label}${applyToGroup && request.groupSize > 1 && chosen.effect === "retry" ? `（${request.groupSize} 条）` : ""}`}</button>
@@ -325,6 +325,12 @@ function DecisionPanel({ request, onResolve }) {
         </>}
   </section>;
 }
+
+const NOTE_PLACEHOLDERS = {
+  retry: "附一句话给 Agent（可选），比如「已补素材」",
+  redo: "写给 Agent：这次要怎么做（可选），比如「去掉第三方商标，换一段素材」",
+  skip: "跳过原因（可选），会写进完成通知",
+};
 
 function optionLabel(options, optionId) {
   return options.find((option) => option.id === optionId)?.label ?? optionId ?? "已决定";
