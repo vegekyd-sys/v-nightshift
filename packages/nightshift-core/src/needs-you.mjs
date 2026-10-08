@@ -130,6 +130,8 @@ export class NeedsYouTracker {
       const newReport = failure?.agentReport && !existing.evidence?.failure?.agentReport;
       const ledgerMoved = (existing.evidence?.operation?.status ?? null) !== (operation?.status ?? null);
       if (existing.status === "open" && existing.source === "engine" && failure && (staleWords || newReport || ledgerMoved)) {
+        // Words already read stay: after a restart the failure comes back without them.
+        if (!failure.agentReport && existing.evidence?.failure?.agentReport) failure = { ...failure, agentReport: existing.evidence.failure.agentReport };
         const text = describeStop({ failure, summary, operation, stage });
         return this.store.updateDecisionRequestText(existing.id, {
           ...text,

@@ -2582,6 +2582,50 @@ test("a stop with nothing paid goes on with the same card, at most twice", async
   store.close();
 });
 
+// V, 2026-10-09 01:01: after the deploy the four open GeeLark requests kept
+// their old words. The engine remembers which reports it has read only in
+// memory; after a restart every stopped card with an open request waited for a
+// report it would never read again, and was never observed.
+test("after a restart, a stop already in front of a person is observed and its request rewritten", async () => {
+  const id = "NS-STOP-RESTART";
+  const { runtime, store, workboard } = await stoppedRun({ id, stageId: "plan", outcome: { status: "completed" } });
+  const card = workboard.cards[0];
+  const failure = { kind: "contract_error", retryable: false, automaticRetry: false, rawError: "External side effect has no succeeded Night Shift operation checkpoint", validationPhase: "side_effect" };
+  store.upsertStageRun({ instanceId: id, stageId: "plan", attempt: 1, cardId: card.id, status: "blocked", failure });
+  const opened = store.openDecisionRequest({
+    instanceId: id, cardId: card.id, stageId: "plan", attempt: String(card.runId), source: "engine",
+    problem: "外部操作（付费生成、发布或上传）没有成功记录，无法确认它是否真的完成了", scope: "project",
+    options: [{ id: "retry", label: "重新执行", effect: "retry" }], groupKey: "g",
+    evidence: { failure: { ...failure, agentReport: "Card completed cleanly." }, describeVersion: 2 },
+  });
+  await runtime.reconcile(id, null, { inspectSessions: false });
+  const rewritten = store.getDecisionRequest(opened.id);
+  assert.equal(rewritten.evidence.describeVersion, 4);
+  assert.deepEqual(rewritten.options.map((option) => option.label), ["再试一次", "暂停项目"]);
+  assert.equal(rewritten.cause, "Card completed cleanly.", "the Agent's words read before the restart stay");
+  assert.equal(store.listEvents(id).filter((event) => event.type === "stage.stop.recovered").length, 0, "still the person's");
+  store.close();
+});
+
+// Shared VLab, 2026-10-09: the third stop was judged at 16:55 and its request
+// opened at 17:00. The two-minute wait guards the engine acting by itself; a
+// stop the engine will not act on has nothing to wait for.
+test("a stop with no recovery left reaches a person on the pass that first sees it", async () => {
+  const id = "NS-STOP-SPENT";
+  const { runtime, store, workboard } = await stoppedRun({
+    id, stageId: "plan", outcome: { status: "completed" },
+    session: { messages: [{ role: "assistant", stopReason: "stop", timestamp: Date.now() - 60_000, content: [{ type: "text", text: "需要人做：无\n原因：模型返回了不完整的工具调用" }] }] },
+  });
+  const card = workboard.cards[0];
+  store.upsertStageRun({ instanceId: id, stageId: "plan", attempt: 1, cardId: card.id, status: "blocked" });
+  for (const how of ["same", "same"]) {
+    store.appendEvent({ instanceId: id, type: "stage.stop.recovered", payload: { cardId: card.id, contentItemId: null, stageId: "plan", how, paid: false } });
+  }
+  await runtime.reconcile(id, null, { inspectSessions: true });
+  assert.equal(store.listDecisionRequests({ instanceId: id, status: "open" }).length, 1);
+  store.close();
+});
+
 test("every Agent brief asks for the stop report; a paid one says what a failed or unusable result means", async () => {
   const id = "NS-STOP-BRIEF";
   const { release, runtime, store } = await stoppedPaidItem(id, "failed", { observe: false });
