@@ -69,11 +69,23 @@ export class NightShiftNotificationCoordinator {
     const releases = [...releaseBySha.values()];
     const queue = buildNeedsYou({ store: this.store, instances, cards, releases, now: now.getTime() });
     const byInstance = new Map();
+    // A person already told about a stop in this project and stage, and not
+    // done with it, is not told again: later stops join it on the board. On
+    // V the broken Brazil proxy was announced four times in two nights, once
+    // per GeeLark item (2026-10-07 22:00 and 23:44, 10-08 01:04 and 01:07).
+    const told = new Set(this.store.listDecisionRequests({ status: "open" })
+      .filter((request) => request.announcedAt)
+      .map((request) => `${request.instanceId}\u0000${request.stageId}`));
+    const joined = [];
     for (const item of queue.items) {
       if (item.kind === "decision") {
         const request = this.store.getDecisionRequest(item.id);
         if (!request || request.announcedAt) continue;
         if (now.getTime() - Date.parse(request.createdAt) < this.needsYouBatchMs) continue;
+        if (told.has(`${request.instanceId}\u0000${request.stageId}`)) {
+          joined.push(request.id);
+          continue;
+        }
       } else {
         const transition = this.store.transitionNotificationSubject(`needs-you:${item.cardId}`, "review", now);
         if (!transition.changed || bootstrap) continue;
@@ -81,6 +93,7 @@ export class NightShiftNotificationCoordinator {
       if (!byInstance.has(item.instanceId)) byInstance.set(item.instanceId, []);
       byInstance.get(item.instanceId).push(item);
     }
+    if (joined.length) this.store.markDecisionRequestsAnnounced(joined, now);
     if (bootstrap) this.store.setNotificationMetadata(NEEDS_YOU_BOOTSTRAP_KEY, { completedAt: now.toISOString() }, now);
     const queued = [];
     for (const [instanceId, items] of byInstance) {

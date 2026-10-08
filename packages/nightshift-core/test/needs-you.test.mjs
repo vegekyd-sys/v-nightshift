@@ -274,6 +274,46 @@ test("the needs-you notice batches stops per project, groups them, and is sent o
   store.close();
 });
 
+// GeeLark on V: the broken Brazil proxy was announced four times in two
+// nights, once per item. A person is told once per project and stage until
+// they have dealt with what they were told; later stops join it.
+test("a stop is not announced again while the person has not dealt with the last one in that stage", async () => {
+  const { advance, card, now, observe, release, runtime, store, workboard } = await fixture();
+  const sent = [];
+  const coordinator = new NightShiftNotificationCoordinator({
+    baseUrl: "https://nightshift.example",
+    now: () => new Date(now()),
+    sender: { async send(delivery) { sent.push(delivery); return { messageId: `om_${sent.length}` }; } },
+    store,
+  });
+  const releases = [{ workflowSha256: release.workflowSha256, manifest: { spec: { notifications: { instanceCompleted: { enabled: true, to: "oc_group" } } } } }];
+  const pass = () => coordinator.reconcile({ cards: workboard.cards, instances: store.listInstances(), releases });
+  await pass();
+  const proxy = { ...MAKARON_STOP, agentReport: "需要人做：请更新巴西手机的代理账号\n原因：代理账号密码被拒" };
+  const first = observe(card("p1", "video-1"), { failure: proxy });
+  advance(3 * MIN);
+  await pass();
+  assert.equal(sent.length, 1);
+
+  // The next item stops on the same proxy an hour later, worded differently.
+  advance(60 * MIN);
+  const second = observe(card("p2", "video-2"), { failure: { ...proxy, agentReport: "需要人做：请去代理后台更新巴西代理的账号密码\n原因：SOCKS5 认证被拒" } });
+  advance(3 * MIN);
+  await pass();
+  assert.equal(sent.length, 1, "not told again");
+  assert.ok(store.getDecisionRequest(second.id).announcedAt, "it joined the open one");
+  assert.equal(store.listDecisionRequests({ status: "open" }).length, 2, "both wait on the board");
+
+  // Once the person has dealt with what they were told, a new stop is news.
+  await runtime.decide({ decisionId: first.id, optionId: "skip", actor: "local:Tianyi" });
+  await runtime.decide({ decisionId: second.id, optionId: "skip", actor: "local:Tianyi" });
+  observe(card("p3", "video-3"), { failure: proxy });
+  advance(3 * MIN);
+  await pass();
+  assert.equal(sent.length, 2);
+  store.close();
+});
+
 test("without a target the notice is not sent, yet the requests count as seen", async () => {
   const { advance, card, now, observe, release, store, workboard } = await fixture();
   const sent = [];
