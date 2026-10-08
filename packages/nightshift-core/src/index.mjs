@@ -13,7 +13,7 @@ export { actionKey, buildAgentBrief, nativeActionKey, planNextActions, PROJECT_C
 export { findNightShiftExternalOperation, resolveNightShiftCardContext, resolveNightShiftOperationKeys } from "./card-context.mjs";
 export { WorkboardCliAdapter, idempotencyLabel } from "./workboard-adapter.mjs";
 export { NightShiftStore } from "./store.mjs";
-export { NeedsYouTracker, REVIEW_OPTIONS, STOP_OPTIONS, buildNeedsYou, describeStop, eligibleProject, groupKey } from "./needs-you.mjs";
+export { DESCRIBE_VERSION, NeedsYouTracker, REVIEW_OPTIONS, STOP_OPTIONS, buildNeedsYou, describeStop, eligibleProject, groupKey, readStopReport, stopOptionsFor } from "./needs-you.mjs";
 export { NightShiftNotificationCoordinator, OpenClawFeishuNotificationSender, completionPresentation, completionTarget, needsYouGroups, needsYouPresentation } from "./notifications.mjs";
 export { FEISHU_TARGET, normalizeProjectCollaboration } from "./project.mjs";
 export { createReplaySnapshot, replaySnapshotMetrics } from "./replay-snapshot.mjs";

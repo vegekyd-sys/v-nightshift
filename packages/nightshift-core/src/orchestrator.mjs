@@ -374,7 +374,7 @@ export function buildAgentBrief(release, instance, stage, contentItem = null, co
     ...(contentItem ? [`Content item: ${JSON.stringify(summarizeContentItem(contentItem))}`] : []),
     `Objective: ${strategy?.description ?? stage.description ?? "Complete the declared stage."}`,
     ...(contentItem?.revisionRequest && (contentItem.revisionRequest.stageIds ?? []).includes(stage.id) ? [
-      `Redo requested (revision ${contentItem.revision}): ${contentItem.revisionRequest.actor} reviewed the previous result of this item and asked for changes. Their note, verbatim: «${String(contentItem.revisionRequest.note ?? "(no note)").slice(0, 1500)}». Do this stage again so the result meets that note: write new outputs and a new stage handoff over the previous ones; do not hand back the previous result.`,
+      redoLine(release, stage, contentItem),
     ] : []),
     // A Night Shift card runs as the same agent, with the same Skills, as a
     // chat turn. The stage's Skills are a hint and an install-time dependency
@@ -421,9 +421,13 @@ export function buildAgentBrief(release, instance, stage, contentItem = null, co
     ...((stage.completeWhen ?? []).length ? [] : ["Completion checks: human decision"]),
     `Safety: ${(stage.sideEffects ?? []).length ? `declared external side effects: ${stage.sideEffects.join(", ")}; ${stage.approval?.before ? `requires ${stage.approval.before} approval` : "no separate human approval gate"}` : "no declared external side effect"}`,
     ...((stage.sideEffects ?? []).length ? [
-      `External-operation gate: before the first paid/public/external call, compute a stable SHA-256 of the exact external request and run \`node ${NIGHTSHIFTCTL_SCRIPT} operations reserve <Card id from Worker protocol> --request-hash <sha256>\`. If the response is reused+succeeded, reuse its result and do not call the provider again. If it is reused+executing with an externalTaskId, resume by reading that external task and never submit a replacement. If it is reused+reserved without an externalTaskId, treat the outcome as ambiguous and block for readback instead of resubmitting. After provider submission run \`operations checkpoint ... --status executing --external-task-id <id>\`; after verified success run \`operations checkpoint ... --status succeeded --result-json '<json>'\`. The ledger is the only external side-effect checkpoint.`,
+      `External-operation gate: before the first paid/public/external call, compute a stable SHA-256 of the exact external request and run \`node ${NIGHTSHIFTCTL_SCRIPT} operations reserve <Card id from Worker protocol> --request-hash <sha256>\`. If the response is reused+succeeded, reuse its result and do not call the provider again; if that result does not pass this stage's checks, block with the stop report rather than paying again, asking a person to look at the result. If it is reused+executing with an externalTaskId, resume by reading that external task and never submit a replacement. If it is reused+reserved without an externalTaskId, treat the outcome as ambiguous and block for readback instead of resubmitting. If it is reused+failed, the call under this key already failed: do not submit again under it; block with the stop report, and Night Shift starts a fresh attempt with a new key. After provider submission run \`operations checkpoint ... --status executing --external-task-id <id>\`; after verified success run \`operations checkpoint ... --status succeeded --result-json '<json>'\`. The ledger is the only external side-effect checkpoint.`,
     ] : []),
     "Workboard completion safety: this attempt owns only this card. When the outputs are written, call workboard_complete exactly once (in an isolated Worker without that tool, `openclaw gateway call workboard.cards.complete` once with the real card id and claim token), or block once for a real blocker. Never probe, test, or enumerate completion RPCs, never use placeholder input such as summary=test, never touch another card, do not search source code or inspect plugin internals, and never print the claim token.",
+    // The 需要你 card shows these two lines. Agents never see the operator
+    // skill, so before this line they wrote long English reports and the card
+    // could not say what a person should do (DL-1008-04 on V, 2026-10-08).
+    "Stop report: if you end without completing this stage, begin your final message with two lines in Chinese, written for someone who is not technical: 需要人做：<the one thing only a person can do so this can go on, as one plain instruction of at most 40 Chinese characters that says what to give or fix and where, with no ids, field names, file paths or card names — such as 请给 seedance 视频服务充值, 请在 Scene 里补一段烟雾测试画面, 请更新巴西手机的代理账号, 请看一下这条视频能不能用：<link>; or 无 when no person is needed, such as a crash, a timeout or a provider error a new attempt may fix: Night Shift then tries again by itself> 原因：<one plain sentence on what actually happened, at most 60 Chinese characters; not the name of a Night Shift rule>. Details may follow after a blank line.",
     "Return a concise result with evidence links or an explicit blocker. Do not invent missing evidence.",
   ];
   const brief = lines.join("\n");
@@ -431,6 +435,21 @@ export function buildAgentBrief(release, instance, stage, contentItem = null, co
     throw new Error(`Night Shift card brief exceeds the native Workboard ${WORKBOARD_NOTES_LIMIT} character limit (${brief.length})`);
   }
   return brief;
+}
+
+// Why this stage runs again for the item: a person sent its review back with
+// changes (要求修改), or a stopped stage went on as a fresh attempt.
+function redoLine(release, stage, contentItem) {
+  const request = contentItem.revisionRequest;
+  const note = `Their note, verbatim: «${String(request.note ?? "(no note)").slice(0, 1500)}».`;
+  const from = release.spec?.stages?.find((entry) => entry.id === request.fromStageId);
+  if (!from || from.actor === "human") {
+    return `Redo requested (revision ${contentItem.revision}): ${request.actor} reviewed the previous result of this item and asked for changes. ${note} Do this stage again so the result meets that note: write new outputs and a new stage handoff over the previous ones; do not hand back the previous result.`;
+  }
+  const ledger = (stage.sideEffects ?? []).length
+    ? " This revision has its own external-operation key, so `operations reserve` returns a new operation; a paid or external call made under it is a new one the person accepted to pay for. Do not reuse the previous attempt's provider result."
+    : "";
+  return `Redo requested (revision ${contentItem.revision}): ${request.actor} started a fresh attempt after the previous attempt of this item stopped at ${from.id}. ${note} Do this stage again${stage.id === from.id ? "" : " on the redone result"}: write new outputs and a new stage handoff over the previous ones.${ledger}`;
 }
 
 // What the completion validator derives by itself, so the agent never has to

@@ -283,7 +283,6 @@ function DecisionPanel({ request, onResolve }) {
   const rows = [
     ["为什么", detail?.cause],
     ["影响", detail?.impact],
-    ["建议怎么做", detail?.suggestion],
   ].filter(([, value]) => value);
 
   async function submit() {
@@ -301,7 +300,7 @@ function DecisionPanel({ request, onResolve }) {
   }
 
   return <section className="decision-panel">
-    <div className="decision-panel-head"><AlertTriangle size={16} /><span>需要你决定</span>{request.groupSize > 1 && <em>同一原因共 {request.groupSize} 条</em>}</div>
+    <div className="decision-panel-head"><AlertTriangle size={16} /><span>需要你处理</span>{request.groupSize > 1 && <em>同一原因共 {request.groupSize} 条</em>}</div>
     <p className="decision-problem">{detail?.problem ?? request.problem}</p>
     {rows.length > 0 && <dl className="decision-facts">{rows.map(([title, value]) => <React.Fragment key={title}><dt>{title}</dt><dd>{value}</dd></React.Fragment>)}</dl>}
     {!detail && !loadError && <p className="decision-quiet">正在载入原因和建议…</p>}
@@ -317,14 +316,21 @@ function DecisionPanel({ request, onResolve }) {
             </button>)}
           </div>
           {chosen && <>
-            <textarea className="decision-note" aria-label="附言" value={note} onChange={(event) => setNote(event.target.value)} placeholder={chosen.effect === "retry" ? "附一句话给 Agent（可选），比如「已补素材」" : "暂停原因（可选）"} />
-            {request.groupSize > 1 && chosen.effect === "retry" && <label className="decision-group"><input type="checkbox" checked={applyToGroup} onChange={(event) => setApplyToGroup(event.target.checked)} />同样处理这组 {request.groupSize} 条</label>}
+            <textarea className="decision-note" aria-label="附言" value={note} onChange={(event) => setNote(event.target.value)} placeholder={NOTE_PLACEHOLDERS[chosen.effect] ?? "暂停原因（可选）"} />
+            {request.groupSize > 1 && ["retry", "continue"].includes(chosen.effect) && <label className="decision-group"><input type="checkbox" checked={applyToGroup} onChange={(event) => setApplyToGroup(event.target.checked)} />同样处理这组 {request.groupSize} 条</label>}
             {submitError && <p className="decision-error">{submitError}</p>}
-            <button className="primary decision-submit" disabled={submitting} onClick={submit}>{submitting ? "提交中…" : `确认：${chosen.label}${applyToGroup && request.groupSize > 1 && chosen.effect === "retry" ? `（${request.groupSize} 条）` : ""}`}</button>
+            <button className="primary decision-submit" disabled={submitting} onClick={submit}>{submitting ? "提交中…" : `确认：${chosen.label}${applyToGroup && request.groupSize > 1 && ["retry", "continue"].includes(chosen.effect) ? `（${request.groupSize} 条）` : ""}`}</button>
           </>}
         </>}
   </section>;
 }
+
+const NOTE_PLACEHOLDERS = {
+  continue: "告诉 Agent 你做了什么（可选），比如「已充值」「已补素材」",
+  retry: "附一句话给 Agent（可选）",
+  redo: "这次要怎么改（可选），比如「去掉第三方商标」",
+  skip: "为什么不做（可选），会写进完成通知",
+};
 
 function optionLabel(options, optionId) {
   return options.find((option) => option.id === optionId)?.label ?? optionId ?? "已决定";

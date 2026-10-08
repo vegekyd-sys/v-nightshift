@@ -291,9 +291,12 @@ export class NightShiftStore {
     return { ...this.getDecisionRequest(id), reused: false };
   }
 
-  updateDecisionRequestText(id, { problem, cause = "", impact = "", suggestion = "", detail = "", evidence }, now = new Date()) {
-    this.db.prepare(`UPDATE decision_requests SET problem = ?, cause = ?, impact = ?, suggestion = ?, detail = ?, evidence_json = ? WHERE id = ? AND status = 'open'`)
-      .run(problem, cause, impact, suggestion, detail, JSON.stringify(evidence ?? {}), id);
+  // Options are rewritten with the text: what a stop allows follows the same
+  // facts (the paid-operation ledger) as the words that explain it.
+  updateDecisionRequestText(id, { problem, cause = "", impact = "", suggestion = "", detail = "", evidence, options = null }, now = new Date()) {
+    this.db.prepare(`UPDATE decision_requests SET problem = ?, cause = ?, impact = ?, suggestion = ?, detail = ?, evidence_json = ?,
+      options_json = COALESCE(?, options_json) WHERE id = ? AND status = 'open'`)
+      .run(problem, cause, impact, suggestion, detail, JSON.stringify(evidence ?? {}), options ? JSON.stringify(options) : null, id);
     const current = this.getDecisionRequest(id);
     this.appendEvent({ instanceId: current?.instanceId, type: "decision.described", payload: { decisionId: id }, now });
     return current;
