@@ -38,14 +38,19 @@ async function run(input) {
       api("/api/cards?refresh=1"),
     ]);
     const cards = cardsResult.cards.filter((card) => label(card, "instance") === subject);
+    // A card a newer attempt of its stage and item replaced stays blocked on
+    // the native board; it is not stuck (DL-1009-02, 2026-10-10).
+    const superseded = supersededCards(project.instance ?? project);
+    const live = cards.filter((card) => !superseded.has(card.id));
     return {
       project,
       summary: {
-        active: cards.filter((card) => card.status === "running").length,
-        blocked: cards.filter((card) => card.status === "blocked").length,
-        done: cards.filter((card) => card.status === "done").length,
-        queued: cards.filter((card) => ["ready", "todo", "planned"].includes(card.status)).length,
-        review: cards.filter((card) => card.status === "review").length,
+        active: live.filter((card) => card.status === "running").length,
+        blocked: live.filter((card) => card.status === "blocked").length,
+        superseded: cards.length - live.length,
+        done: live.filter((card) => card.status === "done").length,
+        queued: live.filter((card) => ["ready", "todo", "planned"].includes(card.status)).length,
+        review: live.filter((card) => card.status === "review").length,
       },
       tasks: cards.map((card) => ({
         agentId: card.agentId ?? null,
@@ -57,6 +62,7 @@ async function run(input) {
         sessionKey: card.sessionKey ?? card.metadata?.attempts?.at(-1)?.sessionKey ?? null,
         stageId: card.metadata?.automation?.stageId ?? label(card, "stage"),
         status: card.status,
+        superseded: superseded.has(card.id),
         title: card.title,
         updatedAt: card.updatedAt,
       })),
@@ -310,4 +316,15 @@ function option(input, name) {
 
 function label(card, prefix) {
   return card.labels?.find((entry) => entry.startsWith(`${prefix}:`))?.slice(prefix.length + 1) ?? null;
+}
+
+function supersededCards(project) {
+  const runs = [
+    ...(project.stageRuns ?? []).map((run) => ({ ...run, contentItemId: null })),
+    ...(project.contentItemRuns ?? []),
+  ];
+  const key = (run) => `${run.stageId}:${run.contentItemId ?? "project"}`;
+  const latest = new Map();
+  for (const run of runs) latest.set(key(run), Math.max(latest.get(key(run)) ?? 0, run.attempt ?? 1));
+  return new Set(runs.filter((run) => run.cardId && (run.attempt ?? 1) < latest.get(key(run))).map((run) => run.cardId));
 }

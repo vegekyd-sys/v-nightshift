@@ -16,7 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { api } from "./api.js";
-import { cardAttention, countByKind, enabledStages, inScope, isToday, needsYouQueue, projectProgress, projectRuns, projectScope, scopeAuthorizes, skippedItems, stageExpected, taskAttention } from "./attention.js";
+import { cardAttention, countByKind, enabledStages, inScope, isToday, needsYouQueue, preferTask, projectProgress, projectRuns, projectScope, scopeAuthorizes, skippedItems, stageExpected, supersededCards, taskAttention } from "./attention.js";
 import { Drawer, Icons, Sidebar } from "./components.jsx";
 
 
@@ -289,9 +289,11 @@ function boardEntries(data) {
   const stageTitles = new Map((data?.workflows ?? []).map((release) => [release.workflowSha256, new Map((release.manifest?.spec?.stages ?? []).map((stage) => [stage.id, stage.title]))]));
   const runByCard = new Map();
   const operationByCard = new Map();
+  const superseded = new Set();
   for (const instance of instances.values()) {
     for (const run of [...(instance.stageRuns ?? []), ...(instance.contentItemRuns ?? [])]) if (run.cardId) runByCard.set(run.cardId, run);
     for (const operation of instance.operations ?? []) operationByCard.set(operation.ownerCardId, operation);
+    for (const cardId of supersededCards(instance)) superseded.add(cardId);
   }
   return (data?.cards ?? []).map((card) => {
     const instance = instances.get(cardLabel(card, "instance"));
@@ -308,7 +310,7 @@ function boardEntries(data) {
       contentTitle: content?.title ?? null,
       stageId: card.metadata?.automation?.stageId ?? label(card, "stage"),
       stageTitle: instance ? stageTitles.get(instance.workflowSha256)?.get(card.metadata?.automation?.stageId ?? label(card, "stage")) ?? null : null,
-      attention: cardAttention(card, { run: runByCard.get(card.id), operation: operationByCard.get(card.id), shelved: projectState === "shelved", approval, queue, skipped: skipped.has(contentItemId), skipReason: skipped.get(contentItemId) ?? null }),
+      attention: cardAttention(card, { run: runByCard.get(card.id), operation: operationByCard.get(card.id), shelved: projectState === "shelved", approval, queue, skipped: skipped.has(contentItemId), skipReason: skipped.get(contentItemId) ?? null, superseded: superseded.has(card.id) }),
     };
   });
 }
@@ -1324,14 +1326,6 @@ function attentionLabel(task) {
   return statusLabel(task.status);
 }
 
-function statusOrder(status) { return ({ running: 0, retry_wait: 1, review: 2, blocked: 3, ready: 4, done: 5 })[status] ?? 6; }
-
-function preferTask(candidate, current) {
-  const candidateRank = statusOrder(candidate.status);
-  const currentRank = statusOrder(current.status);
-  if (candidateRank !== currentRank) return candidateRank < currentRank;
-  return new Date(candidate.card?.updatedAt ?? candidate.updatedAt ?? 0) > new Date(current.card?.updatedAt ?? current.updatedAt ?? 0);
-}
 
 function statusLabel(status) {
   return ({ ready: "待开始", todo: "待开始", planned: "待开始", backlog: "待开始", triage: "待开始", scheduled: "定时待发", running: "进行中", retry_wait: "自动恢复中", review: "待审核", blocked: "已阻塞", done: "已完成", cancelled: "已取消" })[status] ?? status;

@@ -222,9 +222,41 @@ export function projectRuns(instance, { cardsById = new Map(), now = Date.now(),
   });
 }
 
+// Cards another attempt of the same stage and item replaced: a redo after
+// 要求修改, or a fresh attempt after a stop. The native board has no cancelled
+// state, so the replaced card stays blocked there; the item's work goes on in
+// the newer card (DL-1009-02 on V, 2026-10-10: five such cards showed as
+// 自愈中 in a project that had delivered all 24).
+export function supersededCards(instance) {
+  const runs = [
+    ...(instance.stageRuns ?? []).map((run) => ({ ...run, contentItemId: null })),
+    ...(instance.contentItemRuns ?? []),
+  ];
+  const key = (run) => `${run.stageId}:${run.contentItemId ?? "project"}`;
+  const latest = new Map();
+  for (const run of runs) latest.set(key(run), Math.max(latest.get(key(run)) ?? 0, run.attempt ?? 1));
+  return new Set(runs.filter((run) => run.cardId && (run.attempt ?? 1) < latest.get(key(run))).map((run) => run.cardId));
+}
+
+// Which of two tasks of one stage and item a stage shows: the newer attempt,
+// whatever its status; within one attempt (an approval and its execution card),
+// the one further from done.
+export function preferTask(candidate, current) {
+  if (!candidate.isApproval && !current.isApproval && (candidate.attempt ?? 1) !== (current.attempt ?? 1)) {
+    return (candidate.attempt ?? 1) > (current.attempt ?? 1);
+  }
+  const candidateRank = statusOrder(candidate.status);
+  const currentRank = statusOrder(current.status);
+  if (candidateRank !== currentRank) return candidateRank < currentRank;
+  return new Date(candidate.card?.updatedAt ?? candidate.updatedAt ?? 0) > new Date(current.card?.updatedAt ?? current.updatedAt ?? 0);
+}
+
+export function statusOrder(status) { return ({ running: 0, retry_wait: 1, review: 2, blocked: 3, ready: 4, done: 5 })[status] ?? 6; }
+
 // Attention for a native card on its own (Live Board), using the run and the
 // paid operation behind it when the card belongs to a Night Shift project.
-export function cardAttention(card, { run = null, operation = null, shelved = false, approval = false, queue = null, skipped = false, skipReason = null } = {}) {
+export function cardAttention(card, { run = null, operation = null, shelved = false, approval = false, queue = null, skipped = false, skipReason = null, superseded = false } = {}) {
+  if (superseded) return { kind: "superseded", reason: "已由新的一次尝试接着做" };
   const status = run?.status === "blocked" && run.failure?.automaticRetry && run.failure?.nextRetryAt ? "retry_wait" : card.status;
   return taskAttention({ ...(run ?? {}), card: { ...card, status: status === "retry_wait" ? "blocked" : card.status }, status, requiresApproval: approval, skipped, skipReason }, { operation, shelved, queue });
 }
