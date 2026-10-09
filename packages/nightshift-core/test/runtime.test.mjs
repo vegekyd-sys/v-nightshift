@@ -2640,3 +2640,20 @@ test("every Agent brief asks for the stop report; a paid one says what a failed 
   assert.match(paid, /reused\+succeeded.*does not pass this stage's checks, block.*asking a person to look at the result/);
   store.close();
 });
+
+// V, 2026-10-09: DL-1009-07's paid calls ran for hours with no video (tc-en-02:
+// submitted 20:28, still no video at 01:24) while each card's Agent polled on,
+// and one Makaron run sat on a proposal awaiting confirmation. Ten minutes is
+// the usual result; an hour with nothing is a stop, not a wait.
+test("a paid stage's brief bounds the wait for a provider result and answers a confirmation the brief settles", async () => {
+  const id = "NS-WAIT-BRIEF";
+  const { release, runtime, store } = await stoppedPaidItem(id, "failed", { observe: false });
+  const item = runtime.contentItemsWithRevisions(id)[0];
+  const paid = buildAgentBrief(release.manifest, store.getInstance(id), release.manifest.spec.stages.find((stage) => stage.id === "produce"), item);
+  assert.match(paid, /If the provider has no result 60 minutes after submission, stop waiting/);
+  assert.match(paid, /原因.*how long it ran and where it stopped/);
+  assert.match(paid, /asks to confirm a plan, script or proposal that this brief already settles, confirm it once in the same project/);
+  const free = buildAgentBrief(release.manifest, store.getInstance(id), release.manifest.spec.stages.find((stage) => stage.id === "brief"), item);
+  assert.doesNotMatch(free, /60 minutes after submission/, "only stages with side effects wait on providers");
+  store.close();
+});
