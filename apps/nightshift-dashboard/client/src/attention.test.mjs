@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { countByKind, expectedTasks, inScope, projectProgress, projectScope, scopeAuthorizes, stageExpected, taskAttention } from "./attention.js";
+import { cardAttention, countByKind, expectedTasks, inScope, preferTask, projectProgress, projectScope, scopeAuthorizes, stageExpected, supersededCards, taskAttention } from "./attention.js";
 
 const NOW = Date.parse("2026-09-28T10:00:00Z");
 const daysAgo = (days) => new Date(NOW - days * 86_400_000).toISOString();
@@ -181,4 +181,37 @@ test("while the Gateway restarts, a stopped card waits to be picked up, not judg
   assert.equal(cardAttention({ id: "asked", status: "blocked" }, { queue: holding }).kind, "needs-you", "a question already asked stays asked");
   const up = needsYouQueue({ items: [], pending: [] }, { status: "up" });
   assert.equal(cardAttention({ id: "cut", status: "blocked" }, { queue: up }).reason, "正在判定是否需要你");
+});
+
+// DL-1009-02 on V, 2026-10-10: five items went on as fresh attempts that were
+// delivered, yet the board showed 出片 19/24 and 「自愈中 5」 for a finished
+// project. The replaced cards stay blocked on the native board, which has no
+// cancelled state, and the stage view preferred a blocked card over a done one.
+const REDONE = {
+  id: "DL-1009-02",
+  stageRuns: [],
+  contentItemRuns: [
+    { stageId: "produce", contentItemId: "pt-01", attempt: 1, cardId: "old-01", status: "blocked" },
+    { stageId: "produce", contentItemId: "pt-01", attempt: 2, cardId: "new-01", status: "done" },
+    { stageId: "produce", contentItemId: "pt-02", attempt: 1, cardId: "only-02", status: "blocked" },
+  ],
+};
+
+test("a card another attempt replaced is superseded, not healing, and counts nowhere", () => {
+  const superseded = supersededCards(REDONE);
+  assert.deepEqual([...superseded], ["old-01"], "pt-02's only attempt is still the item's own");
+  const attention = cardAttention({ id: "old-01", status: "blocked" }, { run: REDONE.contentItemRuns[0], superseded: superseded.has("old-01") });
+  assert.equal(attention.kind, "superseded");
+  assert.match(attention.reason, /新的一次尝试/);
+  const counts = countByKind([{ attention }]);
+  assert.equal(counts.healing, 0);
+  assert.equal(counts["needs-you"], 0);
+});
+
+test("a stage shows an item's newest attempt, whatever its status", () => {
+  const [oldRun, newRun] = REDONE.contentItemRuns;
+  assert.equal(preferTask({ ...newRun }, { ...oldRun }), true, "attempt 2 done beats attempt 1 blocked");
+  assert.equal(preferTask({ ...oldRun }, { ...newRun }), false);
+  // Same attempt: the approval waiting on a person still shows over its blocked execution card.
+  assert.equal(preferTask({ attempt: 1, status: "review", isApproval: true }, { attempt: 1, status: "blocked" }), true);
 });
