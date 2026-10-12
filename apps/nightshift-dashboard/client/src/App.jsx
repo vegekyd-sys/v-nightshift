@@ -761,9 +761,8 @@ function FactoryInbox({ needsYou, onSelect }) {
   </div>;
 }
 
-// Every Workflow with projects in production, as one line each: its stages
-// summed over those projects, and the projects themselves. Lines that need a
-// person come first, then the busiest.
+// Every Workflow with projects in production, as one line each with its
+// projects. Lines that need a person come first, then the busiest.
 function productionLines(groups, data, queue) {
   const now = Date.now();
   const lines = [];
@@ -806,7 +805,7 @@ function IdleLines({ idle, instances, onOpenLine }) {
 }
 
 function ProductionLine({ line, releaseBySha, onOpenLine }) {
-  const { group, release, projects, stages, index, counts } = line;
+  const { group, release, projects, counts } = line;
   const moving = counts.running + counts.healing;
   const state = counts["needs-you"] ? `${counts["needs-you"]} 件等你` : moving ? `${moving} 个在做` : counts.queued ? `${counts.queued} 个排队` : "空闲";
   const tone = counts["needs-you"] ? "needs-you" : moving ? "moving" : "quiet";
@@ -816,19 +815,6 @@ function ProductionLine({ line, releaseBySha, onOpenLine }) {
       <span className="floor-line-state">{state}</span>
       <ChevronRight size={18} />
     </button>
-    <ol className="floor-pipeline" style={{ "--stage-count": stages.length }}>
-      {stages.map((stage) => {
-        const tasks = index.get(stage.id) ?? [];
-        const stageCounts = countByKind(tasks);
-        const expected = Math.max(stageExpected(stage, projects), tasks.length - stageCounts.skipped, 1);
-        const finished = stageCounts.done >= expected;
-        return <li key={stage.id} className={`floor-stage ${finished ? "is-done" : ""} ${stageCounts.running + stageCounts.healing ? "is-moving" : ""} ${stageCounts["needs-you"] ? "has-needs" : ""}`} title={stage.title}>
-          <span className="floor-stage-title">{shortStageTitle(stage.title)}</span>
-          <span className="floor-stage-bar"><i style={{ width: `${Math.min(100, (stageCounts.done / expected) * 100)}%` }} /></span>
-          <small>{finished ? "完成" : `${stageCounts.done}/${expected}`}{stageCounts.running + stageCounts.healing ? ` · ${stageCounts.running + stageCounts.healing} 在做` : ""}{stageCounts["needs-you"] ? ` · ${stageCounts["needs-you"]} 等你` : ""}</small>
-        </li>;
-      })}
-    </ol>
     <div className="floor-projects">
       {projects.map((project) => {
         const tasks = line.tasks.filter((task) => task.projectId === project.id);
