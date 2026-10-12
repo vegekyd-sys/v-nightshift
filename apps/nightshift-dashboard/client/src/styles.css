@@ -911,3 +911,48 @@ body { background:radial-gradient(circle at 72% -20%,rgba(128,92,214,.14),transp
 @media (prefers-reduced-motion:reduce) { .gateway-banner-dot { animation:none; } }
 .gateway-last { margin:4px 0 0; padding:10px 10px 4px; border-top:1px solid #222a36; color:#8b93a8; font-size:12px; line-height:1.5; }
 @media (max-width:700px) { .gateway-banner { margin:12px 16px 0; } }
+/* 在产总览: every line in production at once. One soft block per line: its
+   name and state, then its projects. */
+.production-floor { display:flex; flex-direction:column; gap:16px; }
+.floor-empty { margin:8px 2px; color:#8b93a8; font-size:14px; }
+.floor-line { display:flex; flex-direction:column; gap:14px; padding:18px 20px 14px; border-radius:18px; background:rgba(255,255,255,.035); }
+.floor-line-head { width:100%; display:grid; grid-template-columns:minmax(0,1fr) auto 18px; align-items:center; gap:14px; padding:0; border:0; background:transparent; color:inherit; text-align:left; cursor:pointer; }
+.floor-line-head strong { display:block; overflow:hidden; color:#eef0f7; font-size:17px; font-weight:640; text-overflow:ellipsis; white-space:nowrap; }
+.floor-line-head small { display:block; margin-top:4px; color:#8b93a8; font-size:12px; }
+.floor-line-head svg { color:#6b7388; transition:transform .15s ease,color .15s ease; }
+.floor-line-head:hover svg { color:#e6e1ff; transform:translateX(2px); }
+.floor-line-state { padding:4px 10px; border-radius:9px; background:rgba(255,255,255,.05); color:#aab2c4; font-size:13px; white-space:nowrap; }
+.floor-line.tone-needs-you .floor-line-state { background:rgba(255,143,128,.12); color:#ffb4a9; }
+.floor-line.tone-moving .floor-line-state { background:rgba(125,141,255,.12); color:#b3bcff; }
+.floor-projects { display:flex; flex-direction:column; gap:2px; margin:0 -10px; }
+.floor-project { width:100%; display:grid; grid-template-columns:minmax(0,1fr) minmax(90px,180px) 64px minmax(0,112px); align-items:center; gap:14px; min-height:40px; padding:0 10px; border:0; border-radius:10px; background:transparent; color:inherit; text-align:left; cursor:pointer; }
+.floor-project:hover { background:rgba(255,255,255,.04); }
+.floor-project strong { overflow:hidden; color:#dfe3ec; font-size:14px; font-weight:560; text-overflow:ellipsis; white-space:nowrap; }
+.floor-project .factory-bar { height:6px; }
+.floor-project-fraction { color:#aab2c4; font-size:13px; text-align:right; font-variant-numeric:tabular-nums; }
+.floor-project-state { overflow:hidden; color:#8b93a8; font-size:12px; text-overflow:ellipsis; white-space:nowrap; }
+.floor-project-state.is-needs { color:#ffb4a9; }
+.floor-idle { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:4px 2px; }
+.floor-idle>span { margin-right:4px; color:#6b7388; font-size:12px; }
+.floor-idle button { display:inline-flex; align-items:center; gap:8px; min-height:32px; padding:0 12px; border:0; border-radius:9px; background:rgba(255,255,255,.04); color:#aab2c4; font-size:13px; cursor:pointer; }
+.floor-idle button:hover { background:rgba(255,255,255,.08); color:#e6e8f0; }
+.floor-idle em { color:#6b7388; font-size:12px; font-style:normal; }
+.factory-switcher-menu button.factory-switcher-floor { margin-bottom:4px; }
+.factory-switcher-menu button.factory-switcher-floor::after { content:""; }
+@media (max-width:700px) {
+  .production-floor { gap:12px; }
+  .floor-line { padding:16px 16px 10px; }
+  .floor-line-head strong { font-size:16px; }
+  .floor-projects { margin:0 -8px; }
+  .floor-project { grid-template-columns:minmax(0,1fr) 56px; grid-template-areas:"name name" "bar fraction" "state state"; row-gap:6px; padding:10px 8px; }
+  .floor-project strong { grid-area:name; white-space:normal; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; }
+  .floor-project .factory-bar { grid-area:bar; }
+  .floor-project-fraction { grid-area:fraction; }
+  .floor-project-state { grid-area:state; }
+  .floor-project-state:empty { display:none; }
+}
+.floor-idle .floor-idle-toggle { padding:0 4px; background:transparent; color:#6b7388; font-size:13px; }
+.floor-idle .floor-idle-toggle:hover { background:transparent; color:#aab2c4; }
+.floor-idle .floor-idle-toggle svg { transition:transform .15s ease; }
+.floor-idle .floor-idle-toggle[aria-expanded="true"] svg { transform:rotate(180deg); }
+.floor-idle.is-open .floor-idle-toggle { flex-basis:100%; justify-content:flex-start; }
