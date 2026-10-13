@@ -2,6 +2,7 @@
 
 最新的在上面。2026-10-02 之前的记录在 `vegekyd-sys/v-openclaw-platform` 的 CHANGELOG.md。
 
+- #10 feat(delivery): F测试专用验收按钮、原生入池任务与5工作日排期（待合入上线，D/E不动）
 - #9 feat(dashboard): Workflow 页默认显示「在产总览」：所有在产的线一屏看全（每条线的状态和在产项目、汇总的需要你），点线进入原来的泳道，点项目直达
 - #8 fix(brief): 付费外部调用超过 60 分钟没结果就停下交给夜班处理，不再一等几个小时；服务方要求确认 brief 已定的方案时直接在同一项目确认
 - #7 fix(dashboard): 被新尝试取代的旧卡不再显示成「自愈中」、不占进度，projects monitor 也不再算作 blocked（DL-1009-02 已交付却显示 19/24、自愈中 5）

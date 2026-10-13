@@ -143,3 +143,26 @@ test("confirmation survives an actual SQLite close/reopen and validates against 
   assert.equal(b.task.acceptedIds.length, 7);
   assert.equal(store.listEvents(a.task.id).filter(e => e.type === "instance.created").length, 1);
 });
+
+
+test("intake initialization cannot overwrite winning inputs and safely recovers a failed snapshot", async t => {
+  const { readFile } = await import("node:fs/promises");
+  const { NightShiftStore } = await import("../../../packages/nightshift-core/src/store.mjs");
+  const { NightShiftRuntime } = await import("../../../packages/nightshift-core/src/runtime.mjs");
+  const { createIntakeTaskInitializer } = await import("./intake-task.mjs");
+  const store = new NightShiftStore(); t.after(() => store.close());
+  const runtime = new NightShiftRuntime({store,workboard:{}});
+  const release = runtime.publish(await readFile(new URL("../../../examples/workflows/xingqing-buffer-intake-f.workflow.md", import.meta.url),"utf8"));
+  const project = {id:"BI-INIT-TEST",workflowSha256:release.workflowSha256,inputs:{acceptedItems:[{id:"v1"}],reviewConfirmation:{selectionHash:"first"}}};
+  let calls=0, snapshot;
+  const init = createIntakeTaskInitializer({store,runtime,prepare:p=>p,writeSnapshot:async task=>{calls++;if(calls===1)throw new Error("disk temporary failure");snapshot=structuredClone(task.inputs);}});
+  await assert.rejects(init.create(project),/disk temporary failure/);
+  assert.equal(store.getInstance(project.id).status,"paused");
+  await assert.rejects(init.create({...project,inputs:{acceptedItems:[{id:"intruder"}]}}),/UNIQUE/);
+  assert.equal(calls,1);
+  const resumed = await init.resume(store.getInstance(project.id));
+  assert.equal(resumed.status,"active");assert.equal(snapshot.acceptedItems[0].id,"v1");
+  store.updateInstanceStatus(project.id,"paused");
+  assert.equal((await init.resume(store.getInstance(project.id))).status,"paused");
+  assert.equal(calls,2);
+});

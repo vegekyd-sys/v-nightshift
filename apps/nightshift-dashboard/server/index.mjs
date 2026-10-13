@@ -1,3 +1,4 @@
+import { createIntakeTaskInitializer } from "./intake-task.mjs";
 import { handleDeliveryIntakeRequest } from "./delivery-intake-route.mjs";
 import { activeCardCount, warmupAdmission } from "./active-card-count.mjs";
 import { buildOverview } from "./overview.mjs";
@@ -203,6 +204,18 @@ let capacityProbeTimer = null;
 const contentManifestHashes = new Map();
 const checkBufferReadback = createBufferReadback();
 const checkIntakeMedia = createIntakeMediaChecker();
+const intakeTasks = createIntakeTaskInitializer({
+  store, runtime,
+  prepare: project => {
+    const instanceDir = resolve(dataDir, "instances", project.id);
+    return { ...project, inputs: { ...project.inputs, governance: normalizeProjectGovernance(project), nightshift: { instanceDir, contentItemsManifestPath: join(instanceDir, "content-items.json"), projectInputsPath: join(instanceDir, "project-inputs.json") } } };
+  },
+  writeSnapshot: async project => { await mkdir(project.inputs.nightshift.instanceDir, { recursive: true }); await writeProjectInputsSnapshot(project); },
+});
+// Recover only F intake initialization, never user-paused initialized tasks or D/E.
+for (const pending of store.listInstances().filter(project => project.status === "paused" && /^BI-[a-f0-9]{24}$/u.test(project.id) && store.getRelease(project.workflowSha256)?.workflowId === "xingqing-buffer-intake-f")) {
+  await intakeTasks.resume(pending);
+}
 const deliveryIntake = new DeliveryIntakeService({
   store,
   projectLinks,
@@ -236,8 +249,9 @@ const deliveryIntake = new DeliveryIntakeService({
     validateProjectRequest(release?.manifest, project);
     const preflight = await preflightProjectSkills(release.manifest, project);
     if (!preflight.ok) throw Object.assign(new Error("入池任务执行环境尚未就绪，未写入发布池。"), { statusCode: 422 });
-    return startInstance(project);
+    return intakeTasks.create(project);
   },
+  resumeTask: task => intakeTasks.resume(task),
   enqueue: () => changeScheduler.enqueue("delivery.confirmed"),
   readResult: id => readProjectStageOutput({ instanceDir: resolve(dataDir, "instances", id), stageId: "buffer-intake", output: "intakeResult" }),
 });

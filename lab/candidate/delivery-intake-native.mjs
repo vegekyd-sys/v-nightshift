@@ -14,22 +14,33 @@ import { canonicalJson } from '../../apps/nightshift-dashboard/delivery/review.j
 const runtimeDir=process.env.VLAB_CANDIDATE_RUNTIME, configPath=process.env.OPENCLAW_CONFIG_PATH, stateDir=process.env.OPENCLAW_STATE_DIR;
 assert(runtimeDir&&configPath&&stateDir,'private candidate environment required');
 const config=JSON.parse(await fs.readFile(configPath,'utf8'));const port=config.gateway.port;
-config.channels={};config.bindings=[];config.cron={enabled:false};config.plugins={allow:[],entries:{}};
+config.channels={};config.bindings=[];config.models={providers:{}};config.auth={profiles:{}};config.cron={enabled:false};config.plugins={allow:[],entries:{},slots:{memory:'none'}};
 config.agents={defaults:{workspace:path.join(stateDir,'workspace'),heartbeat:{every:'0m'}},entries:{makaron:{workspace:path.join(stateDir,'workspace')}}};
 await fs.mkdir(config.agents.defaults.workspace,{recursive:true});await fs.writeFile(configPath,JSON.stringify(config),{mode:0o600});
 const entry=path.join(runtimeDir,'openclaw/dist/index.js');
-const child=spawn(process.execPath,['--max-old-space-size=1024',entry,'gateway','--port',String(port)],{env:process.env,stdio:['ignore','pipe','pipe']});
+const candidateEnv={...process.env,OPENCLAW_PACKAGE_ROOT:path.join(runtimeDir,'openclaw'),OPENCLAW_GATEWAY_PORT:String(port),OPENCLAW_PATH_BOOTSTRAPPED:'1',XDG_CACHE_HOME:path.join(stateDir,'f-intake-cache'),npm_config_cache:path.join(stateDir,'f-intake-cache','npm')};
+const child=spawn(process.execPath,['--max-old-space-size=1024',entry,'gateway','--port',String(port)],{env:candidateEnv,stdio:['ignore','pipe','pipe']});
 // Never return raw Gateway log/config because they may contain credential metadata.
 const diagnostic=[];
 const safeWords=new Set('gateway mode local blocked error failed refused required port token auth config plugin worker permission path lock timeout leader active running another instance already occupied busy bind listen managed allow unsafe bootstrap missing connect expired enabled disable openclaw service startup initialization validation invalid startup release ownership shell command agent model primary default denied acquire start stopped sandbox rpc process signals heartbeat entry native policy operator repair startup source retry operation config-path state-dir supports requires not cannot is are with without for on at to the and invalid request role trusted origin ready ws disconnected channels cron'.split(' '));
-for(const stream of [child.stdout,child.stderr]){stream.setEncoding('utf8');stream.on('data',chunk=>{for(const line of chunk.split(/\r?\n/u)){if(line.trim())diagnostic.push((line.match(/Unsafe[^:\n]+/u)?.[0] ?? '') + ' ' + line.replace(/[A-Za-z0-9_./:+@=-]+/gu,word=>safeWords.has(word.toLowerCase())?word:'_').slice(0,200));}if(diagnostic.length>50)diagnostic.splice(0,diagnostic.length-50);});}
-const board='f-intake-candidate';const workboard=new WorkboardGatewayAdapter({board,configPath,entry,gatewayUrl:`ws://127.0.0.1:${port}`});
+for (const stream of [child.stdout, child.stderr]) {
+  stream.setEncoding('utf8');
+  stream.on('data', chunk => {
+    for (const line of chunk.split(/\r?\n/u)) {
+      const match = line.match(/plugin ["']([^"']+)["']/iu)?.[1];
+      const plugin = match && /^[a-z0-9@/_-]{1,80}$/iu.test(match) ? match : '';
+      if (line.trim()) diagnostic.push(plugin + ' ' + line.replace(/[A-Za-z0-9_./:+@=-]+/gu, word => safeWords.has(word.toLowerCase()) ? word : '_').slice(0,200));
+    }
+    if (diagnostic.length > 50) diagnostic.splice(0, diagnostic.length - 50);
+  });
+}
+const board='f-intake-candidate';const workboard=new WorkboardGatewayAdapter({board,configPath,entry,env:candidateEnv,rpcTimeoutMs:5000,gatewayUrl:`ws://127.0.0.1:${port}`});
 const scratch=path.join(process.env.VLAB_CANDIDATE_DATA??stateDir,'f-intake');await fs.mkdir(scratch,{recursive:true});
 let store=new NightShiftStore(path.join(scratch,'nightshift.sqlite'));
 let runtime=new NightShiftRuntime({store,workboard,board});
 try{
  let connected=false;
- for(let attempt=0;attempt<90;attempt++){
+ for(let attempt=0;attempt<20;attempt++){
   if(child.exitCode!==null)throw new Error(`private Gateway exited ${child.exitCode}; ${diagnostic.slice(-8).join("; ")}`);
   try{await workboard.connect();connected=true;break;}catch{await new Promise(r=>setTimeout(r,1000));}
  }

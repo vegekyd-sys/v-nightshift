@@ -11,8 +11,8 @@ const fail = (statusCode, message) => { throw Object.assign(new Error(message), 
 // Reuse a native Night Shift project as the durable confirmation/task record.
 // There is no parallel queue or card store, and no new SQLite schema.
 export class DeliveryIntakeService {
-  constructor({ store, loadSource, createTask, enqueue, readResult = async () => null, projectLinks, now = () => new Date() }) {
-    Object.assign(this, { store, loadSource, createTask, enqueue, readResult, projectLinks, now });
+  constructor({ store, loadSource, createTask, enqueue, resumeTask = async task => task, readResult = async () => null, projectLinks, now = () => new Date() }) {
+    Object.assign(this, { store, loadSource, createTask, enqueue, resumeTask, readResult, projectLinks, now });
     this.pending = new Map();
   }
 
@@ -65,6 +65,9 @@ export class DeliveryIntakeService {
     let task = this.store.getInstance(id);
     if (task) {
       if (task.inputs?.reviewConfirmation?.selectionHash !== selectionHash) fail(409, "这个批次已确认，不能更换已提交的视频集合。");
+      const previousStatus = task.status;
+      task = await this.resumeTask(task);
+      if (previousStatus === "paused" && task.status === "active") this.enqueue(task.id);
       return this.response(data, task, true);
     }
     const release = this.store.listReleases().find(entry => entry.workflowId === INTAKE_WORKFLOW_ID);
@@ -90,7 +93,7 @@ export class DeliveryIntakeService {
       // A second server process may win the database's unique project-id insert.
       const saved = this.store.getInstance(id);
       if (!saved || saved.inputs?.reviewConfirmation?.selectionHash !== selectionHash) throw error;
-      task = saved;
+      task = await this.resumeTask(saved);
     }
     this.enqueue(task.id);
     return this.response(data, task, false);
