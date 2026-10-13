@@ -80,6 +80,7 @@ export function readManifest(raw, hosts = TRUSTED_HOSTS) {
     for (let n = 2; names.has(fileName.toLowerCase()); n += 1) fileName = numbered(given, n);
     names.add(fileName.toLowerCase());
     items.push({
+      ...(typeof item.id === "string" && item.id.trim() ? { id: item.id.trim() } : {}),
       title,
       url: url.toString(),
       fileName,

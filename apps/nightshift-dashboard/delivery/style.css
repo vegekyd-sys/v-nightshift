@@ -100,3 +100,17 @@ button { font: inherit; color: inherit; }
   .frame { border-radius: 12px; }
   .caption h2 { font-size: 14px; }
 }
+/* Review controls exist only on explicitly enabled F manifests. */
+.review-summary { margin: 10px 0 0; font-size: 14px; line-height: 1.6; color: #526174; }
+.primary.intake { background: #165c48; }
+.review-status { margin: 20px 0; padding: 16px 20px; background: #f1f7f4; border: 1px solid #d5e6dc; border-radius: 12px; line-height: 1.65; }
+.review-status p { margin: 0; }
+.review-status a { display: inline-block; margin: 8px 16px 0 0; color: #165c48; }
+.review-status a[hidden], .review-status ul[hidden] { display: none; }
+.review-toggle { display: flex; align-items: center; gap: 8px; padding: 0 16px 14px; font-size: 13px; cursor: pointer; color: #8b3142; }
+.review-toggle input { width: 16px; height: 16px; accent-color: #b33f55; }
+.tile.is-rejected { border-color: #dcadb8; }
+.tile.is-rejected .caption h2 { color: #9b3e50; }
+
+.review-primary-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+@media (max-width: 720px) { .review-primary-actions { display: grid; grid-template-columns: 1fr 1fr; } .review-primary-actions .primary { padding: 0 12px; font-size: 14px; } }

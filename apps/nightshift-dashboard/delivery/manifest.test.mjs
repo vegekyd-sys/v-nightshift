@@ -62,3 +62,10 @@ test("anything that is not a version 1 manifest is refused", () => {
     assert.throws(() => readManifest(raw), /格式不对/);
   }
 });
+
+test("reviewable F manifests retain stable item identity without changing legacy delivery", () => {
+  const { delivery } = readManifest({ version: 1, title: "F测试", items: [{ id: "video-01", title: "第一条", url: `${CDN}/a.mp4` }] });
+  assert.equal(delivery.items[0].id, "video-01", "review submission must refer to the production item, not a page index");
+  const legacy = readManifest({ version: 1, items: [{ title: "a", url: `${CDN}/a.mp4` }] }).delivery;
+  assert.equal(Object.hasOwn(legacy.items[0], "id"), false);
+});
