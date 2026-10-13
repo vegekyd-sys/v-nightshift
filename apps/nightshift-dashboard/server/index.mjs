@@ -1,3 +1,5 @@
+import { createIntakeTaskInitializer } from "./intake-task.mjs";
+import { handleDeliveryIntakeRequest } from "./delivery-intake-route.mjs";
 import { activeCardCount, warmupAdmission } from "./active-card-count.mjs";
 import { buildOverview } from "./overview.mjs";
 import { runSchedulerPass, instanceCardIds, visibleCardIds } from "../../../packages/nightshift-core/src/scheduler-pass.mjs";
@@ -20,6 +22,9 @@ import { fileURLToPath } from "node:url";
 import { loadPublicAuth, requiresPublicAuth, verifyPublicAuth, resolveOperatorIdentity } from "./public-auth.mjs";
 import { resolveCardDecisionContext } from "./decision-context.mjs";
 import { sendJson } from "./http-json.mjs";
+import { DeliveryIntakeService } from "./delivery-intake.mjs";
+import { createBufferReadback } from "./buffer-readback.mjs";
+import { createIntakeMediaChecker } from "./intake-media.mjs";
 import {
   NeedsYouTracker,
   buildNeedsYou,
@@ -197,6 +202,59 @@ let shuttingDown = false;
 let capacityProbePromise = null;
 let capacityProbeTimer = null;
 const contentManifestHashes = new Map();
+const checkBufferReadback = createBufferReadback();
+const checkIntakeMedia = createIntakeMediaChecker();
+const intakeTasks = createIntakeTaskInitializer({
+  store, runtime,
+  prepare: project => {
+    const instanceDir = resolve(dataDir, "instances", project.id);
+    return { ...project, inputs: { ...project.inputs, governance: normalizeProjectGovernance(project), nightshift: { instanceDir, contentItemsManifestPath: join(instanceDir, "content-items.json"), projectInputsPath: join(instanceDir, "project-inputs.json") } } };
+  },
+  writeSnapshot: async project => { await mkdir(project.inputs.nightshift.instanceDir, { recursive: true }); await writeProjectInputsSnapshot(project); },
+});
+// Recover only F intake initialization, never user-paused initialized tasks or D/E.
+for (const pending of store.listInstances().filter(project => project.status === "paused" && /^BI-[a-f0-9]{24}$/u.test(project.id) && store.getRelease(project.workflowSha256)?.workflowId === "xingqing-buffer-intake-f")) {
+  await intakeTasks.resume(pending);
+}
+const deliveryIntake = new DeliveryIntakeService({
+  store,
+  projectLinks,
+  loadSource: async (id) => {
+    assertInstanceId(id);
+    const source = store.getInstance(id);
+    if (!source) return null;
+    const sourceRelease = store.getRelease(source.workflowSha256)?.manifest;
+    if (sourceRelease?.metadata?.id !== "xingqing-night-f") return { source, sourceRelease };
+    // Read the producing project's canonical local files, never a URL or
+    // arbitrary file path supplied by the browser.
+    const instanceDir = resolve(dataDir, "instances", id);
+    const page = await readProjectStageOutput({ instanceDir, stageId: "deliver-page", output: "deliveryPage" });
+    let manifest = null;
+    if (sourceRelease?.metadata?.id === "xingqing-night-f" && page?.published === true) {
+      try {
+        const path = await realpath(resolve(instanceDir, "deliver-page", "manifest.json"));
+        const root = await realpath(instanceDir);
+        if (!path.startsWith(`${root}${sep}`)) throw new Error("Outside project");
+        const info = await stat(path);
+        if (info.size > 1024 * 1024) throw new Error("Manifest too large");
+        manifest = JSON.parse(await readFile(path, "utf8"));
+      } catch {
+        throw Object.assign(new Error("这份批次清单暂时不可读取，请稍后重试。"), { statusCode: 409 });
+      }
+    }
+    return { source, sourceRelease, page, manifest, instanceDir, contentItems: store.listContentItems(id) };
+  },
+  createTask: async (project) => {
+    const release = store.getRelease(project.workflowSha256);
+    validateProjectRequest(release?.manifest, project);
+    const preflight = await preflightProjectSkills(release.manifest, project);
+    if (!preflight.ok) throw Object.assign(new Error("入池任务执行环境尚未就绪，未写入发布池。"), { statusCode: 422 });
+    return intakeTasks.create(project);
+  },
+  resumeTask: task => intakeTasks.resume(task),
+  enqueue: () => changeScheduler.enqueue("delivery.confirmed"),
+  readResult: id => readProjectStageOutput({ instanceDir: resolve(dataDir, "instances", id), stageId: "buffer-intake", output: "intakeResult" }),
+});
 
 await ensureWorkflow();
 await ensureSeedInstance();
@@ -266,6 +324,7 @@ server.listen(port, host, () => {
 });
 
 async function handleApi(request, response, url) {
+  if (await handleDeliveryIntakeRequest(request, response, url, { service: deliveryIntake, operatorIdentity, bodyJson, json })) return;
   if (request.method === "GET" && url.pathname === "/api/health") {
     const circuit = schedulerCircuit.snapshot();
     const schedulerStalled = Boolean(schedulerPromise && schedulerStartedAt && Date.now() - Date.parse(schedulerStartedAt) >= 90_000);
@@ -1570,6 +1629,16 @@ async function validateCompletion({ card, contentItemId, instance, release, reus
     }
   }
   if (handoff) evidence.handoff = handoff;
+  if (release?.metadata?.id === "xingqing-buffer-intake-f" && stageId === "buffer-intake") {
+    try {
+      const receipt = await readProjectStageOutput({ instanceDir: resolve(dataDir, "instances", instance.id), stageId, output: "intakeResult" });
+      evidence.intakeMedia = await checkIntakeMedia(instance.inputs);
+      evidence.bufferReadback = await checkBufferReadback(receipt, instance.inputs);
+    } catch (error) {
+      error.completionPhase = "outputs";
+      throw error;
+    }
+  }
   if (!stage?.outputs?.includes("deliveryManifest")) return checkedCompletionEvidence(card, evidence);
   if (!contentItemId) throw new Error("deliveryManifest completion requires a content item");
   const manifest = await loadDeliverables(instance.id, contentItemId);

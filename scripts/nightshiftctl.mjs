@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 // Import the one module this HTTP client needs, never the package index: the
 // index also loads the SQLite store, and Node prints an ExperimentalWarning on
 // stderr whenever node:sqlite is loaded.
 import { validateGovernanceManifest } from "../packages/nightshift-core/src/governance.mjs";
+import { planBufferIntake } from "../apps/nightshift-dashboard/server/buffer-intake-plan.mjs";
+import { createIntakeMediaChecker } from "../apps/nightshift-dashboard/server/intake-media.mjs";
 
 const baseUrl = process.env.NIGHTSHIFT_URL ?? "http://127.0.0.1:24879";
 const args = process.argv.slice(2);
@@ -20,6 +22,18 @@ try {
 
 async function run(input) {
   const [resource, action, subject] = input;
+  if (resource === "intake-plan" && action) {
+    const poolPath = option(input, "--pool"), copyPath = option(input, "--copies"), outputPath = option(input, "--output");
+    if (!poolPath || !copyPath || !outputPath) throw new Error("Usage: nightshiftctl intake-plan <project-inputs.json> --pool <pool.ndjson> --copies <copies.json> --output <plan.json>");
+    const inputs = JSON.parse(await readFile(resolve(action), "utf8"));
+    const rows = (await readFile(resolve(poolPath), "utf8")).split(/\r?\n/u).filter(Boolean).map(line => JSON.parse(line));
+    const copies = JSON.parse(await readFile(resolve(copyPath), "utf8"));
+    const mediaChecks = await createIntakeMediaChecker()(inputs.inputs ?? inputs);
+    const plan = planBufferIntake(inputs, rows, copies);
+    plan.mediaChecks = mediaChecks;
+    await writeFile(resolve(outputPath), JSON.stringify(plan, null, 2));
+    return { ok: true, output: resolve(outputPath), writes: plan.writes.length, reused: plan.unchanged.length, occupied: plan.occupiedCount };
+  }
   if (resource === "health") return api("/api/health");
   if (resource === "workflows" && action === "list") return api("/api/workflows");
   if (resource === "workflows" && ["validate", "import", "publish"].includes(action) && subject) {

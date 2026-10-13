@@ -29,6 +29,7 @@ const modules = (dir) => fs.readdirSync(path.join(repo, dir))
 const support = [
   ...modules("packages/nightshift-core/src"),
   ...modules("apps/nightshift-dashboard/server"),
+  ...filesUnder("apps/nightshift-dashboard/delivery").filter(name => name.endsWith(".js")),
   ...modules("scripts"),
   "node_modules/yaml/package.json",
   ...filesUnder("node_modules/yaml/dist"),
