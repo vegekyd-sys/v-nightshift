@@ -166,3 +166,11 @@ test("intake initialization cannot overwrite winning inputs and safely recovers 
   assert.equal((await init.resume(store.getInstance(project.id))).status,"paused");
   assert.equal(calls,2);
 });
+
+test("native Agent briefing and input snapshots retain non-secret Base resource identifiers", async () => {
+  const { redactSensitiveInputs } = await import("../../../packages/nightshift-core/src/orchestrator.mjs");
+  const f = fixture(); const r = await f.service.submit("F-TEST-01", f.body, "operator");
+  const project = f.instances.get(r.task.id);
+  assert.equal(redactSensitiveInputs(project.inputs).bufferTarget.baseId, "MOYqbvbt5amKPesStYEcRIrxnTb");
+  assert.equal(redactSensitiveInputs({ credential: "fake-secret", token: "fake-secret" }).credential,"[REDACTED]");
+});

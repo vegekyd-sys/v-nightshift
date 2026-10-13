@@ -22,7 +22,7 @@ spec:
     rejectedItemIds: {type: array, required: true}
     publicationTarget: {type: object, required: true, requiredProperties: [accountRecordId, tiktokHandle, geelarkDeviceId, market, language, timezone]}
     testScope: {type: object, required: true, requiredProperties: [serviceRecordId, periodStartLocalDate, periodEndLocalDate, scheduleLocalTime, publishCount, workdays]}
-    bufferTarget: {type: object, required: true, requiredProperties: [baseToken, tableId]}
+    bufferTarget: {type: object, required: true, requiredProperties: [baseId, tableId]}
     reviewConfirmation: {type: object, required: true, requiredProperties: [confirmed, manifestHash, selectionHash, confirmedBy, confirmedAt]}
     authorizationScope: {type: object, required: true, requiredProperties: [paidProduction, externalPublication]}
 ---

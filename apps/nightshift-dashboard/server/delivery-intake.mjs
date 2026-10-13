@@ -82,7 +82,7 @@ export class DeliveryIntakeService {
         enterpriseName: source.inputs.enterpriseName, planningDocUrl: source.inputs.planningDocUrl,
         publicationTarget: structuredClone(source.inputs.publicationTarget), testScope: { ...structuredClone(source.inputs.testScope), ...demandWindow(this.now(), source.inputs.publicationTarget.timezone), scheduleLocalTime: source.inputs.testScope.scheduleLocalTime ?? "19:50" },
         sourceInstanceDir: data.instanceDir ?? null,
-        bufferTarget: { baseToken: "MOYqbvbt5amKPesStYEcRIrxnTb", tableId: "tblwJhquHsqNWHKn" },
+        bufferTarget: { baseId: "MOYqbvbt5amKPesStYEcRIrxnTb", tableId: "tblwJhquHsqNWHKn" },
         acceptedItems: selection.accepted.map(item => ({ id: item.id, title: item.title, url: item.url, fileName: item.fileName ?? null, bytes: item.bytes ?? null, durationSec: item.durationSec ?? null })),
         rejectedItemIds: selection.rejected.map(item => item.id),
         reviewConfirmation: { sourceProjectId: sourceId, manifestHash: data.manifestHash, manifestUrl: data.manifestUrl, selectionHash, confirmedBy: actor, confirmedAt: this.now().toISOString(), confirmed: true },

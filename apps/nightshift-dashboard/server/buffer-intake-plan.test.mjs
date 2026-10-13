@@ -4,7 +4,7 @@ import { demandWindow, planBufferIntake, utcForLocal, validateBufferReceipt } fr
 import { createBufferReadback } from "./buffer-readback.mjs";
 
 function setup() {
-  const inputs = { sourceProjectId: "F-TEST-1", enterpriseName: "企业甲", publicationTarget: { accountRecordId: "account", tiktokHandle: "handle", geelarkDeviceId: "device", market: "巴西", language: "葡萄牙语", timezone: "America/Sao_Paulo" }, testScope: { ...demandWindow("2026-10-13T15:00:00Z", "America/Sao_Paulo"), publishCount: 5, workdays: 5, scheduleLocalTime: "19:50" }, bufferTarget: { baseToken: "base-test", tableId: "table-test" }, acceptedItems: Array.from({ length: 7 }, (_, i) => ({ id: `v${i + 1}`, url: `https://cdn.makaron.app/${i + 1}.mp4` })) };
+  const inputs = { sourceProjectId: "F-TEST-1", enterpriseName: "企业甲", publicationTarget: { accountRecordId: "account", tiktokHandle: "handle", geelarkDeviceId: "device", market: "巴西", language: "葡萄牙语", timezone: "America/Sao_Paulo" }, testScope: { ...demandWindow("2026-10-13T15:00:00Z", "America/Sao_Paulo"), publishCount: 5, workdays: 5, scheduleLocalTime: "19:50" }, bufferTarget: { baseId: "base-test", tableId: "table-test" }, acceptedItems: Array.from({ length: 7 }, (_, i) => ({ id: `v${i + 1}`, url: `https://cdn.makaron.app/${i + 1}.mp4` })) };
   const copies = inputs.acceptedItems.map(item => ({ contentItemId: item.id, videoDesc: `Texto ${item.id}`, qc: { status: "passed" } }));
   return { inputs, copies };
 }
