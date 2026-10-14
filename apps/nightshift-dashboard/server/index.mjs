@@ -1094,7 +1094,7 @@ function runDailyRetention() {
   storageRetention({ apply: true, actor: "nightshift-retention" })
     .then((result) => {
       retentionDay = today;
-      if (result.files > 0) console.log(`Night Shift storage retention removed ${result.files} files (${(result.bytes / 2 ** 30).toFixed(2)} GiB) from ${result.projects.length} finished projects`);
+      console.log(`Night Shift storage retention removed ${result.files} files (${(result.bytes / 2 ** 30).toFixed(2)} GiB) from ${result.projects.length} finished projects`);
     })
     .catch((error) => console.error(`Night Shift storage retention failed: ${error.message}`));
 }

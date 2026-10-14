@@ -1,15 +1,17 @@
 // Pre-merge candidate for finished-project storage retention (2026-10-14).
 //
-// Copies the shared VLab's Night Shift data (a copy of V's projects) into a private directory,
-// runs this branch's Live Board server on the copy without a Gateway, and checks against the
-// real project trees that:
+// Builds a private copy of V's projects from a fixture exported on V (its Night Shift database
+// with project events, every non-media file of the finished projects plus a few recent and
+// paused ones, and the path and size of every media file, recreated here as sparse files; the
+// shared VLab's own copy has its media stripped). Runs this branch's Live Board server on the
+// copy without a Gateway, and checks against the project trees that:
 //   1. GET /api/storage/retention plans without touching a file;
 //   2. the daily run fires at the configured hour and removes exactly the planned files;
 //   3. nothing else changed: every other file is still there, every content item that had a
 //      video still has one, and no JSON, Markdown or zip was removed;
 //   4. every retained project has a ledger and a storage.retention event, and a second run
 //      finds nothing to do.
-// The shared VLab data is only read.
+//   5. recently finished and paused projects are untouched.
 
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -19,8 +21,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 
-const SOURCE = process.env.NIGHTSHIFT_RETENTION_SOURCE
-  ?? "/srv/vlab-production-mirror/labs/instances/db91-parity/state/nightshift-native";
+const FIXTURE = process.env.NIGHTSHIFT_RETENTION_FIXTURE ?? "/tmp/ns-retention-fixture.tgz";
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const work = fs.mkdtempSync(path.join(process.env.VLAB_CANDIDATE_DATA ?? os.tmpdir(), "nightshift-retention-"));
@@ -70,12 +71,17 @@ const api = async (port, method = "GET") => {
 
 const started = Date.now();
 fs.mkdirSync(dataDir, { recursive: true });
-fs.copyFileSync(path.join(SOURCE, "nightshift.sqlite"), path.join(dataDir, "nightshift.sqlite"));
-assert.equal(spawnSync("cp", ["-a", path.join(SOURCE, "instances"), dataDir], { stdio: "inherit" }).status, 0);
+assert.equal(spawnSync("tar", ["-xzf", FIXTURE, "-C", dataDir], { stdio: "inherit" }).status, 0);
+const fixture = JSON.parse(fs.readFileSync(path.join(dataDir, "media.json"), "utf8"));
 const instancesRoot = path.join(dataDir, "instances");
+for (const [rel, size] of fixture.media) {
+  fs.mkdirSync(path.dirname(path.join(instancesRoot, rel)), { recursive: true });
+  fs.closeSync(fs.openSync(path.join(instancesRoot, rel), "w"));
+  fs.truncateSync(path.join(instancesRoot, rel), size);
+}
 const before = walk(instancesRoot);
 const videoItemsBefore = itemsWithVideo(before);
-console.log(`copied ${before.size} files in ${fs.readdirSync(instancesRoot).length} projects (${((Date.now() - started) / 1000).toFixed(0)} s)`);
+console.log(`built ${before.size} files (${fixture.media.length} media) in ${fs.readdirSync(instancesRoot).length} projects (${((Date.now() - started) / 1000).toFixed(0)} s)`);
 
 try {
   // 1. Plan only.
@@ -83,7 +89,8 @@ try {
   const plan = await api(24991);
   await planning.stop();
   assert.equal(plan.apply, false);
-  assert(plan.projects.length > 0, "the VLab copy has finished projects older than 14 days");
+  assert.deepEqual(new Set(plan.projects.map((project) => project.id)), new Set(fixture.eligible), "plans exactly the finished projects");
+  assert(plan.files > 0);
   assert.deepEqual(walk(instancesRoot), before, "planning changed no file");
   console.log(`plan: ${plan.projects.length} projects, ${plan.files} files, ${(plan.bytes / 2 ** 20).toFixed(1)} MiB`);
 
@@ -117,6 +124,10 @@ try {
   for (const rel of after.keys()) if (!rel.endsWith("/retention-ledger.json")) assert.equal(after.get(rel), before.get(rel), rel);
   assert.deepEqual([...videoItemsBefore].filter((item) => !itemsWithVideo(after).has(item)), [], "every item keeps a video");
 
+  for (const id of [...fixture.recent, ...fixture.paused]) {
+    assert.deepEqual(removed.filter((rel) => rel.startsWith(`${id}/`)), [], `${id} is untouched`);
+  }
+
   // 4. Records.
   const db = new DatabaseSync(path.join(dataDir, "nightshift.sqlite"), { readOnly: true });
   const events = db.prepare("SELECT instance_id, payload_json FROM audit_events WHERE type = 'storage.retention'").all();
@@ -126,7 +137,7 @@ try {
   assert.equal(events.reduce((sum, event) => sum + JSON.parse(event.payload_json).files, 0), plan.files);
 
   const sample = removed.slice(0, 8).join("\n  ");
-  console.log(`daily run removed ${removed.length} files (${(plan.bytes / 2 ** 20).toFixed(1)} MiB) from ${plan.projects.length} projects; ${videoItemsBefore.size} items with video all keep one`);
+  console.log(`daily run removed ${removed.length} files (${(plan.bytes / 2 ** 30).toFixed(2)} GiB) from ${plan.projects.length} projects; ${videoItemsBefore.size} items with video all keep one; ${fixture.recent.length} recent and ${fixture.paused.length} paused projects untouched`);
   console.log(`sample:\n  ${sample}`);
   console.log("PASS nightshift storage retention");
 } finally {
