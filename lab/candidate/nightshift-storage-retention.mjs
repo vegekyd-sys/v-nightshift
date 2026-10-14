@@ -2,7 +2,8 @@
 //
 // Builds a private copy of V's projects from a fixture exported on V (its Night Shift database
 // with project events, every non-media file of the finished projects plus a few recent and
-// paused ones, and the path and size of every media file, recreated here as sparse files; the
+// paused ones, and the path, size and inode of every media file, recreated here as sparse files
+// and hard links; the
 // shared VLab's own copy has its media stripped). Runs this branch's Live Board server on the
 // copy without a Gateway, and checks against the project trees that:
 //   1. GET /api/storage/retention plans without touching a file;
@@ -74,10 +75,18 @@ fs.mkdirSync(dataDir, { recursive: true });
 assert.equal(spawnSync("tar", ["-xzf", FIXTURE, "-C", dataDir], { stdio: "inherit" }).status, 0);
 const fixture = JSON.parse(fs.readFileSync(path.join(dataDir, "media.json"), "utf8"));
 const instancesRoot = path.join(dataDir, "instances");
-for (const [rel, size] of fixture.media) {
-  fs.mkdirSync(path.dirname(path.join(instancesRoot, rel)), { recursive: true });
-  fs.closeSync(fs.openSync(path.join(instancesRoot, rel), "w"));
-  fs.truncateSync(path.join(instancesRoot, rel), size);
+const firstPathOfInode = new Map();
+for (const [rel, size, inode] of fixture.media) {
+  const target = path.join(instancesRoot, rel);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  // V's delivery copies are hard links to the finals; rebuild them as links.
+  if (inode && firstPathOfInode.has(inode)) {
+    fs.linkSync(firstPathOfInode.get(inode), target);
+    continue;
+  }
+  fs.closeSync(fs.openSync(target, "w"));
+  fs.truncateSync(target, size);
+  if (inode) firstPathOfInode.set(inode, target);
 }
 const before = walk(instancesRoot);
 const videoItemsBefore = itemsWithVideo(before);

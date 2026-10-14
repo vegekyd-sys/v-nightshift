@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { lstat, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, sep } from "node:path";
 import { artifactFromHandoffDirectory, instanceRelativeArtifactPath, normalizeArtifactPath } from "./deliverables.mjs";
@@ -15,7 +17,8 @@ import { setImmediate as nextTurn } from "node:timers/promises";
 //     not a final.* render;
 //   - its content item still has a kept deliverable (an item where nothing is referenced keeps
 //     everything, so a project written by an older workflow loses nothing);
-//   - in a delivery folder, it has the exact size of a kept deliverable (a duplicate copy).
+//   - in a delivery folder, it is a separate copy of a kept deliverable: planned by size, removed
+//     only when its bytes are the same (hard links take no space and stay).
 // Every applied run writes retention-ledger.json in the project and a storage.retention event.
 
 export const RETENTION_LEDGER = "retention-ledger.json";
@@ -46,7 +49,7 @@ async function listFiles(root) {
         pending.push(path);
       } else if (entry.isFile()) {
         const stat = await lstat(path);
-        files.push({ path, rel: relative(root, path).split(sep).join("/"), bytes: stat.size });
+        files.push({ path, rel: relative(root, path).split(sep).join("/"), bytes: stat.size, inode: stat.ino });
       }
     }
   }
@@ -131,11 +134,11 @@ export async function planInstanceRetention(instanceDir) {
   const refs = await referencedArtifacts(instanceDir, files);
   const isMedia = (file) => MEDIA_EXTENSIONS.has(extname(file.rel).toLowerCase());
   const isKeptDeliverable = (file) => isReferenced(refs, file.rel) || /^final\./iu.test(basename(file.rel));
-  const deliverableSizes = new Set();
+  const deliverablesBySize = new Map();
   const itemsWithDeliverable = new Set();
   for (const file of files) {
     if (!isMedia(file) || !isKeptDeliverable(file) || isDeliveryFolder(file.rel)) continue;
-    deliverableSizes.add(file.bytes);
+    deliverablesBySize.set(file.bytes, [...(deliverablesBySize.get(file.bytes) ?? []), file]);
     const item = contentItemOf(file.rel);
     if (item) itemsWithDeliverable.add(item);
   }
@@ -144,7 +147,11 @@ export async function planInstanceRetention(instanceDir) {
   for (const file of files) {
     if (!isMedia(file) || isKeptDeliverable(file) || file.rel === RETENTION_LEDGER) continue;
     if (isDeliveryFolder(file.rel)) {
-      if (deliverableSizes.has(file.bytes)) remove.push({ ...file, reason: "duplicate-of-deliverable" });
+      const originals = deliverablesBySize.get(file.bytes);
+      // A hard link to a deliverable takes no space of its own; it stays.
+      if (originals && !originals.some((original) => original.inode === file.inode)) {
+        remove.push({ ...file, reason: "duplicate-of-deliverable", originals });
+      }
       continue;
     }
     const item = contentItemOf(file.rel);
@@ -183,6 +190,25 @@ export function retentionCandidates(store, { now = new Date(), minAgeDays = 14 }
     .sort((a, b) => Date.parse(a.finishedAt) - Date.parse(b.finishedAt));
 }
 
+async function sha256(path) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest("hex");
+}
+
+// Size picks the candidates; removal needs the same bytes.
+async function isCopyOfAny(file, originals = [], digests = new Map()) {
+  const digestOf = async (path) => {
+    if (!digests.has(path)) digests.set(path, await sha256(path));
+    return digests.get(path);
+  };
+  const digest = await digestOf(file.path);
+  for (const original of originals) {
+    if (await digestOf(original.path) === digest) return true;
+  }
+  return false;
+}
+
 async function appendLedger(instanceDir, run) {
   const path = join(instanceDir, RETENTION_LEDGER);
   let ledger = { version: 1, runs: [] };
@@ -200,8 +226,14 @@ async function retainInstance({ store, instance, finishedAt, instanceDir, now, m
   const plan = await planInstanceRetention(instanceDir);
   let removed = 0;
   let bytes = 0;
+  const skipped = [];
+  const digests = new Map();
   if (apply) {
     for (const [index, file] of plan.remove.entries()) {
+      if (file.reason === "duplicate-of-deliverable" && !(await isCopyOfAny(file, file.originals, digests))) {
+        skipped.push(file.rel);
+        continue;
+      }
       try {
         await unlink(file.path);
         removed += 1;
@@ -216,7 +248,8 @@ async function retainInstance({ store, instance, finishedAt, instanceDir, now, m
         at: now.toISOString(),
         minAgeDays,
         actor,
-        removed: plan.remove.map(({ rel, bytes: size, reason }) => ({ rel, bytes: size, reason })),
+        removed: plan.remove.filter((file) => !skipped.includes(file.rel)).map(({ rel, bytes: size, reason }) => ({ rel, bytes: size, reason })),
+        keptNotIdentical: skipped,
         keptWithoutReference: plan.keptWithoutReference,
       });
     }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, link, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,8 +51,10 @@ async function project(root, id) {
   await put(dir, "content-items/w3/out/cover.png", "manifest poster");
   await put(dir, "content-items/w3/out/rough.mp4", "rough cut");
   // Delivery copies: an exact-size duplicate of a kept final goes, anything else stays.
-  await put(dir, "deliver-download/package/w1.mp4", "FINAL-VIDEO".replace("F", "f"));
+  await put(dir, "deliver-download/package/w1.mp4", "FINAL-VIDEO");
+  await link(join(dir, "content-items/w1/produce/final.mp4"), join(dir, "deliver-download/package/w1-linked.mp4"));
   await put(dir, "deliver-download/package/other.mp4", "a different video");
+  await put(dir, "deliver-download/package/same-size.mp4", "FINAL-VIDEX"); // same size, other bytes
   await put(dir, "deliver-download/oss-delivery.json", { uploaded: true });
   await put(dir, "deliver-download/delivery-package.zip", "zip");
   return dir;
@@ -67,6 +69,7 @@ test("plans to remove only unreferenced working media of items that keep a deliv
     ["content-items/w1/produce/qc/frame-001.jpg", "intermediate"],
     ["content-items/w1/produce/qc/src/src1.mp4", "intermediate"],
     ["content-items/w3/out/rough.mp4", "intermediate"],
+    ["deliver-download/package/same-size.mp4", "duplicate-of-deliverable"],
     ["deliver-download/package/w1.mp4", "duplicate-of-deliverable"],
   ]);
   assert.equal(plan.keptWithoutReference, 1);
@@ -96,14 +99,18 @@ test("applies retention once to projects finished long enough ago and records it
 
   const now = day(20);
   const dry = await runRetention({ store, instancesRoot: root, now });
-  assert.deepEqual(dry.projects.map((entry) => [entry.id, entry.files]).sort(), [["ARCHIVED", 5], ["NO-DIRECTORY", 0], ["OLD", 5]]);
+  assert.deepEqual(dry.projects.map((entry) => [entry.id, entry.files]).sort(), [["ARCHIVED", 6], ["NO-DIRECTORY", 0], ["OLD", 6]]);
   assert.equal(await exists(join(root, "OLD/content-items/w1/produce/qc/src/src1.mp4")), true);
 
   const applied = await runRetention({ store, instancesRoot: root, now, apply: true, actor: "test" });
+  // The same-size delivery file with other bytes is planned but kept.
   assert.equal(applied.files, 10);
+  assert.equal(await exists(join(root, "OLD/deliver-download/package/same-size.mp4")), true);
+  assert.equal(await exists(join(root, "OLD/deliver-download/package/w1.mp4")), false);
+  assert.equal(await exists(join(root, "OLD/deliver-download/package/w1-linked.mp4")), true);
   assert.equal(applied.errors, 0);
   assert.equal(await exists(join(root, "NO-DIRECTORY")), false);
-  assert.equal(applied.bytes, dry.bytes);
+  assert.equal(applied.bytes, dry.bytes - 2 * "FINAL-VIDEX".length);
   assert.equal(await exists(join(root, "OLD/content-items/w1/produce/qc/src/src1.mp4")), false);
   assert.equal(await exists(join(root, "OLD/content-items/w1/produce/final.mp4")), true);
   assert.equal(await exists(join(root, "OLD/deliver-download/delivery-package.zip")), true);
@@ -114,6 +121,7 @@ test("applies retention once to projects finished long enough ago and records it
   const ledger = JSON.parse(await readFile(join(root, "OLD", RETENTION_LEDGER), "utf8"));
   assert.equal(ledger.runs.length, 1);
   assert.equal(ledger.runs[0].removed.length, 5);
+  assert.deepEqual(ledger.runs[0].keptNotIdentical, ["deliver-download/package/same-size.mp4"]);
   const event = store.listEvents("OLD", 10).find((entry) => entry.type === "storage.retention");
   assert.equal(event.payload.files, 5);
   assert.equal(event.payload.actor, "test");
