@@ -138,6 +138,10 @@ async function run(input) {
       method: "POST",
     });
   }
+  if (resource === "storage" && action === "retention") {
+    if (!input.includes("--apply")) return api("/api/storage/retention");
+    return api("/api/storage/retention", { body: JSON.stringify({ actor: option(input, "--actor") ?? "Night Shift operator" }), method: "POST" });
+  }
   if (resource === "governance" && action === "audit") {
     return api(`/api/governance/audit${input.includes("--refresh") ? "?refresh=1" : ""}`);
   }
@@ -262,7 +266,7 @@ async function run(input) {
       method: "POST",
     });
   }
-  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|monitor|preflight|create|start|pause|archive|restore | projects concurrency <id> [<1-8>|default] [--reason <text>] | projects priority <id> [<n>|first|last|default] [--reason <text>] | projects order <id> [<id> …] [--reason <text>] | projects queue | projects inputs <id> --file <json> | projects collaboration <id> --to <oc_…|user:ou_…> [--by <ou_…>] | decisions list [--project <id>] [--status open|decided] | decisions get <id> | decisions decide <id> --option <id> [--note <text>] [--apply-to-group] | governance audit [--refresh] | governance archive|restore <manifest.json> [--apply] | operations reserve|checkpoint <card-id> | cards list|session|approve|changes|reject|retry");
+  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|monitor|preflight|create|start|pause|archive|restore | projects concurrency <id> [<1-8>|default] [--reason <text>] | projects priority <id> [<n>|first|last|default] [--reason <text>] | projects order <id> [<id> …] [--reason <text>] | projects queue | projects inputs <id> --file <json> | projects collaboration <id> --to <oc_…|user:ou_…> [--by <ou_…>] | decisions list [--project <id>] [--status open|decided] | decisions get <id> | decisions decide <id> --option <id> [--note <text>] [--apply-to-group] | governance audit [--refresh] | governance archive|restore <manifest.json> [--apply] | storage retention [--apply] | operations reserve|checkpoint <card-id> | cards list|session|approve|changes|reject|retry");
 }
 
 async function resolveWorkflow(project) {

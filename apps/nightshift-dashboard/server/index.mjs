@@ -34,6 +34,7 @@ import {
   NightShiftRuntime,
   NightShiftStore,
   OpenClawFeishuNotificationSender,
+  runRetention,
   artifactFromHandoffDirectory,
   instanceRelativeArtifactPath,
   normalizeArtifactPath,
@@ -196,6 +197,16 @@ let tickQueue = Promise.resolve();
 let shuttingDown = false;
 let capacityProbePromise = null;
 let capacityProbeTimer = null;
+// Finished projects' working media is removed once a day (see storage-retention.mjs). V's data
+// disk filled up on 2026-10-14 because nothing ever removed it.
+const retentionDays = Number(process.env.NIGHTSHIFT_RETENTION_DAYS ?? 14);
+const retentionHour = Number(process.env.NIGHTSHIFT_RETENTION_HOUR ?? 5);
+const retentionDisabled = process.env.NIGHTSHIFT_RETENTION_DISABLED === "1";
+const retentionCheckMs = Number(process.env.NIGHTSHIFT_RETENTION_CHECK_MS ?? 15 * 60_000);
+let retentionTimer = null;
+let retentionDay = null;
+let retentionPromise = null;
+let lastRetention = null;
 const contentManifestHashes = new Map();
 
 await ensureWorkflow();
@@ -227,6 +238,8 @@ workboard.connect()
   });
 capacityProbeTimer = setInterval(() => probeDispatchCapacity(), gatewayCapacityProbeIntervalMs);
 capacityProbeTimer.unref?.();
+retentionTimer = setInterval(() => runDailyRetention(), retentionCheckMs);
+retentionTimer.unref?.();
 
 const server = createServer(async (request, response) => {
   try {
@@ -493,6 +506,16 @@ async function handleApi(request, response, url) {
     }
     const restored = store.restoreInstance(instanceId, new Date(), { actor, reason: body.reason ?? "Governance restore" });
     json(response, 200, { ...withInstanceLinks(restored), dispatch: false });
+    return;
+  }
+  if (url.pathname === "/api/storage/retention" && (request.method === "GET" || request.method === "POST")) {
+    const apply = request.method === "POST";
+    const actor = apply ? operatorIdentity(request, await bodyJson(request)) : null;
+    try {
+      json(response, 200, { ...(await storageRetention({ apply, actor })), last: lastRetention });
+    } catch (error) {
+      json(response, error.code === "RETENTION_BUSY" ? 409 : 500, { error: error.message });
+    }
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/governance/audit") {
@@ -1047,6 +1070,33 @@ async function handleApi(request, response, url) {
     return;
   }
   json(response, 404, { error: "Not found" });
+}
+
+function storageRetention({ apply, actor = null }) {
+  if (retentionPromise) {
+    const error = new Error("Storage retention is already running");
+    error.code = "RETENTION_BUSY";
+    return Promise.reject(error);
+  }
+  retentionPromise = runRetention({ store, instancesRoot: join(dataDir, "instances"), minAgeDays: retentionDays, apply, actor })
+    .then((result) => {
+      if (apply) lastRetention = { at: new Date().toISOString(), actor, projects: result.projects.length, files: result.files, bytes: result.bytes };
+      return result;
+    })
+    .finally(() => { retentionPromise = null; });
+  return retentionPromise;
+}
+
+function runDailyRetention() {
+  const now = new Date();
+  const today = now.toDateString();
+  if (retentionDisabled || shuttingDown || retentionPromise || now.getHours() !== retentionHour || retentionDay === today) return;
+  storageRetention({ apply: true, actor: "nightshift-retention" })
+    .then((result) => {
+      retentionDay = today;
+      if (result.files > 0) console.log(`Night Shift storage retention removed ${result.files} files (${(result.bytes / 2 ** 30).toFixed(2)} GiB) from ${result.projects.length} finished projects`);
+    })
+    .catch((error) => console.error(`Night Shift storage retention failed: ${error.message}`));
 }
 
 function operatorIdentity(request, body) {
@@ -2055,6 +2105,8 @@ function shutdown() {
   changeScheduler.stop();
   if (capacityProbeTimer) clearInterval(capacityProbeTimer);
   capacityProbeTimer = null;
+  if (retentionTimer) clearInterval(retentionTimer);
+  retentionTimer = null;
   let finished = false;
   let forceTimer;
   const finish = () => {

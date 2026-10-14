@@ -966,6 +966,14 @@ export class NightShiftStore {
     return this.db.prepare("SELECT * FROM external_operations WHERE instance_id = ? ORDER BY created_at").all(instanceId).map(externalOperationRow);
   }
 
+  /** Latest created_at per project for one audit event type. */
+  latestEventTimes(type) {
+    return new Map(this.db
+      .prepare("SELECT instance_id, MAX(created_at) AS at FROM audit_events WHERE type = ? AND instance_id IS NOT NULL GROUP BY instance_id")
+      .all(type)
+      .map((row) => [row.instance_id, row.at]));
+  }
+
   appendEvent({ instanceId = null, type, payload = {}, now = new Date(), eventId }) {
     const id = eventId ?? randomUUID();
     this.db
