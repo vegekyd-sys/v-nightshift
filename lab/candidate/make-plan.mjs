@@ -29,6 +29,7 @@ const modules = (dir) => fs.readdirSync(path.join(repo, dir))
 const support = [
   ...modules("packages/nightshift-core/src"),
   ...modules("apps/nightshift-dashboard/server"),
+  "apps/nightshift-dashboard/client/src/attention.js", // imported by server/overview.mjs
   ...modules("scripts"),
   "node_modules/yaml/package.json",
   ...filesUnder("node_modules/yaml/dist"),
