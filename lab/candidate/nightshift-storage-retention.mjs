@@ -102,6 +102,7 @@ try {
   await daily.stop();
   assert.match(daily.log(), /storage retention removed/u, daily.log());
   assert.equal(status.last.actor, "nightshift-retention");
+  assert.equal(status.last.errors, 0, daily.log());
   assert.equal(status.last.files, plan.files);
   assert.equal(status.last.bytes, plan.bytes);
   assert.equal(status.projects.length, 0, "nothing left to plan after the daily run");
@@ -133,7 +134,8 @@ try {
   const events = db.prepare("SELECT instance_id, payload_json FROM audit_events WHERE type = 'storage.retention'").all();
   db.close();
   assert.equal(events.length, plan.projects.length);
-  assert.equal(ledgers.length, plan.projects.length);
+  const withDirectory = plan.projects.filter((project) => fs.existsSync(path.join(instancesRoot, project.id)));
+  assert.equal(ledgers.length, withDirectory.length);
   assert.equal(events.reduce((sum, event) => sum + JSON.parse(event.payload_json).files, 0), plan.files);
 
   const sample = removed.slice(0, 8).join("\n  ");

@@ -86,6 +86,7 @@ test("applies retention once to projects finished long enough ago and records it
   };
   for (const id of ["OLD", "RECENT", "ARCHIVED", "PAUSED", "ABANDONED"]) await project(root, id);
   finish("OLD", day(0));
+  finish("NO-DIRECTORY", day(0)); // a finished canary on V has no project directory
   finish("RECENT", day(10));
   finish("ARCHIVED", day(1), "archived");
   store.createInstance({ id: "PAUSED", workflowSha256: release.metadata.workflowSha256 }, day(0));
@@ -95,11 +96,13 @@ test("applies retention once to projects finished long enough ago and records it
 
   const now = day(20);
   const dry = await runRetention({ store, instancesRoot: root, now });
-  assert.deepEqual(dry.projects.map((entry) => [entry.id, entry.files]), [["OLD", 5], ["ARCHIVED", 5]]);
+  assert.deepEqual(dry.projects.map((entry) => [entry.id, entry.files]).sort(), [["ARCHIVED", 5], ["NO-DIRECTORY", 0], ["OLD", 5]]);
   assert.equal(await exists(join(root, "OLD/content-items/w1/produce/qc/src/src1.mp4")), true);
 
   const applied = await runRetention({ store, instancesRoot: root, now, apply: true, actor: "test" });
   assert.equal(applied.files, 10);
+  assert.equal(applied.errors, 0);
+  assert.equal(await exists(join(root, "NO-DIRECTORY")), false);
   assert.equal(applied.bytes, dry.bytes);
   assert.equal(await exists(join(root, "OLD/content-items/w1/produce/qc/src/src1.mp4")), false);
   assert.equal(await exists(join(root, "OLD/content-items/w1/produce/final.mp4")), true);

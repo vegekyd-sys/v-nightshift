@@ -196,6 +196,46 @@ async function appendLedger(instanceDir, run) {
   await rename(`${path}.tmp`, path);
 }
 
+async function retainInstance({ store, instance, finishedAt, instanceDir, now, minAgeDays, apply, actor }) {
+  const plan = await planInstanceRetention(instanceDir);
+  let removed = 0;
+  let bytes = 0;
+  if (apply) {
+    for (const [index, file] of plan.remove.entries()) {
+      try {
+        await unlink(file.path);
+        removed += 1;
+        bytes += file.bytes;
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+      if (index % 50 === 49) await nextTurn();
+    }
+    if (plan.files > 0) {
+      await appendLedger(instanceDir, {
+        at: now.toISOString(),
+        minAgeDays,
+        actor,
+        removed: plan.remove.map(({ rel, bytes: size, reason }) => ({ rel, bytes: size, reason })),
+        keptWithoutReference: plan.keptWithoutReference,
+      });
+    }
+    store.appendEvent({
+      instanceId: instance.id,
+      type: "storage.retention",
+      payload: { version: 1, finishedAt, files: removed, bytes, keptWithoutReference: plan.keptWithoutReference, actor },
+      now,
+    });
+  }
+  return {
+    id: instance.id,
+    finishedAt,
+    files: apply ? removed : plan.remove.length,
+    bytes: apply ? bytes : plan.bytes,
+    keptWithoutReference: plan.keptWithoutReference,
+  };
+}
+
 /**
  * Plans (apply=false) or applies retention over the finished projects.
  * Applying removes files one by one, yielding to the event loop, and records each project.
@@ -211,43 +251,12 @@ export async function runRetention({
 }) {
   const projects = [];
   for (const { instance, finishedAt } of retentionCandidates(store, { now, minAgeDays }).slice(0, maxInstances)) {
-    const instanceDir = join(instancesRoot, instance.id);
-    const plan = await planInstanceRetention(instanceDir);
-    let removed = 0;
-    let bytes = 0;
-    if (apply) {
-      for (const [index, file] of plan.remove.entries()) {
-        try {
-          await unlink(file.path);
-          removed += 1;
-          bytes += file.bytes;
-        } catch (error) {
-          if (error.code !== "ENOENT") throw error;
-        }
-        if (index % 50 === 49) await nextTurn();
-      }
-      const run = {
-        at: now.toISOString(),
-        minAgeDays,
-        actor,
-        removed: plan.remove.map(({ rel, bytes: size, reason }) => ({ rel, bytes: size, reason })),
-        keptWithoutReference: plan.keptWithoutReference,
-      };
-      await appendLedger(instanceDir, run);
-      store.appendEvent({
-        instanceId: instance.id,
-        type: "storage.retention",
-        payload: { version: 1, finishedAt, files: removed, bytes, keptWithoutReference: plan.keptWithoutReference, actor },
-        now,
-      });
+    // One project's failure (on V a finished canary has no directory at all) must not stop the rest.
+    try {
+      projects.push(await retainInstance({ store, instance, finishedAt, instanceDir: join(instancesRoot, instance.id), now, minAgeDays, apply, actor }));
+    } catch (error) {
+      projects.push({ id: instance.id, finishedAt, files: 0, bytes: 0, keptWithoutReference: 0, error: error.message });
     }
-    projects.push({
-      id: instance.id,
-      finishedAt,
-      files: apply ? removed : plan.remove.length,
-      bytes: apply ? bytes : plan.bytes,
-      keptWithoutReference: plan.keptWithoutReference,
-    });
     await nextTurn();
   }
   return {
@@ -256,5 +265,6 @@ export async function runRetention({
     projects,
     files: projects.reduce((sum, project) => sum + project.files, 0),
     bytes: projects.reduce((sum, project) => sum + project.bytes, 0),
+    errors: projects.filter((project) => project.error).length,
   };
 }

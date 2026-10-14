@@ -1080,7 +1080,7 @@ function storageRetention({ apply, actor = null }) {
   }
   retentionPromise = runRetention({ store, instancesRoot: join(dataDir, "instances"), minAgeDays: retentionDays, apply, actor })
     .then((result) => {
-      if (apply) lastRetention = { at: new Date().toISOString(), actor, projects: result.projects.length, files: result.files, bytes: result.bytes };
+      if (apply) lastRetention = { at: new Date().toISOString(), actor, projects: result.projects.length, files: result.files, bytes: result.bytes, errors: result.errors };
       return result;
     })
     .finally(() => { retentionPromise = null; });
@@ -1094,7 +1094,7 @@ function runDailyRetention() {
   storageRetention({ apply: true, actor: "nightshift-retention" })
     .then((result) => {
       retentionDay = today;
-      console.log(`Night Shift storage retention removed ${result.files} files (${(result.bytes / 2 ** 30).toFixed(2)} GiB) from ${result.projects.length} finished projects`);
+      console.log(`Night Shift storage retention removed ${result.files} files (${(result.bytes / 2 ** 30).toFixed(2)} GiB) from ${result.projects.length} finished projects${result.errors ? `; ${result.errors} failed: ${result.projects.filter((project) => project.error).map((project) => `${project.id} ${project.error}`).join("; ")}` : ""}`);
     })
     .catch((error) => console.error(`Night Shift storage retention failed: ${error.message}`));
 }
