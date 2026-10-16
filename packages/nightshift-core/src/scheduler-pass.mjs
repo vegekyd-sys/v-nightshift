@@ -109,7 +109,9 @@ export async function runSchedulerPass({
 // archived project in every scheduler read forever: on V, nine of them
 // contributed 168 of the 319 cards read every few seconds.
 const STALE_RUNNING_MS = 30 * 60 * 1000;
-const TERMINAL_RUN = new Set(["done", "blocked", "cancelled"]);
+// A blocked card can still recover artifacts, resolve a paid operation, or
+// retry. Keep observing it even when no automaticRetry flag has been written.
+const SETTLED_RUN = new Set(["done", "cancelled"]);
 
 function runIsLive(run, nowMs) {
   if (run.status !== "running") return false;
@@ -137,9 +139,7 @@ export function schedulerCardIds(store, activeInstances = null, { fullSweep = tr
     if (!include) continue;
     for (const run of runs) {
       if (typeof run.cardId !== "string" || !run.cardId) continue;
-      // A blocked attempt with a scheduled automatic retry still needs its
-      // native card when the retry becomes due, not only at the repair sweep.
-      if (!fullSweep && TERMINAL_RUN.has(run.status) && !run.failure?.automaticRetry) continue;
+      if (!fullSweep && SETTLED_RUN.has(run.status)) continue;
       ids.push(run.cardId);
     }
     // An approval card is not a run, so no run record names it and the terminal

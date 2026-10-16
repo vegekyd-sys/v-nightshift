@@ -214,8 +214,8 @@ test("a routine pass reads only what can change; the repair pass still reads eve
     listContentItemRuns: () => [],
   };
   const routine = schedulerCardIds(store, null, { fullSweep: false, nowMs: now });
-  assert.deepEqual(routine.sort(), ["draining", "live-ready", "live-running"],
-    "terminal cards and the stale project are left out, but work still draining is not");
+  assert.deepEqual(routine.sort(), ["draining", "live-blocked", "live-ready", "live-running"],
+    "settled cards and the stale project are left out, but recovery and work still draining are not");
   const repair = schedulerCardIds(store, null, { fullSweep: true, nowMs: now });
   assert.deepEqual(repair.sort(), ["draining", "live-blocked", "live-done", "live-ready", "live-running"],
     "the repair sweep still sees every card of a project it schedules");
@@ -265,7 +265,7 @@ test("the action ledger does not put terminal run cards back into every routine 
     // Runtime records every created card, not just approval cards.
     listActionCardIds: () => [...runs.map(run => run.cardId), "approval-without-run"],
   };
-  assert.deepEqual(schedulerCardIds(store, null, { fullSweep: false }).sort(), ["approval-without-run", "ready", "running"]);
+  assert.deepEqual(schedulerCardIds(store, null, { fullSweep: false }).sort(), ["approval-without-run", "blocked", "ready", "running"]);
   assert.equal(schedulerCardIds(store, null, { fullSweep: true }).length, 6, "repair must still see terminal cards");
 });
 
