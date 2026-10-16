@@ -131,12 +131,15 @@ export function schedulerCardIds(store, activeInstances = null, { fullSweep = tr
   const ids = [];
   for (const instance of store.listInstances()) {
     const runs = [...store.listStageRuns(instance.id), ...store.listContentItemRuns(instance.id)];
+    const runCardIds = new Set(runs.map(run => run.cardId));
     const ledger = store.listActionCardIds?.(instance.id) ?? [];
     const include = activeIds.has(instance.id) || runs.some((run) => runIsLive(run, nowMs));
     if (!include) continue;
     for (const run of runs) {
       if (typeof run.cardId !== "string" || !run.cardId) continue;
-      if (!fullSweep && TERMINAL_RUN.has(run.status)) continue;
+      // A blocked attempt with a scheduled automatic retry still needs its
+      // native card when the retry becomes due, not only at the repair sweep.
+      if (!fullSweep && TERMINAL_RUN.has(run.status) && !run.failure?.automaticRetry) continue;
       ids.push(run.cardId);
     }
     // An approval card is not a run, so no run record names it and the terminal
@@ -144,9 +147,12 @@ export function schedulerCardIds(store, activeInstances = null, { fullSweep = tr
     // set is what the idempotency scan gets to look at. Leaving it out is how
     // one project created 4,628 duplicate approval cards in 15 hours on V: each
     // pass failed to find the card it had created on the previous pass. The
-    // ledger holds one row per action key, so this adds a bounded number of ids,
-    // not one per duplicate.
+    // Runtime also records ordinary run cards here. They were already selected
+    // above: adding them again would undo the terminal filter and re-read every
+    // completed card every pass (178 of 236 cards on V, 2026-10-16). Cards with
+    // no run, including approvals, must remain in the idempotency snapshot.
     for (const cardId of ledger) {
+      if (!fullSweep && runCardIds.has(cardId)) continue;
       if (typeof cardId === "string" && cardId) ids.push(cardId);
     }
   }
