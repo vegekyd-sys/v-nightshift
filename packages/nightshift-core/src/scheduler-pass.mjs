@@ -124,7 +124,7 @@ function runIsLive(run, nowMs) {
  *
  * `fullSweep` reads everything the projects own, which is what the periodic
  * repair pass wants. A routine pass skips cards whose run already reached a
- * terminal state: three quarters of what was being read could not change, and
+ * settled state: three quarters of what was being read could not change, and
  * re-parsing them was the service's largest ongoing cost on the Gateway.
  */
 export function schedulerCardIds(store, activeInstances = null, { fullSweep = true, nowMs = Date.now() } = {}) {
@@ -149,7 +149,7 @@ export function schedulerCardIds(store, activeInstances = null, { fullSweep = tr
     // pass failed to find the card it had created on the previous pass. The
     // Runtime also records ordinary run cards here. They were already selected
     // above: adding them again would undo the terminal filter and re-read every
-    // completed card every pass (178 of 236 cards on V, 2026-10-16). Cards with
+    // completed card every pass (176 of 236 cards on V, 2026-10-16). Cards with
     // no run, including approvals, must remain in the idempotency snapshot.
     for (const cardId of ledger) {
       if (!fullSweep && runCardIds.has(cardId)) continue;
