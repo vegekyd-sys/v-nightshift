@@ -214,8 +214,8 @@ test("a routine pass reads only what can change; the repair pass still reads eve
     listContentItemRuns: () => [],
   };
   const routine = schedulerCardIds(store, null, { fullSweep: false, nowMs: now });
-  assert.deepEqual(routine.sort(), ["draining", "live-ready", "live-running"],
-    "terminal cards and the stale project are left out, but work still draining is not");
+  assert.deepEqual(routine.sort(), ["draining", "live-blocked", "live-ready", "live-running"],
+    "settled cards and the stale project are left out, but recovery and work still draining are not");
   const repair = schedulerCardIds(store, null, { fullSweep: true, nowMs: now });
   assert.deepEqual(repair.sort(), ["draining", "live-blocked", "live-done", "live-ready", "live-running"],
     "the repair sweep still sees every card of a project it schedules");
@@ -248,6 +248,35 @@ test("a project with only an approval card outstanding is still in the scheduler
     listActionCardIds: () => ["approval-card"],
   };
   assert.deepEqual(schedulerCardIds(store, null, { fullSweep: false }), ["approval-card"]);
+});
+
+test("the action ledger does not put terminal run cards back into every routine read", () => {
+  const runs = [
+    { status: "done", cardId: "done" },
+    { status: "blocked", cardId: "blocked" },
+    { status: "cancelled", cardId: "cancelled" },
+    { status: "running", cardId: "running" },
+    { status: "ready", cardId: "ready" },
+  ];
+  const store = {
+    listInstances: () => [{ id: "NS-live", status: "active" }],
+    listStageRuns: () => runs,
+    listContentItemRuns: () => [],
+    // Runtime records every created card, not just approval cards.
+    listActionCardIds: () => [...runs.map(run => run.cardId), "approval-without-run"],
+  };
+  assert.deepEqual(schedulerCardIds(store, null, { fullSweep: false }).sort(), ["approval-without-run", "blocked", "ready", "running"]);
+  assert.equal(schedulerCardIds(store, null, { fullSweep: true }).length, 6, "repair must still see terminal cards");
+});
+
+test("a blocked card's automatic retry stays in the routine scope", () => {
+  const store = {
+    listInstances: () => [{ id: "NS-live", status: "active" }],
+    listStageRuns: () => [{ status: "blocked", cardId: "retry", failure: { automaticRetry: true, nextRetryAt: new Date().toISOString() } }],
+    listContentItemRuns: () => [{ status: "done", cardId: "done" }],
+    listActionCardIds: () => ["retry", "done", "approval"],
+  };
+  assert.deepEqual(schedulerCardIds(store, null, { fullSweep: false }).sort(), ["approval", "retry"]);
 });
 
 test("a store without the ledger still works", () => {

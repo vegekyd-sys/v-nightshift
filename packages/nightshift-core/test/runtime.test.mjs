@@ -8,7 +8,7 @@ import {
   NightShiftRuntime,
   NightShiftStore,
 } from "../src/index.mjs";
-import { instanceCardIds } from "../src/scheduler-pass.mjs";
+import { instanceCardIds, schedulerCardIds } from "../src/scheduler-pass.mjs";
 import { stagesToRedo } from "../src/runtime.mjs";
 import { buildAgentBrief } from "../src/orchestrator.mjs";
 import { resolveNightShiftOperationKeys } from "../src/card-context.mjs";
@@ -1403,10 +1403,14 @@ test("deferred completion validation cannot unlock downstream work", async () =>
   assert(result.retryAfterMs > 0 && result.retryAfterMs <= 30000);
   assert.equal(result.actions.length, 0);
   assert.notEqual(store.listStageRuns("NS-DEFERRED")[0].status, "done");
+  assert(schedulerCardIds(store, null, { fullSweep: false }).includes(workboard.cards[0].id),
+    "native done still waiting for validation must remain in routine reads");
   runtime.terminalInspectionStarts = [];
   const checked = await runtime.tick("NS-DEFERRED");
   assert.equal(checked.retryAfterMs, null);
   assert.equal(store.listStageRuns("NS-DEFERRED")[0].status, "blocked");
+  assert(schedulerCardIds(store, null, { fullSweep: false }).includes(workboard.cards[0].id),
+    "a failed validation must remain eligible for artifact recovery");
   store.close();
 });
 
