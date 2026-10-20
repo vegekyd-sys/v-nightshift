@@ -12,7 +12,7 @@ export async function fetchDownload(url, bytes, {
   const cleanup = () => signal?.removeEventListener('abort', abort);
   let probe;
   try {
-    probe = await fetcher(url, { headers: { Range: 'bytes=0-0' }, signal: controller.signal });
+    probe = await fetcher(url, { cache: 'no-store', headers: { Range: 'bytes=0-0' }, signal: controller.signal });
   } catch (error) {
     cleanup(); if (signal?.aborted) throw error; return full();
   }
@@ -29,7 +29,7 @@ export async function fetchDownload(url, bytes, {
         const starts = Array.from({ length: Math.min(4, Math.ceil((bytes - offset) / chunkSize)) }, (_, i) => offset + i * chunkSize);
         const chunks = await Promise.all(starts.map(async start => {
           const end = Math.min(bytes - 1, start + chunkSize - 1);
-          const response = await fetcher(url, { headers: { Range: `bytes=${start}-${end}` }, signal: controller.signal });
+          const response = await fetcher(url, { cache: 'no-store', headers: { Range: `bytes=${start}-${end}` }, signal: controller.signal });
           if (response.status !== 206 || response.headers.get('Content-Range') !== `bytes ${start}-${end}/${bytes}` || response.headers.get('ETag') !== etag) {
             await response.body?.cancel();
             throw new Error('文件已变化或分段校验失败，请重新下载');
