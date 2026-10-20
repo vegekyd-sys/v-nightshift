@@ -1,3 +1,4 @@
+import { fetchDownload } from "./download.js";
 import { downloadZip } from "client-zip";
 import { readManifest, trustedUrl } from "./manifest.js";
 import "./style.css";
@@ -138,7 +139,7 @@ async function saveOne(item, button) {
   if (button.dataset.state === "busy") return;
   button.dataset.state = "busy";
   try {
-    const response = await fetch(item.url);
+    const response = await fetchDownload(item.url, item.bytes);
     if (!response.ok) throw new Error(String(response.status));
     saveBlob(await response.blob(), item.fileName);
     button.dataset.state = "done";
@@ -193,7 +194,7 @@ async function downloadAll(delivery) {
     for (const item of delivery.items) {
       current += 1;
       update();
-      const response = await fetch(item.url, { signal: controller.signal });
+      const response = await fetchDownload(item.url, item.bytes, { signal: controller.signal });
       if (!response.ok) throw new Error(`第 ${current} 条下载失败（${response.status}）`);
       yield { name: item.fileName, lastModified: delivery.deliveredAt ? new Date(delivery.deliveredAt) : new Date(), input: counted(response) };
     }
@@ -208,7 +209,7 @@ async function downloadAll(delivery) {
         if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
         current += 1;
         update();
-        const response = await fetch(item.url, { signal: controller.signal });
+        const response = await fetchDownload(item.url, item.bytes, { signal: controller.signal });
         if (!response.ok) throw new Error(`第 ${current} 条下载失败（${response.status}）`);
         saveBlob(await counted(response).blob(), item.fileName);
       }
@@ -236,6 +237,7 @@ async function downloadAll(delivery) {
     update();
     finish("下载完成");
   } catch (error) {
+    controller.abort();
     if (error?.name === "AbortError") finish("已取消");
     else if (error?.name === "NotAllowedError" || error?.name === "SecurityError") finish();
     else { label.textContent = error?.message || "下载中断，请重试"; finish("重试下载全部"); }
