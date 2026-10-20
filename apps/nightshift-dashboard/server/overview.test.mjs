@@ -86,3 +86,17 @@ test("a detailed project carries the items a person skipped, with a short reason
   assert.deepEqual(overview.instances[0].skippedContentItems, [{ contentItemId: "i1", reason: "r".repeat(200) }]);
   assert.equal("skippedContentItems" in overview.instances[1], false, "a summary does not carry them");
 });
+
+test("each project carries when an Agent first worked on it, which a queued project lacks", () => {
+  const { instances, releases } = fixture();
+  const cards = [
+    { id: "c1", status: "done", labels: ["instance:LIVE"], createdAt: NOW - 5 * 3_600_000, startedAt: NOW - 3_600_000, metadata: { automation: {} } },
+    { id: "c2", status: "running", labels: ["instance:LIVE"], createdAt: NOW - 3_000_000, execution: { startedAt: NOW - 1_800_000 }, metadata: { automation: {} } },
+    { id: "c3", status: "ready", labels: ["instance:OLD"], createdAt: NOW - 3_600_000, metadata: { automation: {} } },
+  ];
+  const overview = buildOverview({ scope: "live", instances, cards, releases, now: NOW });
+  const byId = Object.fromEntries(overview.instances.map((instance) => [instance.id, instance]));
+  assert.equal(byId.LIVE.workStartedAt, new Date(NOW - 3_600_000).toISOString(), "earliest start across the project's cards");
+  assert.equal(byId.OLD.workStartedAt, null, "a card that only waits has no start");
+});
+

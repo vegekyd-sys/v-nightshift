@@ -23,9 +23,12 @@ export function buildOverview({ scope = "live", instances, cards, releases, oper
   const scopeOf = new Map(visible.map((instance) => [instance.id, projectScope(instance, now)]));
   const cardCounts = { live: 0, paused: 0, delivered: 0, shelved: 0, all: 0 };
   const agentDoneToday = {};
+  const workStartedAt = new Map();
   for (const card of cards) {
     const state = scopeOf.get(cardInstanceId(card));
     if (!state) continue;
+    const started = cardStartedAt(card);
+    if (started && !(workStartedAt.get(cardInstanceId(card)) <= started)) workStartedAt.set(cardInstanceId(card), started);
     cardCounts[state] += 1;
     cardCounts.all += 1;
     if (card.status === "done" && card.agentId && sameDay(card.updatedAt, now)) agentDoneToday[card.agentId] = (agentDoneToday[card.agentId] ?? 0) + 1;
@@ -35,8 +38,8 @@ export function buildOverview({ scope = "live", instances, cards, releases, oper
     cardCounts,
     agentDoneToday,
     instances: visible.map((instance) => detailed.has(instance.id)
-      ? leanProject(instance, operationsFor?.(instance.id) ?? [], skippedFor?.(instance.id) ?? [])
-      : projectSummary(instance)),
+      ? leanProject(instance, operationsFor?.(instance.id) ?? [], skippedFor?.(instance.id) ?? [], workStartedAt.get(instance.id))
+      : projectSummary(instance, workStartedAt.get(instance.id))),
     cards: cards.filter((card) => detailed.has(cardInstanceId(card))).map(leanCard),
     workflows: releases.map((release) => usedShas.has(release.workflowSha256) || latestShas.has(release.workflowSha256)
       ? leanRelease(release)
@@ -75,9 +78,9 @@ export function leanRun(run) {
   };
 }
 
-function leanProject(instance, operations, skipped = []) {
+function leanProject(instance, operations, skipped = [], workStartedAt = null) {
   return {
-    ...projectSummary(instance),
+    ...projectSummary(instance, workStartedAt),
     detail: true,
     inputs: pick(instance.inputs ?? {}, INPUT_FIELDS),
     approvals: instance.approvals ?? [],
@@ -91,10 +94,14 @@ function leanProject(instance, operations, skipped = []) {
   };
 }
 
-function projectSummary(instance) {
+function projectSummary(instance, workStartedAt = null) {
   return {
     detail: false,
     ...pick(instance, ["id", "name", "status", "createdAt", "updatedAt", "workflowSha256", "control", "agentBindings", "links"]),
+    // When an Agent first worked on the project. A project's first card exists from the moment it is
+    // created but waits in the queue until a slot frees; on V (2026-10-20) DL-1020-05 was created
+    // at 16:23 and its first card started at 20:27, so createdAt alone read as "running 4 hours".
+    workStartedAt: workStartedAt ? new Date(workStartedAt).toISOString() : null,
     // Enough to size a project bar before its detail loads.
     inputs: pick(instance.inputs ?? {}, ["targetCount", "deliveryMode"]),
   };
@@ -143,4 +150,11 @@ function pick(value, fields) {
   const result = {};
   for (const field of fields) if (value?.[field] !== undefined) result[field] = value[field];
   return result;
+}
+
+// The first time an Agent picked the card up (epoch ms), or null while it waits in the queue.
+function cardStartedAt(card) {
+  const candidates = [card.startedAt, card.execution?.startedAt, ...(card.metadata?.attempts ?? []).map((attempt) => attempt?.startedAt)];
+  const times = candidates.map((value) => (typeof value === "number" ? value : Date.parse(value ?? ""))).filter((value) => Number.isFinite(value) && value > 0);
+  return times.length ? Math.min(...times) : null;
 }

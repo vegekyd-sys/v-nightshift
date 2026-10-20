@@ -19,6 +19,7 @@ import {
 import { api } from "./api.js";
 import { cardAttention, countByKind, enabledStages, inScope, isToday, needsYouQueue, preferTask, projectProgress, projectRuns, projectScope, scopeAuthorizes, skippedItems, stageExpected, supersededCards, taskAttention } from "./attention.js";
 import { Drawer, Icons, Sidebar } from "./components.jsx";
+import { projectTiming } from "./timing.js";
 
 
 const NAVIGATION_KEY = "nightshift.navigation.v2";
@@ -350,33 +351,6 @@ function DoneList({ entries, onSelect, stale = false }) {
 
 // When a project started and how long it has run, or when it was delivered and
 // how long it took. The last update of a done project is its delivery.
-function projectTiming(instance, now = Date.now()) {
-  const started = Date.parse(instance.createdAt ?? "");
-  const updated = Date.parse(instance.updatedAt ?? "");
-  if (!started) return "";
-  if (instance.status === "done" && updated) return `${clockLabel(updated, now)} 交付 · 用时 ${spanLabel(updated - started)}`;
-  if (instance.status === "paused") return `${clockLabel(started, now)} 开始 · 已暂停`;
-  return `${clockLabel(started, now)} 开始 · 已进行 ${spanLabel(now - started)}`;
-}
-
-function clockLabel(at, now) {
-  const date = new Date(at);
-  const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-  const today = new Date(now);
-  if (date.toDateString() === today.toDateString()) return `今天 ${time}`;
-  const yesterday = new Date(now - 86_400_000);
-  if (date.toDateString() === yesterday.toDateString()) return `昨天 ${time}`;
-  return `${date.getMonth() + 1}/${date.getDate()} ${time}`;
-}
-
-function spanLabel(ms) {
-  const minutes = Math.max(0, Math.round(ms / 60000));
-  if (minutes < 60) return `${minutes} 分钟`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 48) return `${hours} 小时${minutes % 60 ? ` ${minutes % 60} 分` : ""}`;
-  return `${Math.floor(hours / 24)} 天 ${hours % 24} 小时`;
-}
-
 function formatBoardAge(value) {
   const at = typeof value === "number" ? value : Date.parse(value ?? 0);
   if (!at) return "";
