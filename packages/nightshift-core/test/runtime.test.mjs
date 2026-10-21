@@ -2683,3 +2683,60 @@ test("a paid stage's brief bounds the wait for a provider result and answers a c
   assert.doesNotMatch(free, /60 minutes after submission/, "only stages with side effects wait on providers");
   store.close();
 });
+
+// A project created before a newer release of its Workflow takes that release
+// while nothing of it has started (V, 2026-10-22: thirteen projects on 1.0.1).
+async function waitingProject(id) {
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard });
+  const source = await readFile(workflowPath, "utf8");
+  const older = runtime.publish(source);
+  const newer = runtime.publish(source.replace("version: 0.5.1", "version: 0.5.2"));
+  runtime.startInstance({ id, workflowSha256: older.workflowSha256, agentBindings: { "content-operator": "main" } });
+  await runtime.tick(id);
+  return { runtime, store, workboard, older, newer };
+}
+
+test("a project that has not started moves to a newer release and its waiting card is rewritten in place", async () => {
+  const { runtime, store, workboard, newer } = await waitingProject("NS-SWITCH");
+  const [card] = workboard.cards;
+  assert.equal(card.status, "ready");
+  assert.match(card.notes, /\(0\.5\.1\)/);
+  const result = await runtime.switchWorkflowRelease({ instanceId: "NS-SWITCH", workflowSha256: newer.workflowSha256, actor: "test", reason: "newer rules" });
+  assert.equal(store.getInstance("NS-SWITCH").workflowSha256, newer.workflowSha256);
+  assert.deepEqual(result.cardIds, [card.id]);
+  assert.equal(workboard.cards.length, 1, "the same card, not a new one");
+  assert.match(workboard.cards[0].notes, /\(0\.5\.2\)/);
+  const event = store.listEvents("NS-SWITCH", 100).find((entry) => entry.type === "instance.workflow.switched");
+  assert.equal(event.payload.toVersion, "0.5.2");
+  assert.equal(event.payload.actor, "test");
+  await runtime.tick("NS-SWITCH");
+  assert.equal(workboard.cards.length, 1, "the next pass plans nothing again for the rewritten card");
+  store.close();
+});
+
+test("a project whose card has been picked up, or that has content items, keeps its release", async () => {
+  for (const [why, mutate] of [
+    ["running", ({ workboard }) => { workboard.cards[0].status = "running"; }],
+    ["session", ({ workboard }) => { workboard.cards[0].sessionKey = "agent:main:subagent:workboard-x"; }],
+    ["items", ({ runtime }) => runtime.setContentItems("NS-KEEP", [{ id: "v1", title: "One", route: "SCENE_EDIT" }])],
+  ]) {
+    const project = await waitingProject("NS-KEEP");
+    mutate(project);
+    await assert.rejects(
+      project.runtime.switchWorkflowRelease({ instanceId: "NS-KEEP", workflowSha256: project.newer.workflowSha256 }),
+      /has started/, why,
+    );
+    assert.equal(project.store.getInstance("NS-KEEP").workflowSha256, project.older.workflowSha256, why);
+    assert.deepEqual(project.workboard.updateCalls, [], why);
+    project.store.close();
+  }
+});
+
+test("a project cannot take another Workflow's release", async () => {
+  const { runtime, store } = await waitingProject("NS-OTHER");
+  const other = runtime.publish((await readFile(workflowPath, "utf8")).replace("id: xingqing-content-delivery", "id: some-other-workflow"));
+  await assert.rejects(runtime.switchWorkflowRelease({ instanceId: "NS-OTHER", workflowSha256: other.workflowSha256 }), /not a release of this project's Workflow/);
+  store.close();
+});

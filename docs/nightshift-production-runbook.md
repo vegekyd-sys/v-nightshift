@@ -122,6 +122,19 @@ Each project's place is reported as `control.queue` in `/api/overview`:
 
 Before this, the scheduler visited projects by last update. On 2026-09-29 that gave the few free starts to the newest batches: DL-0929-01, started at 11:49, sat queued behind projects that arrived four hours later, and all seven batches were heading to finish together late at night.
 
+### Moving a project that has not started to a newer Workflow release
+
+A project keeps the release it was created on. One that has not started can take a newer release of the same Workflow:
+
+```bash
+nightshiftctl projects workflow <project> latest --actor V --reason "用 1.0.3 的新规则"
+nightshiftctl projects workflow <project> 1.0.3
+```
+
+- Allowed only while nothing of the project has started. That means no content items, no content-item runs, no external operations and no approvals. Each stage run must be `ready`, and its card must never have been picked up (no session, no execution, no attempt, no active claim). Otherwise it refuses with `has started`.
+- The waiting cards are rewritten in place, as a retry rewrites a card: new brief, idempotency key, retry and runtime budget. Card ids, the queue position and the ledger do not change.
+- Each move records an audit event `instance.workflow.switched` with the actor, the reason, both versions and the rewritten cards. API: `POST /api/instances/:id/workflow { version: "<x.y.z>" | "latest", reason, actor }`.
+
 ### A project's own session limit
 
 How many cards one project may run at once can be set while it runs, by an operator or by an Agent. V sets it through the CLI:

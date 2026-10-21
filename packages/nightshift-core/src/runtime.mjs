@@ -1035,6 +1035,63 @@ export class NightShiftRuntime {
     return { resumed, handedOver, skipped };
   }
 
+  // A project created before a new release of its Workflow can take that
+  // release while nothing of it has started: no card has run, nothing was paid
+  // for or approved, and no content item exists yet. Its waiting cards are
+  // rewritten in place for the new release, as a retry rewrites a card, so the
+  // card ids, the queue position and the ledger stay as they are. On V
+  // (2026-10-22) thirteen DL-1021 projects created at 18:01 waited on 1.0.1
+  // while 1.0.2 (18:15) and 1.0.3 carried Tianyi's newer rules.
+  async switchWorkflowRelease({ instanceId, workflowSha256, actor = "Night Shift operator", reason = null }) {
+    const instance = this.store.getInstance(instanceId);
+    if (!instance) throw new Error(`Unknown instance ${instanceId}`);
+    if (!["active", "paused"].includes(instance.status)) throw new Error(`Only an active or paused project can change release (this one is ${instance.status})`);
+    const from = this.store.getRelease(instance.workflowSha256)?.manifest;
+    const release = this.store.getRelease(workflowSha256)?.manifest;
+    if (!release) throw new Error(`Unknown workflow release ${workflowSha256}`);
+    if (from?.metadata?.id !== release.metadata.id) {
+      throw new Error(`Release ${release.metadata.id} ${release.metadata.version} is not a release of this project's Workflow ${from?.metadata?.id ?? "(unknown)"}`);
+    }
+    if (instance.workflowSha256 === workflowSha256) return { instance, cardIds: [], unchanged: true };
+    const started = (why) => new Error(`${instanceId} has started (${why}); only a project that has not started can change release`);
+    if (this.store.listContentItems(instanceId).length > 0) throw started("it has content items");
+    if (this.store.listContentItemRuns(instanceId).length > 0) throw started("it has content-item runs");
+    if (this.store.listExternalOperations(instanceId).length > 0) throw started("it has external operations");
+    if (this.store.listApprovals(instanceId).length > 0) throw started("it has approvals");
+    const runs = this.store.listStageRuns(instanceId);
+    const cards = runs.length ? await this.workboard.listCards({ cardIds: runs.map((run) => run.cardId).filter(Boolean) }) : [];
+    const now = Date.now();
+    const rewrites = [];
+    for (const run of runs) {
+      const card = cards.find((entry) => entry.id === run.cardId);
+      const stage = release.spec.stages.find((entry) => entry.id === run.stageId);
+      if (run.status !== "ready" || !card) throw started(`${run.stageId} is ${run.status}`);
+      if (card.status !== "ready" || card.sessionKey || card.execution || card.startedAt ||
+        (card.metadata?.attempts?.length ?? 0) > 0 || cardHasActiveClaim(card, now)) {
+        throw started(`card ${card.id} for ${run.stageId} has been picked up`);
+      }
+      if (!stage || stage.actor !== from.spec.stages.find((entry) => entry.id === run.stageId)?.actor) {
+        throw new Error(`Release ${release.metadata.version} has no ${run.stageId} stage of the same kind`);
+      }
+      rewrites.push({ card, stage });
+    }
+    const moved = { ...instance, workflowSha256 };
+    const items = this.contentItemsWithRevisions(instanceId);
+    for (const { card, stage } of rewrites) {
+      await this.workboard.updateCard(card.id, {
+        idempotencyKey: nativeActionKey(actionKey(release, moved, stage, "run")),
+        notes: buildAgentBrief(release, moved, stage, null, items, this.skippedContentItems(instanceId)),
+        maxRetries: stage.retry?.maxAttempts ?? 1,
+        maxRuntimeSeconds: stageTimeoutSeconds(stage.timeout),
+      });
+    }
+    const cardIds = rewrites.map(({ card }) => card.id);
+    const updated = this.store.updateInstanceWorkflow(instanceId, workflowSha256, {
+      actor, reason, fromVersion: from.metadata.version, toVersion: release.metadata.version, cardIds,
+    });
+    return { instance: updated, cardIds, unchanged: false };
+  }
+
   async retry({ actor, cardId, contentItemId, evidence, instanceId, stageId, decisionNote = null }) {
     const instance = this.store.getInstance(instanceId);
     if (!instance) throw new Error(`Unknown instance ${instanceId}`);
