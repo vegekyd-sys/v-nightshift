@@ -94,6 +94,10 @@ const gatewayCapacityProbeIntervalMs = positiveInteger(process.env.NIGHTSHIFT_GA
 const gatewayGreenLatencyMs = positiveInteger(process.env.NIGHTSHIFT_GATEWAY_GREEN_LATENCY_MS, 250, 10_000);
 const gatewayRedLatencyMs = positiveInteger(process.env.NIGHTSHIFT_GATEWAY_RED_LATENCY_MS, 1_000, 30_000);
 const dispatchInitialMaxActive = positiveInteger(process.env.NIGHTSHIFT_DISPATCH_INITIAL_MAX_ACTIVE, 3, schedulerMaxWorkboardActive);
+// How many cards one project may run while no other project waits for a start;
+// 0 keeps every project at its own limit (orchestrator.mjs projectIdleConcurrencyLimit).
+const idleProjectConcurrency = process.env.NIGHTSHIFT_IDLE_PROJECT_CONCURRENCY === "0"
+  ? 0 : positiveInteger(process.env.NIGHTSHIFT_IDLE_PROJECT_CONCURRENCY, PROJECT_CONCURRENCY_MAX, PROJECT_CONCURRENCY_MAX);
 // Elastic admission knobs. Interactive slots are Worker sessions never handed to
 // Night Shift; the memory reserve is host RAM kept free before a new job starts.
 const reservedInteractiveSlots = positiveInteger(process.env.NIGHTSHIFT_RESERVED_INTERACTIVE_SLOTS, 9, 128);
@@ -296,6 +300,7 @@ async function handleApi(request, response, url) {
       dispatchStartBurst,
       dispatchStartIntervalMs,
       schedulerMaxWorkboardActive,
+      idleProjectConcurrency,
       schedulerFailureCooldownMs,
       schedulerEventDebounceMs,
       schedulerEventMinIntervalMs,
@@ -1147,6 +1152,7 @@ function runScheduler({ trigger = "manual" } = {}) {
     const result = await serializedOperation(() => runSchedulerPass({
       dispatchMaxStarts,
       dispatchEnabled: circuitDecision.dispatch && pressure.dispatchAllowed && dispatchMaxStarts > 0,
+      idleProjectConcurrency,
       inspectSessions: trigger === "repair",
       maxWorkboardActive: pressure.targetMaxActive,
       store, runtime, workboard, refreshCards, syncContentItemsManifest,

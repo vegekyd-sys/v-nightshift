@@ -2030,6 +2030,28 @@ test("a project's own limit raises its concurrency above the Workflow's, and def
   store.close();
 });
 
+test("an idle board lets a project run past its Workflow's limit, up to the idle limit", async () => {
+  const { runtime, store, workboard } = await limitedProject({ id: "NS-IDLE-LEND", workflowLimit: 2, running: 2 });
+  await runtime.tick("NS-IDLE-LEND", { dispatch: true });
+  assert.deepEqual(workboard.dispatchCalls, [], "the Workflow allows two and two run");
+  await runtime.tick("NS-IDLE-LEND", { dispatch: true, idleConcurrency: 4 });
+  assert.equal(workboard.dispatchCalls.length, 1, "the idle board lends the project room for its waiting card");
+  assert.equal(runtime.projectConcurrency(store.getInstance("NS-IDLE-LEND")), 2, "its own limit is unchanged");
+  store.close();
+});
+
+test("an idle board does not raise a one-at-a-time Workflow or a limit an operator set", async () => {
+  const serial = await limitedProject({ id: "NS-IDLE-SERIAL", workflowLimit: 1, running: 1 });
+  await serial.runtime.tick("NS-IDLE-SERIAL", { dispatch: true, idleConcurrency: 8 });
+  assert.deepEqual(serial.workboard.dispatchCalls, [], "perInstance 1 means one at a time");
+  serial.store.close();
+  const capped = await limitedProject({ id: "NS-IDLE-CAPPED", workflowLimit: 8, running: 2 });
+  capped.store.setInstanceControl("NS-IDLE-CAPPED", { perInstanceLimit: 2 });
+  await capped.runtime.tick("NS-IDLE-CAPPED", { dispatch: true, idleConcurrency: 8 });
+  assert.deepEqual(capped.workboard.dispatchCalls, [], "an operator's limit is a cap");
+  capped.store.close();
+});
+
 test("a paid card whose transcript ends on a lease timeout retries when its ledger holds nothing", async () => {
   // V, 2026-09-29 20:21: read while the board still showed the card running,
   // so the Gateway's run record was not consulted; the transcript's own error

@@ -31,6 +31,20 @@ export function projectConcurrencyLimit(release, control = {}) {
   return release?.spec?.concurrency?.perInstance ?? 1;
 }
 
+// How many cards a project may run while nothing else is waiting for a start.
+// perInstance is a project's fair share of a busy board; on an idle board it
+// only leaves capacity unused. On V (2026-10-14..21) a 30-item project that
+// ran alone took 3–5 h at 3.4 of its 4 cards while the board had room for 12.
+// The scheduler decides when the board is idle; this says how far a project
+// may go then. A Workflow that runs one card at a time and a limit an operator
+// set for a project are both meant, so neither is raised.
+export function projectIdleConcurrencyLimit(release, control = {}, idleLimit = 0) {
+  const limit = projectConcurrencyLimit(release, control);
+  if (Number.isSafeInteger(control?.perInstanceLimit) && control.perInstanceLimit >= 1) return limit;
+  if (limit <= 1 || !Number.isSafeInteger(idleLimit)) return limit;
+  return Math.max(limit, Math.min(idleLimit, PROJECT_CONCURRENCY_MAX));
+}
+
 export function planNextActions({
   release,
   instance,
