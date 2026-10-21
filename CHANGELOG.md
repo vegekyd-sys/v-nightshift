@@ -2,6 +2,8 @@
 
 最新的在上面。2026-10-02 之前的记录在 `vegekyd-sys/v-openclaw-platform` 的 CHANGELOG.md。
 
+- #19 feat(projects): 还没开工的项目可以换到同一 Workflow 的新版本（`nightshiftctl projects workflow <id> latest`），排队中的卡原地重写；10-22 已把 DL-1021-09..21 从 1.0.1 换到星擎夜班 1.0.3
+- #18 fix(brief): 卡片可以读 agent 的 memory，但不再写（daily memory 里 55–90% 是卡片流水）
 - #17 fix(scheduler): 导入失败的 content-items 清单每轮仍重试，但同一内容同一错误只记一条审计事件（V 上两个坏清单一周写了 16,920 条）
 - #16 feat(dispatch): 记录「有卡在排队时是哪道刹车拦着」的时间（`/api/health` 的 `dispatchHolds`，journal 每 15 分钟一行 `dispatch.holds`）；warmup 不设时按 Gateway Worker 池推导（每 5 个 Worker 1 张，至少 3 张）
 - #15 feat(scheduler): 板子空闲（没有项目在自己份额内排队）时，单个项目可临时跑到 8 张卡；有项目排队就停止借出；`perInstance: 1` 和手动设过上限的项目不放大
