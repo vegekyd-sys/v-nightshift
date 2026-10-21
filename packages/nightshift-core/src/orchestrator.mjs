@@ -446,6 +446,12 @@ export function buildAgentBrief(release, instance, stage, contentItem = null, co
     // skill, so before this line they wrote long English reports and the card
     // could not say what a person should do (DL-1008-04 on V, 2026-10-08).
     "Stop report: if you end without completing this stage, begin your final message with two lines in Chinese, written for someone who is not technical: 需要人做：<the one thing only a person can do so this can go on, as one plain instruction of at most 40 Chinese characters that says what to give or fix and where, with no ids, field names, file paths or card names — such as 请给 seedance 视频服务充值, 请在 Scene 里补一段烟雾测试画面, 请更新巴西手机的代理账号, 请看一下这条视频能不能用：<link>; or 无 when no person is needed, such as a crash, a timeout or a provider error a new attempt may fix: Night Shift then tries again by itself> 原因：<one plain sentence on what actually happened, at most 60 Chinese characters; not the name of a Night Shift rule>. Details may follow after a blank line.",
+    // V, 2026-10-12..22: 55–90% of the makaron agent's daily memory files were
+    // card runs' own logs, and later cards read them back as instructions (visual
+    // QC no stage asked for, "the previous run was fake" retractions of real
+    // outputs). Cards may read memory for background (Tianyi 2026-10-22) but never
+    // write it.
+    "Memory: you may read the agent's memory for background, but do not write to it (memory/*.md, MEMORY.md, user-patterns.md). What this card did goes in your final message and the stage handoff, not in memory.",
     "Return a concise result with evidence links or an explicit blocker. Do not invent missing evidence.",
   ];
   const brief = lines.join("\n");

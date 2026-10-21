@@ -127,6 +127,8 @@ test("keeps every stage brief complete instead of truncating at the native card 
     const notes = buildAgentBrief(release, instance, stage, stage.scope === "content-item" ? contentItem : null);
     assert.ok(notes.length < WORKBOARD_NOTES_LIMIT, `${stage.id} notes length ${notes.length}`);
     assert.match(notes, /Workboard completion safety/);
+    // Card runs used the agent's daily memory as a log; they may read it, never write it.
+    assert.match(notes, /do not write to it \(memory\/\*\.md, MEMORY\.md, user-patterns\.md\)/);
     assert.match(notes, /Return a concise result with evidence links or an explicit blocker\. Do not invent missing evidence\.$/);
     assert.doesNotMatch(notes, /This long script belongs/);
   }
