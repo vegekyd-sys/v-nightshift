@@ -57,3 +57,13 @@ test("with more warming than allowed, the wait is until enough of them are past 
   // third oldest (20 s in) leaves in 160 s.
   assert.equal(result.retryAfterMs, 160_000);
 });
+
+import { derivedWarmupMaxCards } from "./active-card-count.mjs";
+
+test("warm-up follows the Worker pool: three for today's fifteen, more for a larger pool", () => {
+  assert.equal(derivedWarmupMaxCards(15), 3, "V's 15-Worker pool keeps the three it always had");
+  assert.equal(derivedWarmupMaxCards(30), 6);
+  assert.equal(derivedWarmupMaxCards(8), 3, "never below three");
+  assert.equal(derivedWarmupMaxCards(undefined), 3, "an unknown pool keeps three");
+  assert.equal(derivedWarmupMaxCards(null), 3);
+});

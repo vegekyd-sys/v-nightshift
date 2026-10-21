@@ -41,3 +41,13 @@ function timestampMs(value) {
   const parsed = Date.parse(value ?? "");
   return Number.isFinite(parsed) ? parsed : 0;
 }
+
+// How many cards may warm up at once when NIGHTSHIFT_WARMUP_MAX_CARDS is not
+// set: one per five Gateway Workers, never fewer than three. A fixed three caps
+// the start rate at two a minute, so with V's cards averaging 11 minutes the
+// board could never hold more than about 22, whatever the machine; with a
+// 15-Worker pool this is the three it always was. The Agent DB probes still
+// stop starts on slow admissions and halve the target on a lease timeout.
+export function derivedWarmupMaxCards(workerCapacity) {
+  return Number.isSafeInteger(workerCapacity) && workerCapacity > 0 ? Math.max(3, Math.floor(workerCapacity / 5)) : 3;
+}

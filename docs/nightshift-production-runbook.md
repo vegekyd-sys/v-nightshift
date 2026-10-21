@@ -64,6 +64,30 @@ A scheduler pass therefore starts at most `NIGHTSHIFT_WARMUP_MAX_CARDS` minus th
 
 The default, 3 cards per 90 s, is Tianyi's choice for throughput (2026-09-29). Most cut runs were 2 to 5 minutes into their run, so a longer window protects more; if lease timeouts stay frequent, lengthen `NIGHTSHIFT_WARMUP_WINDOW_MS` in the drop-in and restart only Night Shift.
 
+When `NIGHTSHIFT_WARMUP_MAX_CARDS` is not set, the limit follows the Gateway's Worker pool (`maxWorkers`, read by the capacity probe): one warming card per five Workers, never fewer than 3. With V's 15-Worker pool that is the same 3. A fixed 3 caps starts at two a minute, and by Little's law the board then holds at most about 2 × the average card length: about 22 cards with V's 11-minute average, and about 6 while the 3-minute brief cards dominate. A 30-Worker pool gets 6. `dispatchWarmup.derived` in `/api/health` says which applies. Set the variable to pin a number.
+
+### Why cards are not starting
+
+Each brake decides on its own, so the service keeps a ledger of the time cards spent waiting to start, by the first brake that held them (`dispatch-hold-ledger.mjs`). It observes every `NIGHTSHIFT_GATEWAY_CAPACITY_PROBE_INTERVAL_MS`. Only time with a card ready to start in an active, dispatching project is counted.
+
+- `/api/health` → `dispatchHolds { since, waitingMs, byReason, current }`, since the service started.
+- Every 15 minutes with waiting time, the journal gets one line `{"event":"dispatch.holds", from, to, waitingMs, byReason, running, targetMaxActive, workerCapacity, maxWarming}`. To read a night: `journalctl -u nightshift-workboard --since … --grep dispatch.holds -o cat`.
+
+| Reason | Brake |
+| --- | --- |
+| `gateway-restart`, `scheduler-circuit` | Gateway restart hold; scheduler circuit after Gateway failures |
+| `host-memory-headroom`, `host-memory-stall`, `host-swap`, `host-sample-warmup`, `host-probe-failed` | host probe (`NIGHTSHIFT_HOST_MEMORY_RESERVE_*`) |
+| `agent-db-lease-timeout`, `agent-db-harm`, `agent-db-slow-admission` | Agent DB probe, red / red that cut a person's reply / yellow |
+| `gateway-latency-red`, `gateway-probe-error`, `gateway-latency-yellow` | Gateway latency probe |
+| `red-cooldown`, `recovering` | after a red: the cooldown, then waiting for growth to resume |
+| `worker-queue`, `worker-capacity` | the Gateway's Worker pool has queued work, or no Worker beyond the interactive reserve |
+| `target-max-active`, `harm-ceiling` | running has reached the guard's target, or the ceiling a cut reply set |
+| `warmup` | warm-up slots above |
+| `awaiting-probe` | the start a green probe allowed is spent; the next probe allows another |
+| `starting` | nothing held: starts were allowed |
+
+Before the ledger, the cause had to be inferred. On V (2026-10-14..21), cards waited to start in 37% of minutes, and in 45 of those hours fewer than 11 ran. Joined with the Gateway's RSS, hours with the Gateway under 5 GiB ran about 12 cards, the Worker pool's limit (15 Workers less 3 reserved). Hours above 6.5 GiB ran about 7, under the 20% host memory reserve.
+
 ### Agent DB lease pressure
 
 Every Agent run writes through one process-global lease on the agent database, and a writer that waits 5 s is killed. Night Shift cards write far more than chat turns, so under load the lease saturates while Workers still have room and the Gateway probe stays green. On V at 10:21 on 2026-09-24 that cut two people's replies with every other signal healthy.

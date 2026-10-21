@@ -1,4 +1,5 @@
-import { activeCardCount, warmupAdmission } from "./active-card-count.mjs";
+import { activeCardCount, derivedWarmupMaxCards, warmupAdmission } from "./active-card-count.mjs";
+import { DispatchHoldLedger, dispatchHoldReason } from "./dispatch-hold-ledger.mjs";
 import { buildOverview } from "./overview.mjs";
 import { runSchedulerPass, instanceCardIds, visibleCardIds } from "../../../packages/nightshift-core/src/scheduler-pass.mjs";
 import { tickWithFaultProjection } from "../../../packages/nightshift-core/src/scheduler-state.mjs";
@@ -116,7 +117,9 @@ const orphanedSessionMs = positiveInteger(process.env.NIGHTSHIFT_ORPHANED_SESSIO
 // New cards still in their first minutes, the heaviest on the agent database.
 // At most this many at once; a start waits for one to leave its window.
 const warmupWindowMs = positiveInteger(process.env.NIGHTSHIFT_WARMUP_WINDOW_MS, 90_000, 1_800_000);
-const warmupMaxStarts = positiveInteger(process.env.NIGHTSHIFT_WARMUP_MAX_CARDS, 3, 36);
+// Unset, it follows the Gateway's Worker pool (active-card-count.mjs derivedWarmupMaxCards).
+const warmupMaxStartsSetting = process.env.NIGHTSHIFT_WARMUP_MAX_CARDS
+  ? positiveInteger(process.env.NIGHTSHIFT_WARMUP_MAX_CARDS, 3, 36) : null;
 const schedulerRetryMinMs = positiveInteger(process.env.NIGHTSHIFT_SCHEDULER_RETRY_MIN_MS, 10_000, 600_000);
 const schedulerRetryMaxMs = positiveInteger(process.env.NIGHTSHIFT_SCHEDULER_RETRY_MAX_MS, 120_000, 600_000);
 // After the Gateway returns from a restart, Night Shift waits this long before it
@@ -201,6 +204,10 @@ let tickQueue = Promise.resolve();
 let shuttingDown = false;
 let capacityProbePromise = null;
 let capacityProbeTimer = null;
+let holdObservationTimer = null;
+// The Worker pool size from the last probe that reported it.
+let lastWorkerCapacity = null;
+const dispatchHolds = new DispatchHoldLedger();
 // Finished projects' working media is removed once a day (see storage-retention.mjs). V's data
 // disk filled up on 2026-10-14 because nothing ever removed it.
 const retentionDays = Number(process.env.NIGHTSHIFT_RETENTION_DAYS ?? 14);
@@ -242,6 +249,8 @@ workboard.connect()
   });
 capacityProbeTimer = setInterval(() => probeDispatchCapacity(), gatewayCapacityProbeIntervalMs);
 capacityProbeTimer.unref?.();
+holdObservationTimer = setInterval(() => observeDispatchHold(), gatewayCapacityProbeIntervalMs);
+holdObservationTimer.unref?.();
 retentionTimer = setInterval(() => runDailyRetention(), retentionCheckMs);
 retentionTimer.unref?.();
 
@@ -307,7 +316,8 @@ async function handleApi(request, response, url) {
       schedulerMode: "workboard-events",
       schedulerRepairIntervalMs,
       dispatchPressure: dispatchPressureGuard.snapshot(activeCardCount(cardCache)),
-      dispatchWarmup: warmupAdmission(cardCache, { windowMs: warmupWindowMs, maxWarming: warmupMaxStarts }),
+      dispatchWarmup: { ...warmupAdmission(cardCache, { windowMs: warmupWindowMs, maxWarming: warmupMaxCards() }), derived: warmupMaxStartsSetting === null },
+      dispatchHolds: dispatchHolds.snapshot(),
       gatewayRestart: gatewayRestart.snapshot(),
       gatewayCapacityProbeIntervalMs,
       reservedInteractiveSlots,
@@ -1145,7 +1155,7 @@ function runScheduler({ trigger = "manual" } = {}) {
     lastSchedulerTrigger = trigger;
     const started = Date.now();
     const pressure = dispatchPressureGuard.snapshot(activeCardCount(cardCache));
-    const warmup = warmupAdmission(cardCache, { windowMs: warmupWindowMs, maxWarming: warmupMaxStarts });
+    const warmup = warmupAdmission(cardCache, { windowMs: warmupWindowMs, maxWarming: warmupMaxCards() });
     const dispatchMaxStarts = Math.min(schedulerDispatchMaxStarts, pressure.availableStarts, warmup.available);
     // One serialized round shares one authoritative board snapshot. API mutations
     // cannot interleave a takeover with a later tick using an older snapshot.
@@ -1274,6 +1284,7 @@ function probeDispatchCapacity() {
       const [hostPressure, agentDbPressure] = await Promise.all([probeHostPressure(), probeAgentDbPressure()]);
       const probe = hostPressure.blocked ? {} : await workboard.probeGatewayCapacity();
       pressure = dispatchPressureGuard.recordProbe({ ...probe, hostPressure, agentDbPressure, running });
+      if (Number.isSafeInteger(probe.workerPool?.workerCapacity)) lastWorkerCapacity = probe.workerPool.workerCapacity;
     } catch (error) {
       if (isGatewayRestartError(error)) {
         holdForGateway(error.message);
@@ -1288,6 +1299,35 @@ function probeDispatchCapacity() {
     capacityProbePromise = null;
   });
   return capacityProbePromise;
+}
+
+function warmupMaxCards() {
+  return warmupMaxStartsSetting ?? derivedWarmupMaxCards(lastWorkerCapacity);
+}
+
+// Feeds dispatch-hold-ledger.mjs: is a card waiting to start, and what holds it.
+function observeDispatchHold() {
+  if (shuttingDown) return;
+  const now = Date.now();
+  const dispatching = new Map();
+  const waiting = cardCache.some((card) => {
+    if (!cardIsStartable(card, now) || (card.labels ?? []).includes("nightshift:approval")) return false;
+    const instanceId = (card.labels ?? []).find((label) => label.startsWith("instance:"))?.slice("instance:".length);
+    if (!instanceId) return false;
+    if (!dispatching.has(instanceId)) {
+      dispatching.set(instanceId, store.getInstance(instanceId)?.status === "active" && store.getInstanceControl(instanceId).automaticDispatch);
+    }
+    return dispatching.get(instanceId);
+  });
+  const running = activeCardCount(cardCache);
+  const pressure = dispatchPressureGuard.snapshot(running);
+  const warmup = warmupAdmission(cardCache, { windowMs: warmupWindowMs, maxWarming: warmupMaxCards() });
+  const reason = dispatchHoldReason({
+    waiting, gatewayStatus: gatewayRestart.snapshot().status, circuitOpen: schedulerCircuit.snapshot().open, pressure, warmup,
+  });
+  dispatchHolds.observe(reason, {
+    running, targetMaxActive: pressure.targetMaxActive, workerCapacity: lastWorkerCapacity, maxWarming: warmup.maxWarming,
+  });
 }
 
 async function startInstance(instance) {
@@ -2111,6 +2151,8 @@ function shutdown() {
   changeScheduler.stop();
   if (capacityProbeTimer) clearInterval(capacityProbeTimer);
   capacityProbeTimer = null;
+  if (holdObservationTimer) clearInterval(holdObservationTimer);
+  holdObservationTimer = null;
   if (retentionTimer) clearInterval(retentionTimer);
   retentionTimer = null;
   let finished = false;
