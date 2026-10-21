@@ -2,6 +2,9 @@
 
 最新的在上面。2026-10-02 之前的记录在 `vegekyd-sys/v-openclaw-platform` 的 CHANGELOG.md。
 
+- #17 fix(scheduler): 导入失败的 content-items 清单每轮仍重试，但同一内容同一错误只记一条审计事件（V 上两个坏清单一周写了 16,920 条）
+- #16 feat(dispatch): 记录「有卡在排队时是哪道刹车拦着」的时间（`/api/health` 的 `dispatchHolds`，journal 每 15 分钟一行 `dispatch.holds`）；warmup 不设时按 Gateway Worker 池推导（每 5 个 Worker 1 张，至少 3 张）
+- #15 feat(scheduler): 板子空闲（没有项目在自己份额内排队）时，单个项目可临时跑到 8 张卡；有项目排队就停止借出；`perInstance: 1` 和手动设过上限的项目不放大
 - #14 fix(dashboard): 项目卡的时间分开显示排队和干活：没开工显示「提交 · 排队中」，开工后从第一张卡真正开始算「已进行」并另写排队时长，已交付的用时只算干活时间
 - #13 perf(delivery): 大视频按四路分段下载，校验范围、版本和长度；不支持时回退完整下载，保持原画质
 - #12 fix(scheduler): 正常轮次不再从 action ledger 重新读入已完成卡；保留审批、所有 blocked 恢复和完整 repair，不降低夜班并发或派工速率
