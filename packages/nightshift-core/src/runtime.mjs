@@ -5,7 +5,7 @@ import {
   validateWorkflow,
   WorkflowValidationError,
 } from "./workflow.mjs";
-import { actionKey, buildAgentBrief, nativeActionKey, planNextActions, projectConcurrencyLimit, requiredApproval, resolveApprovalBinding, stageTimeoutSeconds, WORKBOARD_NOTES_LIMIT } from "./orchestrator.mjs";
+import { actionKey, buildAgentBrief, nativeActionKey, planNextActions, projectConcurrencyLimit, projectIdleConcurrencyLimit, requiredApproval, resolveApprovalBinding, stageTimeoutSeconds, WORKBOARD_NOTES_LIMIT } from "./orchestrator.mjs";
 import { classifyRunOutcome, classifyTerminalFailure, infrastructureFailureSummary, runEndedNormally, scheduleAutomaticRetry } from "./failure-policy.mjs";
 import { normalizeProjectCollaboration } from "./project.mjs";
 import { cardAttempt, continuation, ledgerOf, readStopReport } from "./needs-you.mjs";
@@ -1092,11 +1092,20 @@ export class NightShiftRuntime {
     return { cardId, contentItemId, stageId, status: "ready" };
   }
 
+  // The project's own limit, without what an idle board lends it.
+  projectConcurrency(instance) {
+    const release = this.store.getRelease(instance.workflowSha256);
+    return projectConcurrencyLimit(release?.manifest, this.store.getInstanceControl?.(instance.id));
+  }
+
   async tick(instanceId, {
     cards = null,
     dispatch = false,
     dispatchMaxStarts = this.dispatchMaxStarts,
     dryRun = false,
+    // How far past its own limit the project may go: the scheduler passes it
+    // only when no other project is waiting for a start (scheduler-pass.mjs).
+    idleConcurrency = 0,
     inspectSessions = true,
     now: nowMs = Date.now(),
   } = {}) {
@@ -1113,7 +1122,7 @@ export class NightShiftRuntime {
     const skippedIds = new Set(skippedContentItems.map((entry) => entry.id));
     const contentItems = this.contentItemsWithRevisions(instanceId).filter((item) => !skippedIds.has(item.id));
     const contentItemRuns = this.store.listContentItemRuns(instanceId).filter((run) => !skippedIds.has(run.contentItemId));
-    const perInstanceLimit = projectConcurrencyLimit(savedRelease.manifest, this.store.getInstanceControl?.(instanceId));
+    const perInstanceLimit = projectIdleConcurrencyLimit(savedRelease.manifest, this.store.getInstanceControl?.(instanceId), idleConcurrency);
     const actions = planNextActions({
       release: savedRelease.manifest,
       instance,

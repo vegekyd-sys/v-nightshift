@@ -1,9 +1,14 @@
 import { tickWithFaultProjection } from "./scheduler-state.mjs";
 import { byQueueOrder, projectQueue } from "./project-queue.mjs";
+import { cardIsStartable } from "./runtime.mjs";
 
 export async function runSchedulerPass({
   dispatchMaxStarts = 36,
   dispatchEnabled = true,
+  // How many cards one project may run while no other project is waiting for a
+  // start (orchestrator.mjs projectIdleConcurrencyLimit). 0 keeps every
+  // project at its own limit.
+  idleProjectConcurrency = 0,
   inspectSessions = true,
   // The repair pass reads every card the projects own; a routine pass reads only
   // what can still change.
@@ -56,6 +61,13 @@ export async function runSchedulerPass({
   let changed = false;
   const activeAtStart = cards.filter(cardConsumesDispatchSlot).length;
   let remainingStarts = Math.min(dispatchMaxStarts, Math.max(0, maxWorkboardActive - activeAtStart));
+  // Lend idle capacity only when no project is waiting within its own limit, so
+  // a lent card never takes a start another project could use. A project that
+  // arrives later has its first card waiting on the next pass, and that ends
+  // the lending: borrowers start nothing more until it has its share.
+  const idleConcurrency = dispatchEnabled && idleProjectConcurrency > 0 && remainingStarts > 0 &&
+    !eligible.some((instance) => waitsWithinOwnLimit(instance, cards, store, runtime, nowMs))
+    ? idleProjectConcurrency : 0;
   let retryAfterMs = null;
   let dispatched = 0;
   for (const instance of eligible) {
@@ -68,7 +80,8 @@ export async function runSchedulerPass({
     try {
       const result = await tickWithFaultProjection({
         instanceId: instance.id,
-        options: { dispatch: dispatchEnabled, dispatchMaxStarts: dispatchEnabled ? remainingStarts : 0, cards, inspectSessions },
+        options: { dispatch: dispatchEnabled, dispatchMaxStarts: dispatchEnabled ? remainingStarts : 0, cards, inspectSessions,
+          ...(idleConcurrency ? { idleConcurrency } : {}) },
         runtime,
         store,
         workboard,
@@ -95,6 +108,7 @@ export async function runSchedulerPass({
   return {
     dispatchMaxStarts,
     dispatched,
+    idleConcurrency,
     dispatchEnabled,
     warnings,
     instances: eligible.length,
@@ -102,6 +116,16 @@ export async function runSchedulerPass({
     queue: projectQueue({ store, instances, cards, nowMs }),
     retryAfterMs,
   };
+}
+
+// A project has a card ready to start and fewer cards running than its own
+// limit: it is owed the next start. Ready cards above the limit are ones an
+// idle board lent it, and they wait for the next idle pass.
+function waitsWithinOwnLimit(instance, cards, store, runtime, nowMs) {
+  if (!store.getInstanceControl(instance.id).automaticDispatch) return false;
+  const own = cards.filter((card) => (card.labels ?? []).includes(`instance:${instance.id}`));
+  if (!own.some((card) => cardIsStartable(card, nowMs) && !(card.labels ?? []).includes("nightshift:approval"))) return false;
+  return own.filter(cardConsumesDispatchSlot).length < runtime.projectConcurrency(instance);
 }
 
 // A run that says "running" but has not moved for this long is a leftover from a

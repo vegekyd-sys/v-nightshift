@@ -422,3 +422,60 @@ test("a Gateway suspending or restarting is no project's fault", async () => {
   );
   assert.ok([...f.controls.values()].every((c) => c.fault === null));
 });
+
+// Lending an idle board: P0 runs its Workflow's four cards with nothing ready;
+// P1 is the project that may or may not be waiting.
+function idleFixture({ p1Cards = [], p0Extra = [] } = {}) {
+  const instances = [{ id: "P0", status: "active", createdAt: "1" }, { id: "P1", status: "active", createdAt: "2" }];
+  const controls = new Map(instances.map(({ id }) => [id, { automaticDispatch: true, fault: null }]));
+  const cards = [
+    ...Array.from({ length: 4 }, (_, i) => ({ id: `P0-run-${i}`, status: "running", labels: ["instance:P0"] })),
+    ...p0Extra, ...p1Cards,
+  ];
+  const seen = [];
+  return {
+    seen,
+    store: {
+      listInstances: () => instances,
+      getInstanceControl: (id) => controls.get(id),
+      setInstanceControl: (id, patch) => controls.set(id, { ...controls.get(id), ...patch }),
+      listStageRuns: () => [], listContentItemRuns: () => [], appendEvent() {},
+    },
+    workboard: {},
+    refreshCards: async () => cards,
+    syncContentItemsManifest: async () => {},
+    runtime: {
+      projectConcurrency: () => 4,
+      tick: async (id, options) => { seen.push({ id, idleConcurrency: options.idleConcurrency ?? 0 }); return { applied: [], dispatch: null }; },
+    },
+  };
+}
+
+test("spare starts with no project waiting lend each project the idle limit", async () => {
+  const f = idleFixture();
+  const result = await runSchedulerPass({ ...f, dispatchMaxStarts: 3, idleProjectConcurrency: 8 });
+  assert.deepEqual(f.seen, [{ id: "P0", idleConcurrency: 8 }, { id: "P1", idleConcurrency: 8 }]);
+  assert.equal(result.idleConcurrency, 8);
+});
+
+test("a project waiting within its own limit ends the lending for everyone", async () => {
+  const f = idleFixture({ p1Cards: [{ id: "P1-plan", status: "ready", labels: ["instance:P1"] }] });
+  const result = await runSchedulerPass({ ...f, dispatchMaxStarts: 3, idleProjectConcurrency: 8 });
+  assert.deepEqual(f.seen.map(({ idleConcurrency }) => idleConcurrency), [0, 0]);
+  assert.equal(result.idleConcurrency, 0);
+});
+
+test("a lent card still waiting does not count as a project owed a start", async () => {
+  // P0 already runs its four and holds a fifth, created while the board was idle.
+  const f = idleFixture({ p0Extra: [{ id: "P0-lent", status: "ready", labels: ["instance:P0"] }] });
+  await runSchedulerPass({ ...f, dispatchMaxStarts: 3, idleProjectConcurrency: 8 });
+  assert.deepEqual(f.seen.map(({ idleConcurrency }) => idleConcurrency), [8, 8]);
+});
+
+test("no lending without spare starts, with dispatch held, or when it is turned off", async () => {
+  for (const options of [{ dispatchMaxStarts: 3, maxWorkboardActive: 4 }, { dispatchEnabled: false }, { idleProjectConcurrency: 0 }]) {
+    const f = idleFixture();
+    await runSchedulerPass({ ...f, dispatchMaxStarts: 3, idleProjectConcurrency: 8, ...options });
+    assert.ok(f.seen.every(({ idleConcurrency }) => idleConcurrency === 0), JSON.stringify(options));
+  }
+});
