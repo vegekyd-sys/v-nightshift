@@ -931,6 +931,32 @@ async function handleApi(request, response, url) {
     json(response, 200, result);
     return;
   }
+  // Move a project that has not started onto another release of its Workflow
+  // (runtime.switchWorkflowRelease). version "latest" is the newest release.
+  const workflowSwitchMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/workflow$/);
+  if (request.method === "POST" && workflowSwitchMatch) {
+    const instanceId = decodeURIComponent(workflowSwitchMatch[1]);
+    const body = await bodyJson(request);
+    const actor = operatorIdentity(request, body);
+    const instance = store.getInstance(instanceId);
+    if (!instance) throw new Error(`Unknown project ${instanceId}`);
+    const current = store.getRelease(instance.workflowSha256);
+    const candidates = store.listReleases().filter((entry) => entry.workflowId === current?.workflowId);
+    const target = typeof body.workflowSha256 === "string" ? candidates.find((entry) => entry.workflowSha256 === body.workflowSha256)
+      : body.version === "latest" ? candidates[0]
+        : candidates.find((entry) => entry.version === body.version);
+    if (!target) throw new Error("Give version (a published version of this project's Workflow, or \"latest\") or workflowSha256");
+    validateProjectRequest(target.manifest, { ...instance, workflowSha256: target.workflowSha256 });
+    const reason = typeof body.reason === "string" ? body.reason.slice(0, 500) : null;
+    const result = await serializedOperation(() => runtime.switchWorkflowRelease({
+      instanceId, workflowSha256: target.workflowSha256, actor, reason,
+    }));
+    await writeProjectInputsSnapshot(result.instance);
+    await refreshCards({ cardIds: instanceCardIds(store, instanceId) });
+    if (result.instance.status === "active" && store.getInstanceControl(instanceId).automaticDispatch) changeScheduler.enqueue("workflow.switched");
+    json(response, 200, { instanceId, version: target.version, workflowSha256: target.workflowSha256, cardIds: result.cardIds, unchanged: result.unchanged });
+    return;
+  }
   // A project's own session limit, for an operator or an Agent to raise when
   // the host is quiet and lower when it is busy. null (or "default") returns
   // the project to its Workflow's perInstance. The board-wide brakes (Agent DB

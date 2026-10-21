@@ -704,6 +704,23 @@ export class NightShiftStore {
     return value;
   }
 
+  // Moves a project that has not started onto another release of its Workflow
+  // (runtime.switchWorkflowRelease checks that it has not started).
+  updateInstanceWorkflow(id, workflowSha, payload = {}, now = new Date()) {
+    const current = this.getInstance(id);
+    if (!current) throw new Error(`Unknown instance ${id}`);
+    this.db
+      .prepare("UPDATE instances SET workflow_sha = ?, updated_at = ? WHERE id = ?")
+      .run(workflowSha, now.toISOString(), id);
+    this.appendEvent({
+      instanceId: id,
+      type: "instance.workflow.switched",
+      payload: { ...payload, from: current.workflowSha256, to: workflowSha },
+      now,
+    });
+    return this.getInstance(id);
+  }
+
   updateInstanceInputs(id, patch, now = new Date()) {
     const current = this.getInstance(id);
     if (!current) throw new Error(`Unknown instance ${id}`);
