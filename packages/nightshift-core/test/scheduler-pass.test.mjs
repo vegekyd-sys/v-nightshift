@@ -479,3 +479,21 @@ test("no lending without spare starts, with dispatch held, or when it is turned 
     assert.ok(f.seen.every(({ idleConcurrency }) => idleConcurrency === 0), JSON.stringify(options));
   }
 });
+
+test("a manifest failure already reported is not recorded again", async () => {
+  const f = fixture();
+  const events = [];
+  f.store.appendEvent = (event) => events.push(event);
+  let reported = false;
+  const syncContentItemsManifest = async () => {
+    const error = new Error("content-items.json has no contentItems or items array");
+    if (reported) error.reported = true;
+    reported = true;
+    throw error;
+  };
+  const first = await runSchedulerPass({ ...f, syncContentItemsManifest });
+  const second = await runSchedulerPass({ ...f, syncContentItemsManifest });
+  assert.equal(events.filter((event) => event.type === "content-items.import.failed").length, 1);
+  assert.equal(first.warnings.length, 1);
+  assert.equal(second.warnings.length, 1, "the board still shows the failure");
+});

@@ -1,6 +1,7 @@
 import { activeCardCount, derivedWarmupMaxCards, warmupAdmission } from "./active-card-count.mjs";
 import { DispatchHoldLedger, dispatchHoldReason } from "./dispatch-hold-ledger.mjs";
 import { buildOverview } from "./overview.mjs";
+import { createContentItemsManifestSync } from "./content-items-manifest.mjs";
 import { runSchedulerPass, instanceCardIds, visibleCardIds } from "../../../packages/nightshift-core/src/scheduler-pass.mjs";
 import { tickWithFaultProjection } from "../../../packages/nightshift-core/src/scheduler-state.mjs";
 import { createCompletionUrlChecker } from "./completion-url.mjs";
@@ -218,7 +219,9 @@ let retentionTimer = null;
 let retentionDay = null;
 let retentionPromise = null;
 let lastRetention = null;
-const contentManifestHashes = new Map();
+const syncContentItemsManifest = createContentItemsManifestSync({
+  dataDir, setContentItems: (instanceId, items) => runtime.setContentItems(instanceId, items),
+});
 
 await ensureWorkflow();
 await ensureSeedInstance();
@@ -1411,37 +1414,6 @@ async function preflightProjectSkills(release, project) {
     ok: agents.every((entry) => entry.missingSkills.length === 0) && missing.length === 0,
     workflowSha256: release.metadata.workflowSha256,
   };
-}
-
-async function syncContentItemsManifest(instance) {
-  const manifestPath = join(dataDir, "instances", instance.id, "content-items.json");
-  let source;
-  try {
-    source = await readFile(manifestPath, "utf8");
-  } catch (error) {
-    if (error.code === "ENOENT") return;
-    throw error;
-  }
-  const digest = createHash("sha256").update(source).digest("hex");
-  if (contentManifestHashes.get(instance.id) === digest) return;
-  const parsed = JSON.parse(source);
-  // The planning skill documents the array as `items`; earlier manifests use
-  // `contentItems`. Accept both rather than rejecting a manifest that follows
-  // the published contract.
-  const items = Array.isArray(parsed) ? parsed : (parsed?.contentItems ?? parsed?.items);
-  if (!Array.isArray(items) || items.length === 0) {
-    // "contentItems must contain at least one video task" reads as "the stage
-    // produced nothing", which sent us looking in the wrong place while the file
-    // held fifteen entries under another key.
-    const arrays = Object.entries(parsed ?? {})
-      .filter(([, value]) => Array.isArray(value) && value.length > 0)
-      .map(([key, value]) => `${key}(${value.length})`);
-    throw new Error(`${manifestPath} has no contentItems or items array`
-      + (arrays.length ? `; it holds ${arrays.join(", ")}` : "")
-      + ". Each entry needs stableId (or id) and title.");
-  }
-  runtime.setContentItems(instance.id, items);
-  contentManifestHashes.set(instance.id, digest);
 }
 
 function serializedOperation(operation) {

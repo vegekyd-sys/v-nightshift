@@ -75,7 +75,8 @@ export async function runSchedulerPass({
       await syncContentItemsManifest(instance);
     } catch (error) {
       warnings.push(`${instance.id}: ${error.message}`);
-      store.appendEvent({ instanceId: instance.id, type: "content-items.import.failed", payload: { error: error.message } });
+      // The caller marks a failure it already reported for the same manifest.
+      if (!error.reported) store.appendEvent({ instanceId: instance.id, type: "content-items.import.failed", payload: { error: error.message } });
     }
     try {
       const result = await tickWithFaultProjection({
