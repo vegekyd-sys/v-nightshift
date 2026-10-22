@@ -58,3 +58,58 @@ export function normalizeContentItems(items, { maxItems = 50, routes = [], label
 export function contentItemRouteAllowed(route, routes = []) {
   return new Set(routes).has(route);
 }
+
+// The items array of a content-items.json: the file itself, or its `contentItems`
+// (earlier manifests) or `items` (what the planning skill documents). Null when the
+// file holds no such array. An empty array is a manifest with nothing in it.
+export function contentItemsOfManifest(parsed) {
+  if (Array.isArray(parsed)) return parsed;
+  if (Array.isArray(parsed?.contentItems)) return parsed.contentItems;
+  if (Array.isArray(parsed?.items)) return parsed.items;
+  return null;
+}
+
+// Every reason a content-items.json would not import, worded for the Agent that
+// wrote it. The import (normalizeContentItems) and the completion of the stage
+// that writes the manifest use this one rule set. Before, completion checked only
+// a non-empty id and title, so a stage finished with a manifest the import then
+// refused on every scheduler pass, and nobody told the Agent.
+export function contentItemsManifestIssues(source, { maxItems = 50, routes = [], labelMax = CARD_LABEL_MAX, path = "content-items.json", limit = 12 } = {}) {
+  let parsed;
+  try {
+    parsed = typeof source === "string" ? JSON.parse(source) : source;
+  } catch (error) {
+    return [`${path} is not valid JSON: ${error.message}`];
+  }
+  const items = contentItemsOfManifest(parsed);
+  if (items === null) {
+    const arrays = Object.entries(parsed ?? {})
+      .filter(([, value]) => Array.isArray(value) && value.length > 0)
+      .map(([key, value]) => `${key}(${value.length})`);
+    return [`${path} has no contentItems or items array${arrays.length ? `; it holds ${arrays.join(", ")}` : ""}. Each entry needs stableId (or id) and title.`];
+  }
+  // Whether a stage may finish with nothing in it is the Workflow's own rule
+  // (hasAtLeastOneItem); an empty list imports nothing and breaks nothing.
+  if (items.length === 0) return [];
+  const issues = [];
+  if (items.length > maxItems) issues.push(`${path} lists ${items.length} items; the Workflow allows at most ${maxItems}`);
+  const seen = new Set();
+  items.forEach((item, ordinal) => {
+    try {
+      const [normalized] = normalizeContentItems([item], { maxItems: 1, routes, labelMax });
+      if (seen.has(normalized.id)) issues.push(`Duplicate content item id: ${normalized.id}`);
+      seen.add(normalized.id);
+    } catch (error) {
+      issues.push(`items[${ordinal}]: ${error.message.replace("contentItems[0]", `contentItems[${ordinal}]`)}`);
+    }
+  });
+  return issues.length > limit ? [...issues.slice(0, limit), `… and ${issues.length - limit} more`] : issues;
+}
+
+// The stage whose output the Workflow names as its content-item source
+// (spec.contentItems.source: "output.<name>") writes the manifest the engine imports.
+export function writesContentItemsManifest(release, stage) {
+  const source = release?.spec?.contentItems?.source;
+  const name = typeof source === "string" && source.startsWith("output.") ? source.slice("output.".length) : null;
+  return Boolean(name) && Array.isArray(stage?.outputs) && stage.outputs.includes(name);
+}

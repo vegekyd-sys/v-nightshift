@@ -60,6 +60,8 @@ import {
   validateDeclaredCompletion,
   validateExecutionEvidence,
   validateProjectRequest,
+  contentItemsManifestIssues,
+  writesContentItemsManifest,
   WorkboardGatewayAdapter,
 } from "../../../packages/nightshift-core/src/index.mjs";
 
@@ -1662,6 +1664,30 @@ async function validateCompletion({ card, contentItemId, instance, release, reus
         manifest: handoff,
         stage,
       })).output;
+    } catch (error) {
+      error.completionPhase ??= "outputs";
+      throw error;
+    }
+  }
+  if (writesContentItemsManifest(release, stage)) {
+    // The stage that writes the manifest finishes only with one the import takes,
+    // checked by the import's own rules on the file the import reads. Otherwise the
+    // stage completed, the import refused the file on every pass and the project
+    // stood still with nobody told (V, 2026-10-22: GEE-TIMED-PUB-20261018,
+    // F-MERGED-ACCEPT-20261019-BR-B). Rejected, the error goes back to the Agent.
+    try {
+      const manifestPath = join(dataDir, "instances", instance.id, "content-items.json");
+      const source = await readFile(manifestPath, "utf8").catch((error) => {
+        if (error.code === "ENOENT") throw new Error(`content-items.json was not written: Night Shift imports content items only from ${manifestPath}`);
+        throw error;
+      });
+      const issues = contentItemsManifestIssues(source, {
+        path: manifestPath,
+        maxItems: release.spec.contentItems?.maxItems ?? 50,
+        routes: release.spec.contentItems?.routes ?? [],
+      });
+      if (issues.length) throw new Error(`Content items manifest cannot be imported: ${issues.join("; ")}`);
+      evidence.contentItemsManifest = { path: manifestPath, checked: true };
     } catch (error) {
       error.completionPhase ??= "outputs";
       throw error;

@@ -1503,7 +1503,9 @@ export class NightShiftRuntime {
         instanceId: instance.id,
         stageId,
         hung,
-        note: `Night Shift 自动重试：上次停下时没有需要人做的事（${String(cause).slice(0, 300)}）。`,
+        // A completion the contract refused names every problem; the Agent fixes
+        // them all in one attempt only if it sees them all.
+        note: `Night Shift 自动重试：上次停下时没有需要人做的事（${String(cause).slice(0, failure.kind === "contract_error" ? 1500 : 300)}）。`,
       });
       this.store.appendEvent({
         instanceId: instance.id,

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile as readFileDefault } from "node:fs/promises";
 import { join } from "node:path";
+import { contentItemsManifestIssues, contentItemsOfManifest } from "../../../packages/nightshift-core/src/content-items.mjs";
 
 // Imports each project's content-items.json written by its planning stage. A
 // manifest is imported once per content; one that cannot be imported is tried
@@ -23,7 +24,12 @@ export function createContentItemsManifestSync({ dataDir, setContentItems, readF
     const digest = createHash("sha256").update(source).digest("hex");
     if (imported.get(instance.id) === digest) return;
     try {
-      setContentItems(instance.id, manifestItems(manifestPath, source));
+      const items = manifestItems(manifestPath, source);
+      // A stage that found nothing (a timed-publish scan with nothing due) writes
+      // an empty list. There is nothing to import; whether the stage may finish
+      // empty is its own completion rule. On V (2026-10-22) GEE-TIMED-PUB-20261022-BR
+      // was reported every pass as having "no contentItems or items array".
+      if (items.length > 0) setContentItems(instance.id, items);
     } catch (error) {
       const failed = failures.get(instance.id);
       if (failed?.digest === digest && failed.message === error.message) error.reported = true;
@@ -37,20 +43,13 @@ export function createContentItemsManifestSync({ dataDir, setContentItems, readF
 
 function manifestItems(manifestPath, source) {
   const parsed = JSON.parse(source);
-  // The planning skill documents the array as `items`; earlier manifests use
-  // `contentItems`. Accept both rather than rejecting a manifest that follows
-  // the published contract.
-  const items = Array.isArray(parsed) ? parsed : (parsed?.contentItems ?? parsed?.items);
-  if (!Array.isArray(items) || items.length === 0) {
+  // The array is the file itself, its `contentItems` or its `items` (content-items.mjs).
+  const items = contentItemsOfManifest(parsed);
+  if (items === null) {
     // "contentItems must contain at least one video task" reads as "the stage
     // produced nothing", which sent us looking in the wrong place while the file
     // held fifteen entries under another key.
-    const arrays = Object.entries(parsed ?? {})
-      .filter(([, value]) => Array.isArray(value) && value.length > 0)
-      .map(([key, value]) => `${key}(${value.length})`);
-    throw new Error(`${manifestPath} has no contentItems or items array`
-      + (arrays.length ? `; it holds ${arrays.join(", ")}` : "")
-      + ". Each entry needs stableId (or id) and title.");
+    throw new Error(contentItemsManifestIssues(parsed, { path: manifestPath })[0]);
   }
   return items;
 }

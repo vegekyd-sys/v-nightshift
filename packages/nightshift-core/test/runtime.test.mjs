@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import {
   NeedsYouTracker,
@@ -13,6 +13,7 @@ import { stagesToRedo } from "../src/runtime.mjs";
 import { buildAgentBrief } from "../src/orchestrator.mjs";
 import { resolveNightShiftOperationKeys } from "../src/card-context.mjs";
 import { gatewayIdempotencyLabel } from "../src/workboard-gateway-adapter.mjs";
+import { contentItemsManifestIssues } from "../src/content-items.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const workflowPath = resolve(here, "../../../examples/workflows/xingqing-content-delivery.workflow.md");
@@ -1234,6 +1235,10 @@ class FakeWorkboard {
           "nightshift:approval",
         ],
       };
+      // Mirrors the native board's input checks (runtime-api normalizeTitle/Notes/Labels).
+      if (String(card.title ?? "").length > 180) throw new Error("title must be 180 characters or fewer.");
+      if (String(card.notes ?? "").length > 12000) throw new Error("notes must be 12000 characters or fewer.");
+      if ((card.labels ?? []).some((label) => label.length > 40)) throw new Error("labels must be 40 characters or fewer.");
       // Mirrors the native board: a card whose release time has not arrived is
       // created in "scheduled", not in the status the plan asked for, and the
       // time lives under metadata.automation where the board keeps it.
@@ -2738,5 +2743,71 @@ test("a project cannot take another Workflow's release", async () => {
   const { runtime, store } = await waitingProject("NS-OTHER");
   const other = runtime.publish((await readFile(workflowPath, "utf8")).replace("id: xingqing-content-delivery", "id: some-other-workflow"));
   await assert.rejects(runtime.switchWorkflowRelease({ instanceId: "NS-OTHER", workflowSha256: other.workflowSha256 }), /not a release of this project's Workflow/);
+  store.close();
+});
+
+// Manifests an Agent writes, held to what the import and the board accept
+// (V, 2026-10-22/23: DL-1022-21 and GEE-TIMED-PUB-20261022-BR).
+const manifestFixtures = resolve(here, "fixtures/manifest-contract-20261023");
+
+test("item titles longer than a card title still make cards: the card title is cut, the item keeps its title", async () => {
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const runtime = new NightShiftRuntime({ store, workboard });
+  const release = runtime.publish(await readFile(workflowPath, "utf8"));
+  const id = "DL-1022-21";
+  runtime.startInstance({ id, name: "山东天骄生物 阿拉伯语 30条（Gulfood 展前·下载交付·纯混剪）", workflowSha256: release.workflowSha256, agentBindings: { "content-operator": "main" } });
+  const manifest = JSON.parse(await readFile(join(manifestFixtures, "DL-1022-21.content-items.json"), "utf8"));
+  assert.ok(manifest.items.filter((item) => item.title.length > 180).length >= 20, "the fixture keeps V's title lengths");
+  runtime.setContentItems(id, manifest.items.map((item) => ({ ...item, route: null })));
+  store.upsertStageRun({ instanceId: id, stageId: "plan", attempt: 1, cardId: "card-plan", status: "done" });
+  workboard.cards.push({ id: "card-plan", status: "done", labels: [`instance:${id}`, "stage:plan"] });
+  await runtime.tick(id);
+  const routeCards = workboard.cards.filter((card) => (card.labels ?? []).includes("stage:route"));
+  assert.ok(routeCards.length > 0);
+  for (const card of routeCards) assert.ok(card.title.length <= 180, card.title.length);
+  // The project runs a few items at once; take the longest title that has a card.
+  const withCards = manifest.items.filter((item) => routeCards.some((entry) => entry.labels.includes(`content-item:${item.id}`)));
+  const longest = withCards.reduce((a, b) => (b.title.length > a.title.length ? b : a));
+  assert.ok(longest.title.length > 180, longest.title.length);
+  const card = routeCards.find((entry) => entry.labels.includes(`content-item:${longest.id}`));
+  assert.match(card.title, /…｜/);
+  assert.ok(card.notes.includes(longest.title), "the brief carries the full title");
+  assert.equal(store.listContentItems(id).find((item) => item.id === longest.id).title, longest.title);
+  store.close();
+});
+
+test("a manifest stage the import would refuse goes back to its Agent with every problem", async () => {
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  let clock = Date.now();
+  const needsYou = new NeedsYouTracker({ store, now: () => clock });
+  const problems = contentItemsManifestIssues({ items: [
+    { id: "F-MERGED-ACCEPT-20261019-BR-B-01", title: "One" },
+    { id: "ok-1", title: "Two" },
+    { id: "ok-1", title: "Three" },
+    { id: "ok-2", title: "Four", route: "TELEPORT" },
+    { title: "Five" },
+    { id: "F-MERGED-ACCEPT-20261019-BR-B-02", title: "Six" },
+  ] }, { routes: ["AI_GENERATE", "SCENE_EDIT"], path: "/data/instances/NS-MANIFEST/content-items.json" });
+  assert.equal(problems.length, 5, problems.join("\n"));
+  const error = Object.assign(new Error(`Content items manifest cannot be imported: ${problems.join("; ")}`), { completionPhase: "outputs" });
+  assert.ok(error.message.length > 300, "longer than the old 300-character retry note");
+  const runtime = new NightShiftRuntime({ store, workboard, needsYou, now: () => clock, completionValidator: async () => { throw error; } });
+  const release = runtime.publish(await readFile(workflowPath, "utf8"));
+  const id = "NS-MANIFEST";
+  runtime.startInstance({ id, workflowSha256: release.workflowSha256, agentBindings: { "content-operator": "main" } });
+  await runtime.tick(id);
+  const plan = workboard.cards.find((card) => card.labels.includes("stage:plan"));
+  Object.assign(plan, { status: "done", sessionKey: "agent:main:subagent:workboard-plan", runId: "run-plan" });
+  workboard.sessions.set("agent:main:subagent:workboard-plan", { messages: [{ role: "assistant", stopReason: "stop", timestamp: clock, content: [{ type: "text", text: "Plan written: 4 items." }] }] });
+  await runtime.reconcile(id);
+  assert.equal(plan.status, "blocked");
+  assert.equal(store.listEvents(id).find((event) => event.type === "stage.completion.rejected").payload.error, error.message);
+  clock += 5 * 60_000;
+  await runtime.reconcile(id, null, { inspectSessions: false });
+  assert.equal(plan.status, "ready", "the same card goes back to its Agent, with no person in between");
+  assert.equal(store.listDecisionRequests({ instanceId: id }).filter((entry) => entry.status === "open").length, 0);
+  for (const problem of problems) assert.ok(plan.notes.includes(problem), problem);
   store.close();
 });

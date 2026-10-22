@@ -2,6 +2,17 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import YAML from "yaml";
 import { resolveReleaseAt } from "./release-schedule.mjs";
+import { CARD_LABEL_MAX } from "./content-items.mjs";
+
+// What the native Workboard refuses on a card and Night Shift cannot shorten for
+// it: ids written into labels (each label at most CARD_LABEL_MAX characters) and
+// the card's Skill list (at most 20 names of at most 80). A Workflow that breaks
+// one would publish and then stop at its first card; it is refused here instead.
+const WORKBOARD_SKILLS_MAX = 20;
+const WORKBOARD_SKILL_NAME_MAX = 80;
+function labelFits(prefix, value) {
+  return `${prefix}${value}`.length <= CARD_LABEL_MAX;
+}
 
 const ACTORS = new Set(["agent", "human", "system", "timer"]);
 const STAGE_SCOPES = new Set(["project", "content-item"]);
@@ -121,6 +132,9 @@ export function validateWorkflow(document) {
     issues.push(issue("metadata.required", "metadata", "metadata is required"));
   } else {
     validateIdentifier(metadata.id, "metadata.id", issues);
+    if (typeof metadata.id === "string" && !labelFits("workflow:", metadata.id)) {
+      issues.push(issue("metadata.id.label", "metadata.id", `Workflow id must be ${CARD_LABEL_MAX - "workflow:".length} characters or fewer so its Workboard label fits within ${CARD_LABEL_MAX}`));
+    }
     requiredString(metadata.version, "metadata.version", issues);
     requiredString(metadata.name, "metadata.name", issues);
   }
@@ -229,6 +243,18 @@ export function validateWorkflow(document) {
             issues.push(issue("stage.routeSkills.required", `${path}.routeStrategies.${route}.skills`, "Each route strategy requires skills"));
           }
         }
+      }
+    }
+    if (typeof stage.id === "string" && !labelFits("stage:", stage.id)) {
+      issues.push(issue("stage.id.label", `${path}.id`, `Stage id must be ${CARD_LABEL_MAX - "stage:".length} characters or fewer so its Workboard label fits within ${CARD_LABEL_MAX}`));
+    }
+    for (const route of [null, ...Object.keys(isObject(stage.routeStrategies) ? stage.routeStrategies : {})]) {
+      const cardSkills = stageSkills(stage, route);
+      if (cardSkills.length > WORKBOARD_SKILLS_MAX) {
+        issues.push(issue("stage.skills.workboard", `${path}${route ? `.routeStrategies.${route}` : ""}.skills`, `A card carries at most ${WORKBOARD_SKILLS_MAX} Skills; this stage gives ${cardSkills.length}`));
+      }
+      for (const name of cardSkills.filter((entry) => entry.length > WORKBOARD_SKILL_NAME_MAX)) {
+        issues.push(issue("stage.skill.name", `${path}.skills`, `Skill name ${name.slice(0, 40)}… is over ${WORKBOARD_SKILL_NAME_MAX} characters`));
       }
     }
     validateCommandList(stage.requiredCommands, `${path}.requiredCommands`, issues);
@@ -756,6 +782,7 @@ function validateContentItemContract(contract, issues) {
   }
   for (const route of routes) {
     if (!ROUTE_PATTERN.test(route)) issues.push(issue("contentItems.route.invalid", "spec.contentItems.routes", `Route ${route} must use uppercase letters, numbers, and underscores`));
+    else if (!labelFits("route:", route)) issues.push(issue("contentItems.route.label", "spec.contentItems.routes", `Route ${route} must be ${CARD_LABEL_MAX - "route:".length} characters or fewer so its Workboard label fits within ${CARD_LABEL_MAX}`));
     if (allowed.has(route)) issues.push(issue("contentItems.route.duplicate", "spec.contentItems.routes", `Duplicate route ${route}`));
     allowed.add(route);
   }
