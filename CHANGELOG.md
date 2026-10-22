@@ -2,6 +2,7 @@
 
 最新的在上面。2026-10-02 之前的记录在 `vegekyd-sys/v-openclaw-platform` 的 CHANGELOG.md。
 
+- #20 feat(storage): 每日存储清理新增删除 V 上已交付成片的备份（项目完成满 7 天，CDN 同一链接 HEAD 返回 200 且长度一致才删，硬链接一起删）；`NIGHTSHIFT_RETENTION_FINALS_DAYS=0` 关闭
 - #19 feat(projects): 还没开工的项目可以换到同一 Workflow 的新版本（`nightshiftctl projects workflow <id> latest`），排队中的卡原地重写；10-22 已把 DL-1021-09..21 从 1.0.1 换到星擎夜班 1.0.3
 - #18 fix(brief): 卡片可以读 agent 的 memory，但不再写（daily memory 里 55–90% 是卡片流水）
 - #17 fix(scheduler): 导入失败的 content-items 清单每轮仍重试，但同一内容同一错误只记一条审计事件（V 上两个坏清单一周写了 16,920 条）
