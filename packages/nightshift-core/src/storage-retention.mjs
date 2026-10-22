@@ -338,12 +338,17 @@ function resolutionPairs(json, itemIds) {
 // checked against the local bytes before anything goes.
 async function deliveredUrls(instanceDir, itemIds, finals = []) {
   const urls = new Map();
+  const manifest = await readJson(join(instanceDir, "deliver-page", "manifest.json"));
+  // Only a URL the published page serves is a delivered copy. link-resolution.json can also hold the
+  // link of a render made after delivery: on V (2026-10-22 04:42) five DL-1012-01 finals redone after
+  // delivery matched such a link's length and were removed, though the page served the earlier
+  // render. They were restored from that link, byte for byte.
+  const published = new Set((Array.isArray(manifest?.items) ? manifest.items : []).map((entry) => cdnUrl(entry?.url)).filter(Boolean));
   const resolution = await readJson(join(instanceDir, "deliver-page", "link-resolution.json"));
   for (const [id, value] of resolutionPairs(resolution, itemIds)) {
     const url = cdnUrl(value);
-    if (url && !urls.has(id)) urls.set(id, url);
+    if (url && published.has(url) && !urls.has(id)) urls.set(id, url);
   }
-  const manifest = await readJson(join(instanceDir, "deliver-page", "manifest.json"));
   const bySize = [];
   for (const entry of Array.isArray(manifest?.items) ? manifest.items : []) {
     const id = String(entry?.fileName ?? "").match(/ ([^ ]+)\.mp4$/u)?.[1];
