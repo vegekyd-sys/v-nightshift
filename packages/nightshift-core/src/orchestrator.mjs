@@ -6,6 +6,49 @@ import { resolveReleaseAt } from "./release-schedule.mjs";
 
 const ACTIVE_STATUSES = new Set(["ready", "running"]);
 export const WORKBOARD_NOTES_LIMIT = 12000;
+// The native Workboard refuses a card title over 180 characters. A card title is
+// only for people: the full item title stays on the content item and in the brief.
+// On V (2026-10-23) a plan stage appended the trade-show line to every title, 28
+// of 30 items ran to 182-207 characters, and every scheduler pass of DL-1022-21
+// failed "title must be 180 characters or fewer" before any brief card existed.
+// Like CARD_LABEL_MAX, the budget is a knob for when the Gateway's limit changes.
+export const CARD_TITLE_MAX = titleBudget(process.env.NIGHTSHIFT_CARD_TITLE_MAX);
+
+function titleBudget(value) {
+  if (value === undefined || value === null || value === "") return 180;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 40 && parsed <= 1000 ? parsed : 180;
+}
+
+// Shortens text to at most `max` UTF-16 units (what the Workboard counts) without
+// splitting a character, ending in "…" when anything was cut.
+function fitText(text, max) {
+  const value = String(text ?? "");
+  if (value.length <= max) return value;
+  if (max <= 0) return "";
+  let out = "";
+  for (const char of value) {
+    if (out.length + char.length > max - 1) break;
+    out += char;
+  }
+  return `${out.trimEnd()}…`;
+}
+
+// "<project>｜<item>｜<stage>" within the budget. The item title gives way first,
+// keeping at least a few characters; then the project name; the stage last.
+export function cardTitle({ project, item = null, stage }, max = CARD_TITLE_MAX) {
+  const separator = "｜";
+  const parts = item === null ? [project, stage] : [project, item, stage];
+  const join = (values) => values.join(separator);
+  if (join(parts).length <= max) return join(parts);
+  const room = (others) => max - others.reduce((sum, value) => sum + value.length, 0) - separator.length * (parts.length - 1);
+  let [name, title, stageTitle] = item === null ? [project, null, stage] : parts;
+  if (title !== null) title = fitText(title, Math.max(12, room([name, stageTitle])));
+  const fitted = () => join(title === null ? [name, stageTitle] : [name, title, stageTitle]);
+  if (fitted().length > max) name = fitText(name, Math.max(8, room(title === null ? [stageTitle] : [title, stageTitle])));
+  if (fitted().length > max) stageTitle = fitText(stageTitle, Math.max(1, room(title === null ? [name] : [name, title])));
+  return fitText(fitted(), max);
+}
 // A card the native board is holding for a timed release is present work, not
 // missing work. Leave "scheduled" out and every pass re-plans the same stage.
 const PRESENT_STATUSES = new Set([
@@ -247,9 +290,7 @@ function cardPayload(release, instance, stage, status, contentItem = null, resou
   });
   return {
     ...(releaseAt === null ? {} : { scheduledAt: releaseAt }),
-    title: contentItem
-      ? `${instance.name ?? instance.id}｜${contentItem.title}｜${stage.title}`
-      : `${instance.name ?? instance.id}｜${stage.title}`,
+    title: cardTitle({ project: instance.name ?? instance.id, item: contentItem ? contentItem.title : null, stage: stage.title }),
     status,
     assignedAgent,
     notes: buildAgentBrief(release, instance, stage, contentItem, contentItems, skippedContentItems),
@@ -348,6 +389,19 @@ const DUPLICATE_CHECK_SCRIPT = fileURLToPath(new URL("../../../scripts/check-vid
 const NIGHTSHIFTCTL_SCRIPT = fileURLToPath(new URL("../../../scripts/nightshiftctl.mjs", import.meta.url));
 
 export function buildAgentBrief(release, instance, stage, contentItem = null, contentItems = [], skippedContentItems = []) {
+  const brief = composeAgentBrief({ release, instance, stage, contentItem, contentItems, skippedContentItems, compact: false });
+  if (brief.length <= WORKBOARD_NOTES_LIMIT) return brief;
+  // A project stage after per-item stages lists one handoff path per item, and a
+  // brief that outgrows the board's note limit would stop the project at card
+  // creation. The compact brief names the path pattern and the skipped ids only.
+  const compact = composeAgentBrief({ release, instance, stage, contentItem, contentItems, skippedContentItems, compact: true });
+  if (compact.length > WORKBOARD_NOTES_LIMIT) {
+    throw new Error(`Night Shift card brief exceeds the native Workboard ${WORKBOARD_NOTES_LIMIT} character limit (${compact.length})`);
+  }
+  return compact;
+}
+
+function composeAgentBrief({ release, instance, stage, contentItem, contentItems, skippedContentItems, compact }) {
   const safeInputs = redactSensitiveInputs(instance.inputs ?? {});
   const projectInputsPath = instance.inputs?.nightshift?.projectInputsPath;
   const inlineInputs = projectInputsPath ? summarizeInputs(safeInputs) : safeInputs;
@@ -404,7 +458,9 @@ export function buildAgentBrief(release, instance, stage, contentItem = null, co
       : []),
     ...(itemDir ? [`Content item artifact directory: ${itemDir}`] : []),
     ...(handoffEnabled ? [
-      ...(upstreamHandoffPaths.length > 0 ? [`Previous stage output: ${upstreamHandoffPaths.join(", ")}`] : []),
+      ...(upstreamHandoffPaths.length > 0 ? [compact && upstreamHandoffPaths.length > 1
+        ? `Previous stage output: ${compactHandoffPaths(upstreamHandoffPaths, instanceDir, contentItems)}`
+        : `Previous stage output: ${upstreamHandoffPaths.join(", ")}`] : []),
       `Stage handoff output: after finishing the declared outputs, write ${handoffPath} using exactly this v1 shape: ${JSON.stringify(handoffManifestExample({ instanceId: instance.id, contentItemId: contentItem?.id ?? null, release, stageId: stage.id }))}`,
     ] : []),
     ...(stage.outputs?.includes("deliveryManifest") && itemDir
@@ -426,7 +482,7 @@ export function buildAgentBrief(release, instance, stage, contentItem = null, co
     // A project-wide stage (delivery, packaging) must not wait for or include
     // items a person decided to skip; content-items.json still lists them.
     ...((stage.scope ?? "project") === "project" && skippedContentItems.length ? [
-      `Skipped content items (a person decided these are not delivered; content-items.json still lists them): ${skippedContentItems.map((entry) => `${entry.id} 「${entry.title}」${entry.reason ? ` — ${String(entry.reason).slice(0, 160)}` : ""}`).join("; ")}. Do not wait for them, do not package or count them: this delivery has ${contentItems.length} items.`,
+      `Skipped content items (a person decided these are not delivered; content-items.json still lists them): ${skippedContentItems.map((entry) => compact ? entry.id : `${entry.id} 「${entry.title}」${entry.reason ? ` — ${String(entry.reason).slice(0, 160)}` : ""}`).join("; ")}. Do not wait for them, do not package or count them: this delivery has ${contentItems.length} items.`,
     ] : []),
     ...(stage.id === "deliver-download" && instanceDir ? [
       `Download delivery contract: aggregate every validated ContentItem deliverables.json and produce handoff into ${instanceDir}/deliver-download/delivery-package.zip; upload that exact package once under a stable instance-bound OSS object key; upsert one Base delivery row keyed by instance ${instance.id}; write ${instanceDir}/deliver-download/oss-delivery.json with uploaded=true and ${instanceDir}/deliver-download/base-delivery-receipt.json with recorded=true; and reference those concrete artifacts from the stage handoff.`,
@@ -454,11 +510,28 @@ export function buildAgentBrief(release, instance, stage, contentItem = null, co
     "Memory: you may read the agent's memory for background, but do not write to it (memory/*.md, MEMORY.md, user-patterns.md). What this card did goes in your final message and the stage handoff, not in memory.",
     "Return a concise result with evidence links or an explicit blocker. Do not invent missing evidence.",
   ];
-  const brief = lines.join("\n");
-  if (brief.length > WORKBOARD_NOTES_LIMIT) {
-    throw new Error(`Night Shift card brief exceeds the native Workboard ${WORKBOARD_NOTES_LIMIT} character limit (${brief.length})`);
+  return lines.join("\n");
+}
+
+// One path per item, written as the pattern they share: "<dir>/content-items/<id>/handoffs/x.json
+// for each content item in content-items.json (N)". Paths that do not share it stay listed.
+function compactHandoffPaths(paths, instanceDir, contentItems) {
+  const ids = contentItems.map((item) => item.id);
+  const patterns = new Map();
+  const rest = [];
+  for (const path of paths) {
+    const id = ids.find((value) => path.includes(`/content-items/${value}/`));
+    if (!id) {
+      rest.push(path);
+      continue;
+    }
+    const pattern = path.replace(`/content-items/${id}/`, "/content-items/<content item id>/");
+    patterns.set(pattern, (patterns.get(pattern) ?? 0) + 1);
   }
-  return brief;
+  return [
+    ...[...patterns].map(([pattern, count]) => `${pattern} for each content item in ${instanceDir}/content-items.json (${count})`),
+    ...rest,
+  ].join(", ");
 }
 
 // Why this stage runs again for the item: a person sent its review back with
