@@ -2,6 +2,7 @@
 
 最新的在上面。2026-10-02 之前的记录在 `vegekyd-sys/v-openclaw-platform` 的 CHANGELOG.md。
 
+- #21 fix(storage): 成片清理能读 deliver-page agent 写的各种 link-resolution 格式（之前 21 个项目报错、一条没清），单次扫描到 500 个项目
 - #20 feat(storage): 每日存储清理新增删除 V 上已交付成片的备份（项目完成满 7 天，CDN 同一链接 HEAD 返回 200 且长度一致才删，硬链接一起删）；`NIGHTSHIFT_RETENTION_FINALS_DAYS=0` 关闭
 - #19 feat(projects): 还没开工的项目可以换到同一 Workflow 的新版本（`nightshiftctl projects workflow <id> latest`），排队中的卡原地重写；10-22 已把 DL-1021-09..21 从 1.0.1 换到星擎夜班 1.0.3
 - #18 fix(brief): 卡片可以读 agent 的 memory，但不再写（daily memory 里 55–90% 是卡片流水）
