@@ -304,8 +304,34 @@ function cdnUrl(value) {
   }
 }
 
-// The URL the delivery page gave each content item. link-resolution.json records it per item
-// (items[].contentItemId, or itemsList[].id in older pages). Otherwise the manifest's fileName ends
+// Item id -> URL pairs in a link-resolution.json. The deliver-page Agent writes the file and its shape
+// varies: on V (2026-10-22) items[] of {contentItemId, url}, items as {<id>: {url}} (47 projects),
+// itemsList[] of {id, url}, resolution[], or the root itself {<id>: url}. Reading items[] alone threw
+// on the object shape and stopped 21 projects. Only ids of this project's items count.
+function resolutionPairs(json, itemIds) {
+  const pairs = [];
+  const visit = (node, keyId, depth) => {
+    if (node === null || depth > 4) return;
+    if (typeof node === "string") {
+      if (keyId) pairs.push([keyId, node]);
+      return;
+    }
+    if (Array.isArray(node)) {
+      for (const entry of node) visit(entry, null, depth + 1);
+      return;
+    }
+    if (typeof node !== "object") return;
+    const id = node.contentItemId ?? node.id ?? keyId;
+    if (typeof id === "string" && itemIds.has(id) && typeof node.url === "string") pairs.push([id, node.url]);
+    for (const [key, value] of Object.entries(node)) {
+      if (key !== "url" && (typeof value === "object" || typeof value === "string")) visit(value, itemIds.has(key) ? key : null, depth + 1);
+    }
+  };
+  visit(json, null, 0);
+  return pairs;
+}
+
+// The URL the delivery page gave each content item, from link-resolution.json (resolutionPairs). Otherwise the manifest's fileName ends
 // in "<suffix>.mp4", taken when the suffix is the id of an item of this project; failing that, the
 // manifest entry's bytes name the one final of that exact size. Pages that end the name in a short
 // hash (DL-1020-*) have only the size: 670 finals on V on 2026-10-22. Either way the CDN copy is
@@ -313,14 +339,13 @@ function cdnUrl(value) {
 async function deliveredUrls(instanceDir, itemIds, finals = []) {
   const urls = new Map();
   const resolution = await readJson(join(instanceDir, "deliver-page", "link-resolution.json"));
-  for (const entry of [...(resolution?.items ?? []), ...(resolution?.itemsList ?? [])]) {
-    const id = entry?.contentItemId ?? entry?.id;
-    const url = cdnUrl(entry?.url);
-    if (typeof id === "string" && url && !urls.has(id)) urls.set(id, url);
+  for (const [id, value] of resolutionPairs(resolution, itemIds)) {
+    const url = cdnUrl(value);
+    if (url && !urls.has(id)) urls.set(id, url);
   }
   const manifest = await readJson(join(instanceDir, "deliver-page", "manifest.json"));
   const bySize = [];
-  for (const entry of manifest?.items ?? []) {
+  for (const entry of Array.isArray(manifest?.items) ? manifest.items : []) {
     const id = String(entry?.fileName ?? "").match(/ ([^ ]+)\.mp4$/u)?.[1];
     const url = cdnUrl(entry?.url);
     if (!url) continue;
@@ -461,6 +486,8 @@ export async function runRetention({
   finalsMinAgeDays = null,
   fetch = globalThis.fetch,
   finalsConcurrency = 4,
+  // A project without a delivery page costs a directory walk, so the finals scan reaches further.
+  finalsMaxInstances = 500,
 }) {
   const projects = [];
   for (const { instance, finishedAt } of retentionCandidates(store, { now, minAgeDays }).slice(0, maxInstances)) {
@@ -474,7 +501,7 @@ export async function runRetention({
   }
   const finals = [];
   if (finalsMinAgeDays !== null) {
-    for (const { instance, finishedAt } of retentionCandidates(store, { now, minAgeDays: finalsMinAgeDays, eventType: FINALS_EVENT }).slice(0, maxInstances)) {
+    for (const { instance, finishedAt } of retentionCandidates(store, { now, minAgeDays: finalsMinAgeDays, eventType: FINALS_EVENT }).slice(0, finalsMaxInstances)) {
       try {
         finals.push(await retainDeliveredFinals({
           store, instance, finishedAt, instanceDir: join(instancesRoot, instance.id), now, minAgeDays: finalsMinAgeDays, apply, actor, fetch, concurrency: finalsConcurrency,
