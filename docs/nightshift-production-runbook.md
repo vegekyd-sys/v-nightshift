@@ -367,6 +367,25 @@ A workflow may declare the CLIs its agent stages call — `spec.requiredCommands
 
 `nightshift/instances` is the main disk growth on V (8–11 GB/day). Since 2026-09-18 it is a bind mount onto the data disk (`/srv/openclaw-data/disk1/openclaw/nightshift-instances`); the path under `~/.openclaw/nightshift/instances` is unchanged. Check the mount with `sudo findmnt /home/openclaw/.openclaw/nightshift/instances` — a plain `df` without sudo returns nothing for that mount point.
 
+### Daily retention
+
+At `NIGHTSHIFT_RETENTION_HOUR` (05:00) Night Shift cleans finished projects (`storage-retention.mjs`; `GET /api/storage/retention` plans, `POST` applies). `NIGHTSHIFT_RETENTION_DISABLED=1` turns all of it off.
+
+- **Working media**, `NIGHTSHIFT_RETENTION_DAYS` (14; V runs 3) after the project finished: QC frames, reference clips, render masters and duplicate delivery copies. Deliverables, `final.*` and every record stay. Recorded as `storage.retention`.
+- **Delivered finals**, `NIGHTSHIFT_RETENTION_FINALS_DAYS` (7; `0` keeps them) after the project finished. A download project's delivery page plays and downloads every video from the CDN, so V's `content-items/<id>/produce/final.*` is a backup. It goes only when:
+  - the project has `deliver-page/manifest.json`. Publish projects and the older `deliver-download` format are never touched;
+  - the page names the item's `https://cdn.makaron.app/…` URL, by `link-resolution.json` `items[]`, a fileName ending in the item id, or a manifest `bytes` that matches exactly one local final;
+  - a fresh HEAD on that URL answers 200 with the local file's exact length. A final redone after delivery no longer matches and stays.
+
+  Its hard links inside the project go with it. At most 4 HEADs are in flight, and the event loop is yielded between them. A CDN that cannot be reached leaves the project due for the next day. Each project gets a `removedFinals` / `keptFinals` run in `retention-ledger.json` and one `storage.retention.finals` event. Working-media retention treats an item whose final went this way as delivered.
+
+  On V on 2026-10-22 a one-off run of this rule freed 70.8 GB (2,278 finals in 114 projects, disk 90%→52%) and kept 7.
+- **What then needs the CDN instead of V's file:**
+  - the Live Board's per-item video preview, which serves the local `final.*` and answers 404 once it is gone;
+  - a redo that reruns `deliver-page`, whose step 1 compares every item's local `final.mp4` with its Makaron link. A redone item has a new `final.mp4`; the other items' finals are then missing, so the stage should reuse the delivered URL recorded in `deliver-page/manifest.json` or the ledger for those items.
+
+  Producing the redone item itself needs only its brief and frozen inputs.
+
 Open item: `openclaw-storage-lifecycle.service` (04:53 daily) has `source_root` pointing at `/srv/openclaw-data/disk/openclaw-storage/cold-migrated-2/openclaw/backups/nightshift-workboard` (188 KB on the data disk), so it reports `storage_level=critical` every day while freeing nothing on the root disk. Repoint it at the real instance store once the bind mount is verified; do not run it against the root disk while a project is active.
 
 ## Rollback
