@@ -295,10 +295,33 @@ test("every link-resolution shape the deliver-page Agent writes maps items, and 
   for (const [name, resolution] of Object.entries(shapes)) {
     const dir = join(root, name);
     for (const id of ["b1", "b2", "b3"]) await put(dir, `content-items/${id}/produce/final.mp4`, `VIDEO-${id}`);
-    await put(dir, "deliver-page/manifest.json", { version: 1, items: [] });
+    await put(dir, "deliver-page/manifest.json", { version: 1, items: ["b1", "b2", "b3"].map((id, index) => ({ url: `${CDN}/${id}.mp4`, fileName: `DL 企业 英语 ${id} 0000000${index}.mp4` })) });
     await put(dir, "deliver-page/link-resolution.json", resolution);
     const plan = await planDeliveredFinals(dir);
     assert.deepEqual(plan.finals.map((final) => [final.contentItemId, final.url]).sort(),
       ["b1", "b2", "b3"].map((id) => [id, `${CDN}/${id}.mp4`]), name);
   }
+});
+
+test("only a URL the published page serves counts: a final redone after delivery keeps its delivered link", async () => {
+  // DL-1012-01 on V: link-resolution named the redone render's link, the page the earlier one.
+  const root = await mkdtemp(join(tmpdir(), "nightshift-finals-"));
+  const dir = join(root, "DL-REDONE");
+  await put(dir, "content-items/WN-EN-001/produce/final.mp4", "REDONE-AFTER-DELIVERY");
+  await put(dir, "deliver-page/link-resolution.json", { items: [{ contentItemId: "WN-EN-001", url: `${CDN}/redone.mp4` }] });
+  await put(dir, "deliver-page/manifest.json", { version: 1, items: [{ url: `${CDN}/delivered-001.mp4`, fileName: "DL 企业 英语 One WN-EN-001.mp4", bytes: 9 }] });
+  const plan = await planDeliveredFinals(dir);
+  assert.deepEqual(plan.finals.map((final) => final.url), [`${CDN}/delivered-001.mp4`]);
+  const store = new NightShiftStore(":memory:");
+  const release = compileWorkflow(await loadWorkflow(fixture));
+  store.saveRelease(release, "workflow");
+  store.createInstance({ id: "DL-REDONE", workflowSha256: release.metadata.workflowSha256 }, new Date("2026-10-01T00:00:00Z"));
+  store.appendEvent({ instanceId: "DL-REDONE", type: "instance.completed", now: new Date("2026-10-01T00:00:00Z") });
+  store.updateInstanceStatus("DL-REDONE", "done", new Date("2026-10-01T00:00:00Z"));
+  // The redone render's own link holds these exact bytes; the delivered one holds the earlier render.
+  const cdn = fakeCdn({ [`${CDN}/redone.mp4`]: "REDONE-AFTER-DELIVERY".length, [`${CDN}/delivered-001.mp4`]: 9 });
+  const result = await runRetention({ store, instancesRoot: root, now: new Date("2026-10-20T00:00:00Z"), minAgeDays: 30, finalsMinAgeDays: 7, fetch: cdn.fetch, apply: true });
+  assert.equal(result.finals.finals, 0);
+  assert.equal(await exists(join(dir, "content-items/WN-EN-001/produce/final.mp4")), true);
+  assert.deepEqual(cdn.calls.map((call) => call.url), [`${CDN}/delivered-001.mp4`]);
 });
