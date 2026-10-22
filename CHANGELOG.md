@@ -2,6 +2,7 @@
 
 最新的在上面。2026-10-02 之前的记录在 `vegekyd-sys/v-openclaw-platform` 的 CHANGELOG.md。
 
+- #23 fix(engine): 卡片标题按 Workboard 的 180 字上限自动截短（完整标题留在条目里），写清单的阶段完成时按导入同一套规则检查、不合规退回同一个 agent；空清单不再误报「没有数组」（10-23 上线后 DL-1022-21 下一轮即建卡）
 - #22 fix(storage): 成片只和交付页 manifest 里的链接比对，交付后重做过的成片保留（修复 #21 验证时误删 DL-1012-01 的 5 条，已逐字节恢复）
 - #21 fix(storage): 成片清理能读 deliver-page agent 写的各种 link-resolution 格式（之前 21 个项目报错、一条没清），单次扫描到 500 个项目
 - #20 feat(storage): 每日存储清理新增删除 V 上已交付成片的备份（项目完成满 7 天，CDN 同一链接 HEAD 返回 200 且长度一致才删，硬链接一起删）；`NIGHTSHIFT_RETENTION_FINALS_DAYS=0` 关闭
