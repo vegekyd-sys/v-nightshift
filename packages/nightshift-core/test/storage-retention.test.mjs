@@ -283,3 +283,22 @@ test("an item whose final the CDN now holds still has a deliverable, so its work
   assert.ok(after.remove.some((file) => file.rel === "content-items/a1/produce/qc/frame.jpg"), "a1 is not treated as an item without a final");
   assert.equal(after.keptWithoutReference, before.keptWithoutReference);
 });
+
+test("every link-resolution shape the deliver-page Agent writes maps items, and only this project's items", async () => {
+  const root = await mkdtemp(join(tmpdir(), "nightshift-finals-"));
+  const shapes = {
+    itemsObject: { version: 1, items: { b1: { url: `${CDN}/b1.mp4`, bytes: 8 }, b2: { url: `${CDN}/b2.mp4` } }, itemsList: [{ id: "b3", url: `${CDN}/b3.mp4` }] },
+    rootMap: { b1: `${CDN}/b1.mp4`, b2: `${CDN}/b2.mp4`, b3: `${CDN}/b3.mp4` },
+    resolution: { counts: { b1: 1 }, resolution: [{ contentItemId: "b1", url: `${CDN}/b1.mp4` }, { id: "b2", url: `${CDN}/b2.mp4` }, { id: "b3", url: `${CDN}/b3.mp4` }] },
+    itemsCount: { items: 3, itemsList: [{ id: "b1", url: `${CDN}/b1.mp4` }, { id: "b2", url: `${CDN}/b2.mp4` }, { id: "b3", url: `${CDN}/b3.mp4` }, { id: "other", url: `${CDN}/x.mp4` }] },
+  };
+  for (const [name, resolution] of Object.entries(shapes)) {
+    const dir = join(root, name);
+    for (const id of ["b1", "b2", "b3"]) await put(dir, `content-items/${id}/produce/final.mp4`, `VIDEO-${id}`);
+    await put(dir, "deliver-page/manifest.json", { version: 1, items: [] });
+    await put(dir, "deliver-page/link-resolution.json", resolution);
+    const plan = await planDeliveredFinals(dir);
+    assert.deepEqual(plan.finals.map((final) => [final.contentItemId, final.url]).sort(),
+      ["b1", "b2", "b3"].map((id) => [id, `${CDN}/${id}.mp4`]), name);
+  }
+});
