@@ -214,6 +214,9 @@ const dispatchHolds = new DispatchHoldLedger();
 const retentionDays = Number(process.env.NIGHTSHIFT_RETENTION_DAYS ?? 14);
 const retentionHour = Number(process.env.NIGHTSHIFT_RETENTION_HOUR ?? 5);
 const retentionDisabled = process.env.NIGHTSHIFT_RETENTION_DISABLED === "1";
+// V's copy of a delivered final goes this many days after its project finished, once the CDN is
+// seen to hold the same bytes; "0" keeps every final (storage-retention.mjs).
+const retentionFinalsDays = process.env.NIGHTSHIFT_RETENTION_FINALS_DAYS === "0" ? null : Number(process.env.NIGHTSHIFT_RETENTION_FINALS_DAYS ?? 7);
 const retentionCheckMs = Number(process.env.NIGHTSHIFT_RETENTION_CHECK_MS ?? 15 * 60_000);
 let retentionTimer = null;
 let retentionDay = null;
@@ -1122,9 +1125,10 @@ function storageRetention({ apply, actor = null }) {
     error.code = "RETENTION_BUSY";
     return Promise.reject(error);
   }
-  retentionPromise = runRetention({ store, instancesRoot: join(dataDir, "instances"), minAgeDays: retentionDays, apply, actor })
+  retentionPromise = runRetention({ store, instancesRoot: join(dataDir, "instances"), minAgeDays: retentionDays, apply, actor, finalsMinAgeDays: retentionFinalsDays })
     .then((result) => {
-      if (apply) lastRetention = { at: new Date().toISOString(), actor, projects: result.projects.length, files: result.files, bytes: result.bytes, errors: result.errors };
+      if (apply) lastRetention = { at: new Date().toISOString(), actor, projects: result.projects.length, files: result.files, bytes: result.bytes, errors: result.errors,
+        finals: { projects: result.finals.projects.length, finals: result.finals.finals, bytes: result.finals.bytes, kept: result.finals.kept } };
       return result;
     })
     .finally(() => { retentionPromise = null; });
@@ -1138,7 +1142,7 @@ function runDailyRetention() {
   storageRetention({ apply: true, actor: "nightshift-retention" })
     .then((result) => {
       retentionDay = today;
-      console.log(`Night Shift storage retention removed ${result.files} files (${(result.bytes / 2 ** 30).toFixed(2)} GiB) from ${result.projects.length} finished projects${result.errors ? `; ${result.errors} failed: ${result.projects.filter((project) => project.error).map((project) => `${project.id} ${project.error}`).join("; ")}` : ""}`);
+      console.log(`Night Shift storage retention removed ${result.files} files (${(result.bytes / 2 ** 30).toFixed(2)} GiB) from ${result.projects.length} finished projects, and ${result.finals.finals} delivered finals held by the CDN (${(result.finals.bytes / 2 ** 30).toFixed(2)} GiB, ${result.finals.kept} kept)${result.errors ? `; ${result.errors} failed: ${result.projects.filter((project) => project.error).map((project) => `${project.id} ${project.error}`).join("; ")}` : ""}`);
     })
     .catch((error) => console.error(`Night Shift storage retention failed: ${error.message}`));
 }

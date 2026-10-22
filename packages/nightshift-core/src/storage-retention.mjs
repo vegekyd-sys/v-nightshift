@@ -20,6 +20,14 @@ import { setImmediate as nextTurn } from "node:timers/promises";
 //   - in a delivery folder, it is a separate copy of a kept deliverable: planned by size, removed
 //     only when its bytes are the same (hard links take no space and stay).
 // Every applied run writes retention-ledger.json in the project and a storage.retention event.
+//
+// Delivered finals go later, on their own schedule (finalsMinAgeDays). A project's delivery page
+// already serves every video from the CDN, so V's copy of a delivered final.* is a backup. It is
+// removed only when the project has a delivery page, the page names the item's cdn.makaron.app
+// URL, and a fresh HEAD on that URL answers 200 with the local file's exact length; hard links of
+// it inside the project go with it. On V on 2026-10-22 a one-off run of this rule freed 70.8 GB
+// (2,278 finals in 114 projects) and kept 7 whose CDN copy no longer matched (redone after
+// delivery). Each applied run writes the ledger and a storage.retention.finals event.
 
 export const RETENTION_LEDGER = "retention-ledger.json";
 export const MEDIA_EXTENSIONS = new Set([
@@ -49,7 +57,7 @@ async function listFiles(root) {
         pending.push(path);
       } else if (entry.isFile()) {
         const stat = await lstat(path);
-        files.push({ path, rel: relative(root, path).split(sep).join("/"), bytes: stat.size, inode: stat.ino });
+        files.push({ path, rel: relative(root, path).split(sep).join("/"), bytes: stat.size, inode: stat.ino, links: stat.nlink });
       }
     }
   }
@@ -128,6 +136,19 @@ function isReferenced(refs, rel) {
   return false;
 }
 
+// Content items whose final an earlier run removed because the CDN holds it: they still have a
+// deliverable, so their working media is cleaned like any other delivered item's.
+async function itemsWithRemovedFinal(instanceDir) {
+  const ledger = await readJson(join(instanceDir, RETENTION_LEDGER));
+  const items = new Set();
+  for (const run of ledger?.runs ?? []) {
+    for (const entry of run?.removedFinals ?? []) {
+      if (typeof entry?.contentItemId === "string" && entry.contentItemId) items.add(entry.contentItemId);
+    }
+  }
+  return items;
+}
+
 /** What retention would remove from one finished project directory. Reads only. */
 export async function planInstanceRetention(instanceDir) {
   const files = await listFiles(instanceDir);
@@ -142,6 +163,7 @@ export async function planInstanceRetention(instanceDir) {
     const item = contentItemOf(file.rel);
     if (item) itemsWithDeliverable.add(item);
   }
+  for (const item of await itemsWithRemovedFinal(instanceDir)) itemsWithDeliverable.add(item);
   const remove = [];
   let keptWithoutReference = 0;
   for (const file of files) {
@@ -178,9 +200,9 @@ export async function planInstanceRetention(instanceDir) {
  * Finished projects (done, or archived after they completed) that finished at least minAgeDays
  * ago and were not retained since, oldest first. Paused and abandoned projects are never touched.
  */
-export function retentionCandidates(store, { now = new Date(), minAgeDays = 14 } = {}) {
+export function retentionCandidates(store, { now = new Date(), minAgeDays = 14, eventType = "storage.retention" } = {}) {
   const completed = store.latestEventTimes("instance.completed");
-  const retained = store.latestEventTimes("storage.retention");
+  const retained = store.latestEventTimes(eventType);
   const cutoff = now.getTime() - minAgeDays * DAY_MS;
   return store.listInstances()
     .filter((instance) => instance.status === "done" || (instance.status === "archived" && completed.has(instance.id)))
@@ -269,6 +291,160 @@ async function retainInstance({ store, instance, finishedAt, instanceDir, now, m
   };
 }
 
+export const FINALS_EVENT = "storage.retention.finals";
+const FINAL_FILE = /^final\.(?:mp4|mov|webm)$/iu;
+const CDN_HOST = "cdn.makaron.app";
+
+function cdnUrl(value) {
+  try {
+    const url = new URL(String(value ?? ""));
+    return url.protocol === "https:" && url.hostname === CDN_HOST ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+// The URL the delivery page gave each content item. link-resolution.json records it per item
+// (items[].contentItemId, or itemsList[].id in older pages). Otherwise the manifest's fileName ends
+// in "<suffix>.mp4", taken when the suffix is the id of an item of this project; failing that, the
+// manifest entry's bytes name the one final of that exact size. Pages that end the name in a short
+// hash (DL-1020-*) have only the size: 670 finals on V on 2026-10-22. Either way the CDN copy is
+// checked against the local bytes before anything goes.
+async function deliveredUrls(instanceDir, itemIds, finals = []) {
+  const urls = new Map();
+  const resolution = await readJson(join(instanceDir, "deliver-page", "link-resolution.json"));
+  for (const entry of [...(resolution?.items ?? []), ...(resolution?.itemsList ?? [])]) {
+    const id = entry?.contentItemId ?? entry?.id;
+    const url = cdnUrl(entry?.url);
+    if (typeof id === "string" && url && !urls.has(id)) urls.set(id, url);
+  }
+  const manifest = await readJson(join(instanceDir, "deliver-page", "manifest.json"));
+  const bySize = [];
+  for (const entry of manifest?.items ?? []) {
+    const id = String(entry?.fileName ?? "").match(/ ([^ ]+)\.mp4$/u)?.[1];
+    const url = cdnUrl(entry?.url);
+    if (!url) continue;
+    if (id && itemIds.has(id)) {
+      if (!urls.has(id)) urls.set(id, url);
+    } else if (Number.isSafeInteger(entry?.bytes) && entry.bytes > 0) {
+      bySize.push({ bytes: entry.bytes, url });
+    }
+  }
+  const mappedUrls = new Set(urls.values());
+  for (const { bytes, url } of bySize) {
+    if (mappedUrls.has(url) || bySize.filter((entry) => entry.bytes === bytes).length !== 1) continue;
+    const matches = finals.filter((final) => final.bytes === bytes && !urls.has(contentItemOf(final.rel)));
+    if (matches.length === 1) urls.set(contentItemOf(matches[0].rel), url);
+  }
+  return { delivered: manifest !== null, urls };
+}
+
+/**
+ * V's copies of a finished project's delivered finals: each with its CDN URL, its bytes and every
+ * hard link of it inside the project. Reads only; nothing is fetched.
+ */
+export async function planDeliveredFinals(instanceDir) {
+  const files = await listFiles(instanceDir);
+  const finals = files.filter((file) => {
+    const parts = file.rel.split("/");
+    return parts.length === 4 && parts[0] === "content-items" && parts[2] === "produce" && FINAL_FILE.test(parts[3]);
+  });
+  const itemIds = new Set(files.map((file) => contentItemOf(file.rel)).filter(Boolean));
+  const { delivered, urls } = await deliveredUrls(instanceDir, itemIds, finals);
+  if (!delivered) return { delivered, finals: [], notDelivered: finals.length };
+  const planned = [];
+  let notDelivered = 0;
+  for (const final of finals) {
+    const contentItemId = contentItemOf(final.rel);
+    const url = urls.get(contentItemId);
+    if (!url) {
+      notDelivered += 1;
+      continue;
+    }
+    const links = files.filter((file) => file.inode === final.inode && file.bytes === final.bytes);
+    planned.push({ contentItemId, url, bytes: final.bytes, links, frees: links.length >= final.links });
+  }
+  return { delivered, finals: planned, notDelivered };
+}
+
+/** Does the CDN hold this exact file? A fresh HEAD must answer 200 with the same length. */
+export async function cdnHoldsCopy(url, bytes, { fetch = globalThis.fetch, timeoutMs = 30_000, attempts = 3 } = {}) {
+  let error = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const response = await fetch(url, { method: "HEAD", cache: "no-store", redirect: "follow", signal: AbortSignal.timeout(timeoutMs) });
+      const length = Number(response.headers.get("content-length"));
+      if (response.status !== 200) return { verified: false, reason: `HEAD ${response.status}` };
+      if (length !== bytes) return { verified: false, reason: `CDN has ${Number.isFinite(length) ? length : "no"} bytes, V has ${bytes}` };
+      return { verified: true };
+    } catch (failure) {
+      error = failure;
+    }
+  }
+  return { verified: false, unreachable: true, reason: `HEAD failed: ${error?.message ?? error}` };
+}
+
+// At most `limit` requests in flight; the event loop stays free between them.
+async function mapWithLimit(values, limit, fn) {
+  const results = new Array(values.length);
+  let next = 0;
+  const lanes = Array.from({ length: Math.min(limit, values.length) }, async () => {
+    while (next < values.length) {
+      const index = next++;
+      results[index] = await fn(values[index]);
+      await nextTurn();
+    }
+  });
+  await Promise.all(lanes);
+  return results;
+}
+
+async function retainDeliveredFinals({ store, instance, finishedAt, instanceDir, now, minAgeDays, apply, actor, fetch, concurrency }) {
+  const plan = await planDeliveredFinals(instanceDir);
+  const summary = { id: instance.id, finishedAt, delivered: plan.delivered, finals: plan.finals.length, files: 0, bytes: 0, kept: [] };
+  if (!apply) {
+    summary.bytes = plan.finals.reduce((sum, final) => sum + (final.frees ? final.bytes : 0), 0);
+    return summary;
+  }
+  const checks = await mapWithLimit(plan.finals, concurrency, (final) => cdnHoldsCopy(final.url, final.bytes, { fetch }));
+  const removedFinals = [];
+  for (const [index, final] of plan.finals.entries()) {
+    const check = checks[index];
+    if (!check.verified) {
+      summary.kept.push({ contentItemId: final.contentItemId, reason: check.reason, retry: Boolean(check.unreachable) });
+      continue;
+    }
+    const removed = [];
+    for (const file of final.links) {
+      try {
+        await unlink(file.path);
+        removed.push(file.rel);
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+    }
+    summary.files += removed.length;
+    if (final.frees) summary.bytes += final.bytes;
+    removedFinals.push({ contentItemId: final.contentItemId, files: removed, bytes: final.bytes, cdn: final.url });
+  }
+  summary.finals = removedFinals.length;
+  if (removedFinals.length || summary.kept.length) {
+    await appendLedger(instanceDir, {
+      at: now.toISOString(), minAgeDays, actor, rule: "delivered-finals", removedFinals, keptFinals: summary.kept,
+    });
+  }
+  // A CDN that could not be reached leaves the project due for the next run; anything else is final.
+  if (!summary.kept.some((entry) => entry.retry)) {
+    store.appendEvent({
+      instanceId: instance.id,
+      type: FINALS_EVENT,
+      payload: { version: 1, finishedAt, delivered: plan.delivered, finals: removedFinals.length, files: summary.files, bytes: summary.bytes, kept: summary.kept.length, actor },
+      now,
+    });
+  }
+  return summary;
+}
+
 /**
  * Plans (apply=false) or applies retention over the finished projects.
  * Applying removes files one by one, yielding to the event loop, and records each project.
@@ -281,6 +457,10 @@ export async function runRetention({
   apply = false,
   maxInstances = 100,
   actor = null,
+  // Delivered finals: removed from V this many days after the project finished; null keeps them.
+  finalsMinAgeDays = null,
+  fetch = globalThis.fetch,
+  finalsConcurrency = 4,
 }) {
   const projects = [];
   for (const { instance, finishedAt } of retentionCandidates(store, { now, minAgeDays }).slice(0, maxInstances)) {
@@ -292,12 +472,33 @@ export async function runRetention({
     }
     await nextTurn();
   }
+  const finals = [];
+  if (finalsMinAgeDays !== null) {
+    for (const { instance, finishedAt } of retentionCandidates(store, { now, minAgeDays: finalsMinAgeDays, eventType: FINALS_EVENT }).slice(0, maxInstances)) {
+      try {
+        finals.push(await retainDeliveredFinals({
+          store, instance, finishedAt, instanceDir: join(instancesRoot, instance.id), now, minAgeDays: finalsMinAgeDays, apply, actor, fetch, concurrency: finalsConcurrency,
+        }));
+      } catch (error) {
+        finals.push({ id: instance.id, finishedAt, finals: 0, files: 0, bytes: 0, kept: [], error: error.message });
+      }
+      await nextTurn();
+    }
+  }
   return {
     apply,
     minAgeDays,
     projects,
     files: projects.reduce((sum, project) => sum + project.files, 0),
     bytes: projects.reduce((sum, project) => sum + project.bytes, 0),
-    errors: projects.filter((project) => project.error).length,
+    errors: projects.filter((project) => project.error).length + finals.filter((project) => project.error).length,
+    finals: {
+      minAgeDays: finalsMinAgeDays,
+      projects: finals,
+      finals: finals.reduce((sum, project) => sum + project.finals, 0),
+      files: finals.reduce((sum, project) => sum + project.files, 0),
+      bytes: finals.reduce((sum, project) => sum + project.bytes, 0),
+      kept: finals.reduce((sum, project) => sum + project.kept.length, 0),
+    },
   };
 }
