@@ -259,7 +259,14 @@ async function run(input) {
     const runId = option(input, "--run-id");
     return api(`/api/cards/${encodeURIComponent(subject)}/session${runId ? `?runId=${encodeURIComponent(runId)}` : ""}`);
   }
-  if (resource === "cards" && ["approve", "changes", "reject", "retry"].includes(action) && subject) {
+  if (resource === "cards" && action === "retry" && subject) {
+    return api(`/api/cards/${encodeURIComponent(subject)}/retry`, {
+      method: "POST",
+      body: JSON.stringify({ actor: option(input, "--actor") ?? "V", note: option(input, "--note") ?? option(input, "--evidence") ?? null,
+        allowNewOperation: input.includes("--allow-new-operation") }),
+    });
+  }
+  if (resource === "cards" && ["approve", "changes", "reject"].includes(action) && subject) {
     const card = await findCard(subject);
     const automation = card.metadata?.automation ?? {};
     const instanceId = automation.instanceId ?? label(card, "instance");
@@ -275,7 +282,7 @@ async function run(input) {
       method: "POST",
     });
   }
-  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|monitor|preflight|create|start|pause|archive|restore | projects concurrency <id> [<1-8>|default] [--reason <text>] | projects workflow <id> <version|latest> [--reason <text>] | projects priority <id> [<n>|first|last|default] [--reason <text>] | projects order <id> [<id> …] [--reason <text>] | projects queue | projects inputs <id> --file <json> | projects collaboration <id> --to <oc_…|user:ou_…> [--by <ou_…>] | decisions list [--project <id>] [--status open|decided] | decisions get <id> | decisions decide <id> --option <id> [--note <text>] [--apply-to-group] | governance audit [--refresh] | governance archive|restore <manifest.json> [--apply] | storage retention [--apply] | operations reserve|checkpoint <card-id> | cards list|session|approve|changes|reject|retry");
+  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|monitor|preflight|create|start|pause|archive|restore | projects concurrency <id> [<1-8>|default] [--reason <text>] | projects workflow <id> <version|latest> [--reason <text>] | projects priority <id> [<n>|first|last|default] [--reason <text>] | projects order <id> [<id> …] [--reason <text>] | projects queue | projects inputs <id> --file <json> | projects collaboration <id> --to <oc_…|user:ou_…> [--by <ou_…>] | decisions list [--project <id>] [--status open|decided] | decisions get <id> | decisions decide <id> --option <id> [--note <text>] [--apply-to-group] | governance audit [--refresh] | governance archive|restore <manifest.json> [--apply] | storage retention [--apply] | operations reserve|checkpoint <card-id> | cards list|session|approve|changes|reject|retry | cards retry <card-id> [--actor V] [--note <text>] [--allow-new-operation]");
 }
 
 async function resolveWorkflow(project) {

@@ -87,3 +87,29 @@ test("a redone item's paid call is a new ledger operation, never its first attem
   const settled = [{ idempotencyKey: first.preferredIdempotencyKey, ownerCardId: "first-card", status: "succeeded" }];
   assert.equal(findNightShiftExternalOperation({ card, candidateIdempotencyKeys: redo.candidateIdempotencyKeys, operations: settled }), null);
 });
+
+test("a project revision uses its persisted run, not fields the native board discards", () => {
+  const card = { id: "new-card", labels: ["instance:NS-1", "stage:generate"], metadata: { automation: {} } };
+  const instance = { id: "NS-1", inputHash: "input-hash" };
+  const first = resolveNightShiftOperationKeys({ card, release, instance });
+  const projectRun = { instanceId: "NS-1", stageId: "generate", cardId: "new-card", attempt: 2 };
+  const redo = resolveNightShiftOperationKeys({ card, release, instance, projectRun });
+  assert.match(redo.logicalIdempotencyKey, /:project-revision-1$/);
+  assert.notEqual(redo.preferredIdempotencyKey, first.preferredIdempotencyKey);
+  assert.equal(findNightShiftExternalOperation({ card, candidateIdempotencyKeys: redo.candidateIdempotencyKeys,
+    operations: [{ idempotencyKey: first.preferredIdempotencyKey, ownerCardId: "old-card", status: "failed" }] }), null);
+  assert.throws(() => resolveNightShiftOperationKeys({ card, release, instance, projectRun: { ...projectRun, cardId: "old-card" } }), /does not match/);
+});
+
+test("owned operation survives changed inputs and absent legacy metadata", () => {
+  const operation = { ownerCardId: "same-card", idempotencyKey: "original-key", status: "succeeded" };
+  assert.equal(findNightShiftExternalOperation({ card: { id: "same-card" },
+    candidateIdempotencyKeys: ["changed-input-key"], operations: [operation] }), operation);
+});
+
+test("ambiguous multiple owned operations require readback rather than guessing", () => {
+  assert.throws(() => findNightShiftExternalOperation({ card: { id: "same-card" }, operations: [
+    { ownerCardId: "same-card", idempotencyKey: "one", status: "failed" },
+    { ownerCardId: "same-card", idempotencyKey: "two", status: "executing" },
+  ] }), /readback/);
+});

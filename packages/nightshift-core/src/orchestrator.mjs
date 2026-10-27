@@ -197,7 +197,7 @@ export function planNextActions({
           instanceId: instance.id,
           stageId: stage.id,
           approval: missingApproval,
-          idempotencyKey: actionKey(release, instance, stage, "approval"),
+          idempotencyKey: actionKey(release, instance, stage, "approval", null, existing?.attempt),
         });
       }
       continue;
@@ -211,7 +211,7 @@ export function planNextActions({
         instanceId: instance.id,
         stageId: stage.id,
         approval: missingApproval,
-        idempotencyKey: actionKey(release, instance, stage, "approval"),
+        idempotencyKey: actionKey(release, instance, stage, "approval", null, existing?.attempt),
       });
       continue;
     }
@@ -221,7 +221,8 @@ export function planNextActions({
         type: "create_review_card",
         instanceId: instance.id,
         stageId: stage.id,
-        idempotencyKey: actionKey(release, instance, stage, "review"),
+        ...(existing?.status === "redo" ? { attempt: existing.attempt } : {}),
+        idempotencyKey: actionKey(release, instance, stage, "review", null, existing?.attempt),
         card: cardPayload(
           release,
           instance,
@@ -241,14 +242,16 @@ export function planNextActions({
     if (stage.actor === "agent" || stage.actor === "system") {
       const resourceKey = stageResourceLock(stage, instance);
       if (resourceKey && reservedResources.has(resourceKey)) continue;
+      const attempt = existing?.status === "redo" ? existing.attempt : undefined;
       actions.push({
         type: "create_workboard_card",
         instanceId: instance.id,
         stageId: stage.id,
-        idempotencyKey: actionKey(release, instance, stage, "run"),
+        ...(attempt ? { attempt } : {}),
+        idempotencyKey: actionKey(release, instance, stage, "run", null, attempt),
         card: cardPayload(
           release,
-          instance,
+          attempt ? { ...instance, projectStageRevision: { stageId: stage.id, attempt, note: existing.summary } } : instance,
           stage,
           "ready",
           null,
@@ -441,6 +444,9 @@ function composeAgentBrief({ release, instance, stage, contentItem, contentItems
     `Stage: ${stage.id} — ${stage.title}`,
     ...(contentItem ? [`Content item: ${JSON.stringify(summarizeContentItem(contentItem))}`] : []),
     `Objective: ${strategy?.description ?? stage.description ?? "Complete the declared stage."}`,
+    ...(!contentItem && instance.projectStageRevision?.stageId === stage.id ? [
+      `Project stage revision ${instance.projectStageRevision.attempt - 1}: ${instance.projectStageRevision.note}. Only redo this stage on the existing upstream results; never repeat upstream purchases. This card has a new external-operation key; keep the previous operation and receipt unchanged.`,
+    ] : []),
     ...(contentItem?.revisionRequest && (contentItem.revisionRequest.stageIds ?? []).includes(stage.id) ? [
       redoLine(release, stage, contentItem),
     ] : []),
@@ -659,7 +665,7 @@ function summarizeContentItem(contentItem) {
   });
 }
 
-export function actionKey(release, instance, stage, action, contentItem = null) {
+export function actionKey(release, instance, stage, action, contentItem = null, projectAttempt = 1) {
   const inputHash = instance.inputHash ?? hashJson(instance.inputs ?? {});
   const template = stage.retry?.idempotencyKey;
   const logicalKey = template
@@ -673,7 +679,8 @@ export function actionKey(release, instance, stage, action, contentItem = null) 
       })
     : `${instance.id}:${contentItem?.id ?? "project"}:${stage.id}:${inputHash}`;
   // A redone item's new cards must not be matched to its old ones.
-  const revision = Number.isSafeInteger(contentItem?.revision) && contentItem.revision > 0 ? `:revision-${contentItem.revision}` : "";
+  const revision = Number.isSafeInteger(contentItem?.revision) && contentItem.revision > 0 ? `:revision-${contentItem.revision}`
+    : !contentItem && Number.isSafeInteger(projectAttempt) && projectAttempt > 1 ? `:project-revision-${projectAttempt - 1}` : "";
   return `${release.metadata.workflowSha256}:${action}:${logicalKey}${revision}`;
 }
 

@@ -9,7 +9,7 @@ const DAY_MS = 86_400_000;
 const BASELINE_KEY = "needs-you-v1.baseline";
 // Bumped whenever the words a request shows are produced differently, so open
 // requests are rewritten under the current rules instead of keeping old text.
-export const DESCRIBE_VERSION = 4;
+export const DESCRIBE_VERSION = 5;
 const OPERATION_UNDER_WAY = new Set(["reserved", "executing"]);
 const MOVED_ON = new Set(["ready", "running", "done", "review", "scheduled", "todo", "backlog"]);
 
@@ -40,12 +40,17 @@ export function stopOptionsFor(scope, { stage = null, operation = null, asked = 
     options.push(Object.freeze({ id: "retry", label: "用这次的结果", effect: "retry", description: "接着用已经做好的结果交付，不会再付钱；可以附一句话给 agent" }));
     options.push(Object.freeze({ id: "redo", label: "重新生成", effect: "redo", description: "重新做一次，会再付一次钱；可以写这次要怎么改" }));
   } else {
-    const fresh = scope === "item" && continuation(ledger) === "fresh";
+    const fresh = scope === "item" ? continuation(ledger) === "fresh" : ledger?.state === "failed";
+    const ambiguous = scope === "project" && ["unsubmitted", "unknown"].includes(ledger?.state);
     options.push(Object.freeze({
       id: "continue",
       label: asked ? "处理好了，继续" : "再试一次",
       effect: "continue",
-      description: fresh ? "重新做这一步，会再付一次钱；可以附一句话给 agent" : "接着做这一步，不会再付钱；可以附一句话给 agent（比如「已补素材」）",
+      ...(scope === "project" && fresh ? { freshOperation: true } : {}),
+      description: ambiguous ? "先核实供应商是否已执行；结果不明时不会重新调用，请补充回读结果"
+        : fresh && scope === "project" ? (stage?.sideEffects?.includes("paid-production") ? "重新做这一步，会发起新调用，可能再次付费；请确认后继续" : "重新做这一步，会再次执行对外操作；请确认后继续")
+        : fresh ? "重新做这一步，会再付一次钱；可以附一句话给 agent"
+        : "接着做这一步，不会再付钱；可以附一句话给 agent（比如「已补素材」）",
     }));
   }
   if (scope === "item") options.push(SKIP_OPTION);

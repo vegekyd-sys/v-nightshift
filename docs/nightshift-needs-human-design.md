@@ -61,6 +61,100 @@ The rules:
 - **One way to go on.** Going on uses the same card when its external call can still move: nothing registered, a result to reuse, a task still running once. Otherwise it is a fresh attempt: the item's revision goes up, the stage (and later stages that ran on it) start over with new cards, and their paid call is a new operation. Old operations are never touched.
 - **The card asks, it does not report.** It shows what to do and one sentence of why, then the answers: 继续 (labelled 处理好了，继续 after an ask, 再试一次 otherwise, with its cost in the description), 这条不做了, 暂停项目. A paid result that exists but failed its checks offers 用这次的结果 or 重新生成 instead of 继续. A published post is never published again.
 
+## Project-scope external-operation recovery (2026-10-27)
+
+For a stopped `scope: project` stage, a person's **continue**, or V invoking the
+explicit recovery API, can authorize a new operation after its ledger records a
+definitive `failed` outcome. Its choice
+explicitly warns about a new external action and, for paid stages, possible new
+charges. This is not an automatic retry and does not imply that the failed call
+was free: that conclusion still needs supplier evidence. Requests carrying the
+older no-charge wording must refresh before they can authorize a new operation.
+
+- The new identity is derived from a new persisted `stage_runs.attempt`; no schema
+  migration is needed. The old card, request hash, operation and receipt remain.
+- Only that stage and already-run dependent project stages are revised. Upstream
+  stages (such as a completed purchase) stay done. A dependent stage that is
+  running, has an external operation, or has already fanned out content items
+  needs a separate explicit recovery plan; this path refuses to invalidate it.
+- Revision reservations and `project-stage.redo.requested` are one transaction.
+  The stopped source card is their idempotency boundary. Replaying a decision,
+  including after a process restart, cannot allocate another revision.
+- `succeeded` reuses its result; `executing` with an external task ID resumes
+  reading that task, on the same card and operation. `reserved`, `unknown`, or
+  `executing` without a readable task remain blocked for supplier readback. A
+  person's generic continue does not bypass an ambiguous-outcome payment gate.
+- Existing stage approvals still apply to the pinned target; planning a new
+  card does not bypass an approval that is missing or expired. Content-item
+  recovery and redo keep their existing behavior.
+
+### V can recover work from any channel
+
+Tianyi clarified on 2026-10-27: recovery must be callable by V in a group, direct
+chat, or a workflow run. It must not require a person to click a dashboard button
+or wait for an engine-created decision request. This is a caller-initiated
+recovery capability, not a new scheduler auto-retry policy.
+
+```sh
+nightshiftctl cards retry <card-id> --actor V --note "<what was fixed / how to continue>"
+# Only when a new external call is needed and covered by the task authorization:
+nightshiftctl cards retry <card-id> --actor V --note "<correction>" --allow-new-operation
+```
+
+The existing endpoint is `POST /api/cards/:id/retry`, with `note` (or legacy
+`evidence`) and the boolean
+`allowNewOperation`. It derives project/stage/item from the actual card, takes the
+authenticated actor (or local V identity), serializes recovery, and enqueues only
+the existing guarded scheduler. It does not start a second Agent or bypass
+admission. It reads just that card, not a full board snapshot.
+
+V may invoke this within the task's existing authorization without asking a
+person to click again. `--allow-new-operation` is V's explicit intent and audit
+record, not a human-only token and not permission to expand the budget, buy a
+second account, or change the publication target. The stage's approval must
+still be valid. Unknown supplier outcomes require readback even with the flag.
+A paused project stays paused. Repeated resume of a replaced or already queued
+card is a no-op; old open requests are superseded, not falsely recorded as a
+person's decision. The caller and note are recorded as `stage.resume.requested`.
+
+Agent first: V uses the existing `cards retry` control; the existing dashboard
+Retry button and `decisions decide` remain auxiliary entry points. No new UI
+button is introduced. The PR-only `cards resume` command and
+`/api/cards/:id/resume` route have been removed. The existing retry route uses
+the serialized, ledger-aware recovery operation. The internal same-card retry helper still resets
+the native failure budget and releases stale claims; it is not a public bypass.
+A legacy Retry click never silently authorizes a new paid/external operation.
+Do not create a replacement project, clear the old ledger, or retry a completed
+upstream purchase. Existing owned operations and their keys survive input edits
+and legacy formats. Multiple owned operations require readback, not guessing.
+
+### Why the anti-duplicate gate stays
+
+- [Platform #20](https://github.com/vegekyd-sys/v-openclaw-platform/pull/20)
+  introduced paid/public-operation checkpoints: interruption of local work does
+  not prove the supplier did not execute or charge.
+- [Platform #28](https://github.com/vegekyd-sys/v-openclaw-platform/pull/28)
+  repaired stale claims while preserving the key: executing+task ID continues the
+  original task; reserved without a task ID requires readback, never resubmission.
+- [Platform #47](https://github.com/vegekyd-sys/v-openclaw-platform/pull/47)
+  reset exhausted native failure budgets so reopening a card actually executes.
+- [Platform #128](https://github.com/vegekyd-sys/v-openclaw-platform/pull/128)
+  and [#132](https://github.com/vegekyd-sys/v-openclaw-platform/pull/132)
+  added item revisions and fixed keys after real board normalization. That
+  recovery was limited to content items, leaving project stages without it.
+- [Nightshift #4](https://github.com/vegekyd-sys/v-nightshift/pull/4) added
+  ledger-aware continuation and bounded automatic recovery. This PR extends the
+  explicit caller-driven project recovery, not that scheduler's retry policy.
+
+A recorded `failed` status is not evidence of zero cost. A new revision may charge
+again and needs caller intent within existing approval. Successful results remain
+reusable; readable executing tasks keep their ID; ambiguous project/V outcomes
+remain held. These protections do not require a human-only button.
+
+Pre-merge integration scenario: `lab/candidate/project-stage-recovery.mjs`. It
+uses a private Gateway's real Workboard plus synthetic SQLite, reopens the DB,
+and proves corrected-hash reservation without dispatching an Agent or supplier.
+
 ## Model
 
 A new table, `decision_requests`, holds one row per card attempt that needs a person:
