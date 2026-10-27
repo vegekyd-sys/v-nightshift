@@ -2499,7 +2499,7 @@ const recoveries = (store, id) => store.listEvents(id).filter((event) => event.t
 
 // Synthetic account-like project: purchase has already succeeded. Only login
 // failed; no provider, account data or production state is used here.
-async function stoppedProject(operationStatus = "failed", { effects = ["paid-production"], taskId = null, observe = true } = {}) {
+async function stoppedProject(operationStatus = "failed", { effects = ["paid-production"], taskId = null, observe = true, operationKey = null } = {}) {
   const store = new NightShiftStore();
   const workboard = new FakeWorkboard();
   const needsYou = new NeedsYouTracker({ store });
@@ -2540,7 +2540,7 @@ ${id === "login" ? `sideEffects: ${JSON.stringify(effects)}\napproval: {before: 
   const instance = store.getInstance(id);
   const stage = release.manifest.spec.stages.find(entry => entry.id === "login");
   const keys = resolveNightShiftOperationKeys({ card, release: release.manifest, instance });
-  const oldKey = keys.preferredIdempotencyKey;
+  const oldKey = operationKey ?? keys.preferredIdempotencyKey;
   store.reserveExternalOperation({ idempotencyKey: "paid-purchase", instanceId: id, stageId: "purchase", ownerCardId: "project-purchase", requestHash: "d".repeat(64) });
   store.checkpointExternalOperation("paid-purchase", { status: "succeeded", externalTaskId: "purchase-receipt", result: { purchased: true } });
   store.reserveExternalOperation({ idempotencyKey: oldKey, instanceId: id, stageId: "login", ownerCardId: card.id, requestHash: "a".repeat(64) });
@@ -2604,14 +2604,14 @@ test("V can resume a failed project stage without any human decision request", a
   store.close();
 });
 
-test("nightshiftctl lets V from another chat resume by card ID through the service API", async () => {
+for (const action of ["retry", "resume"]) test(`nightshiftctl ${action} lets V recover by card ID through one service API`, async () => {
   const { id, runtime, store } = await stoppedProject("failed", { observe: false });
   const received = [];
   const server = createServer(async (request, response) => {
     response.setHeader("content-type", "application/json");
     try {
       assert.equal(request.method, "POST");
-      assert.equal(request.url, "/api/cards/project-login/resume");
+      assert.equal(request.url, "/api/cards/project-login/retry");
       let raw = "";
       for await (const chunk of request) raw += chunk;
       const body = JSON.parse(raw);
@@ -2625,7 +2625,7 @@ test("nightshiftctl lets V from another chat resume by card ID through the servi
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   try {
-    const args = [resolve(here, "../../../scripts/nightshiftctl.mjs"), "cards", "resume", "project-login", "--actor", "V", "--note", "来自另一个会话的恢复请求", "--allow-new-operation"];
+    const args = [resolve(here, "../../../scripts/nightshiftctl.mjs"), "cards", action, "project-login", "--actor", "V", "--evidence", "来自另一个会话的恢复请求", "--allow-new-operation"];
     const options = { encoding: "utf8", env: { ...process.env, NIGHTSHIFT_URL: `http://127.0.0.1:${server.address().port}` } };
     const first = await promisify(execFile)(process.execPath, args, options);
     assert.equal(first.stderr, "");
@@ -2667,6 +2667,19 @@ for (const status of ["succeeded", "executing"]) {
     assert.equal((await runtime.resume({ cardId: "project-login", actor: "V" })).alreadyResumed, true);
     assert.deepEqual(store.getExternalOperation(oldKey), operation);
     assert.equal(store.listStageRuns(id).length, 2);
+    store.close();
+  });
+}
+
+for (const status of ["succeeded", "executing"]) {
+  test(`recovery preserves a ${status} operation identity when a legacy key outlives input changes`, async () => {
+    const { runtime, store, id, oldKey, workboard } = await stoppedProject(status, { observe: false, taskId: "original-task", operationKey: "legacy-original-key" });
+    const before = store.getExternalOperation(oldKey);
+    runtime.updateInstanceInputs(id, { correctedOptionalParameter: true });
+    await runtime.resume({ cardId: "project-login", actor: "V" });
+    assert.equal(workboard.updateCalls.at(-1).patch.idempotencyKey, oldKey);
+    assert.deepEqual(store.getExternalOperation(oldKey), before);
+    assert.equal(store.listExternalOperations(id).length, 2);
     store.close();
   });
 }

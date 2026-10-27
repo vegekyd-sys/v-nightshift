@@ -100,3 +100,16 @@ test("a project revision uses its persisted run, not fields the native board dis
     operations: [{ idempotencyKey: first.preferredIdempotencyKey, ownerCardId: "old-card", status: "failed" }] }), null);
   assert.throws(() => resolveNightShiftOperationKeys({ card, release, instance, projectRun: { ...projectRun, cardId: "old-card" } }), /does not match/);
 });
+
+test("owned operation survives changed inputs and absent legacy metadata", () => {
+  const operation = { ownerCardId: "same-card", idempotencyKey: "original-key", status: "succeeded" };
+  assert.equal(findNightShiftExternalOperation({ card: { id: "same-card" },
+    candidateIdempotencyKeys: ["changed-input-key"], operations: [operation] }), operation);
+});
+
+test("ambiguous multiple owned operations require readback rather than guessing", () => {
+  assert.throws(() => findNightShiftExternalOperation({ card: { id: "same-card" }, operations: [
+    { ownerCardId: "same-card", idempotencyKey: "one", status: "failed" },
+    { ownerCardId: "same-card", idempotencyKey: "two", status: "executing" },
+  ] }), /readback/);
+});

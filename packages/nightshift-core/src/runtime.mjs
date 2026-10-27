@@ -9,7 +9,7 @@ import { actionKey, buildAgentBrief, nativeActionKey, planNextActions, projectCo
 import { classifyRunOutcome, classifyTerminalFailure, infrastructureFailureSummary, runEndedNormally, scheduleAutomaticRetry } from "./failure-policy.mjs";
 import { normalizeProjectCollaboration } from "./project.mjs";
 import { cardAttempt, continuation, ledgerOf, readStopReport } from "./needs-you.mjs";
-import { resolveNightShiftCardContext } from "./card-context.mjs";
+import { findNightShiftExternalOperation, resolveNightShiftCardContext } from "./card-context.mjs";
 
 // A blocked card with an empty Session is read as never started only after this
 // long, so a transcript still being written is not mistaken for one.
@@ -1126,8 +1126,12 @@ export class NightShiftRuntime {
     if (!contentItemId && runs.some(entry => entry.stageId === stageId && entry.attempt > (run?.attempt ?? 1))) {
       throw new Error("This project stage card has been superseded by a newer revision");
     }
+    const operation = findNightShiftExternalOperation({ card, operations: this.store.listExternalOperations(instanceId) });
     await this.workboard.updateCard(cardId, {
-      idempotencyKey: nativeActionKey(actionKey(release, instance, stage, "run", contentItem, contentItemId ? 1 : run?.attempt)),
+      // Retrying a result/readable task keeps its original identity even if
+      // inputs or historical key formats differ. Only a revision gets a new key.
+      idempotencyKey: operation?.idempotencyKey ?? resolveNightShiftCardContext({ card }).idempotencyKey ??
+        nativeActionKey(actionKey(release, instance, stage, "run", contentItem, contentItemId ? 1 : run?.attempt)),
       notes: withDecisionNote(buildAgentBrief(release, instance, stage, contentItem,
         this.contentItemsWithRevisions(instanceId).filter((item) => !this.isContentItemSkipped(instanceId, item.id)),
         this.skippedContentItems(instanceId)), decisionNote),
@@ -1474,7 +1478,7 @@ export class NightShiftRuntime {
     if (["ready", "running", "scheduled", "done"].includes(card.status)) return { ...base, how: "same", alreadyResumed: true, status: card.status };
     if (card.status !== "blocked" || card.execution?.status === "running") throw Object.assign(new Error("Resume requires a stopped executable card"), { statusCode: 409 });
     if (requiredApproval(stage, instance, new Date(), contentItemId)) throw Object.assign(new Error("The stage's execution authorization is missing or expired"), { statusCode: 409 });
-    const operation = this.store.listExternalOperations(instance.id).filter(entry => entry.ownerCardId === cardId).at(-1) ?? null;
+    const operation = findNightShiftExternalOperation({ card, operations: this.store.listExternalOperations(instance.id) });
     const ledger = ledgerOf(stage, operation);
     if (["unsubmitted", "unknown"].includes(ledger?.state)) throw Object.assign(new Error("External outcome is ambiguous; supplier readback is required before resuming"), { statusCode: 409 });
     if (ledger?.state === "failed" && allowNewOperation !== true) throw Object.assign(new Error("A new external operation may incur a charge; V must explicitly accept it within the authorized scope (--allow-new-operation)"), { statusCode: 409 });

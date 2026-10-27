@@ -58,6 +58,11 @@ export function resolveNightShiftOperationKeys({ card, release, instance, conten
 }
 
 export function findNightShiftExternalOperation({ card, candidateIdempotencyKeys = [], operations = [] }) {
+  // Ownership survives input edits and legacy key formats. A different card's
+  // operation must never authorize or satisfy a new revision.
+  const owned = card.id ? operations.filter(operation => operation.ownerCardId === card.id) : [];
+  if (owned.length > 1) throw Object.assign(new Error("Multiple external operations belong to this card; supplier readback is required"), { statusCode: 409 });
+  if (owned.length) return owned[0];
   const actionLabel = (card.labels ?? []).find((label) =>
     typeof label === "string" && label.startsWith("nightshift-action:"));
   const labeledOperation = actionLabel

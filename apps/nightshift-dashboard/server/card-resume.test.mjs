@@ -5,14 +5,14 @@ import test from "node:test";
 
 // Exercise the actual HTTP branch without booting the production service.
 const source = readFileSync(new URL("./index.mjs", import.meta.url), "utf8");
-const route = source.slice(source.indexOf("  const resumeMatch ="), source.indexOf("  const retryMatch ="));
-test("card resume uses the signed-in identity and card ID, and only queues guarded scheduling", async () => {
+const route = source.slice(source.indexOf("  const resumeMatch ="), source.indexOf('  json(response, 404, { error: "Not found" });', source.indexOf("  const resumeMatch =")));
+for (const action of ["retry", "resume"]) test(`card ${action} uses the signed-in identity and card ID, and only queues guarded scheduling`, async () => {
   const calls = [], queued = [], refreshes = [];
   let serializing = false;
   let response;
   await vm.runInNewContext(`(async () => {${route}})()`, {
-    request: { method: "POST" }, response: {}, url: { pathname: "/api/cards/source-card/resume" },
-    bodyJson: async () => ({ actor: "spoofed", instanceId: "another-project", stageId: "purchase", note: "继续原任务", allowNewOperation: true }),
+    request: { method: "POST" }, response: {}, url: { pathname: `/api/cards/source-card/${action}` },
+    bodyJson: async () => ({ actor: "spoofed", instanceId: "another-project", stageId: "purchase", evidence: "继续原任务", allowNewOperation: true }),
     operatorIdentity: () => "authenticated:V",
     serializedOperation: async f => { serializing = true; try { return await f(); } finally { serializing = false; } },
     runtime: { resume: async input => {

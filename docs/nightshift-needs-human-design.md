@@ -96,12 +96,13 @@ or wait for an engine-created decision request. This is a caller-initiated
 recovery capability, not a new scheduler auto-retry policy.
 
 ```sh
-nightshiftctl cards resume <card-id> --actor V --note "<what was fixed / how to continue>"
+nightshiftctl cards retry <card-id> --actor V --note "<what was fixed / how to continue>"
 # Only when a new external call is needed and covered by the task authorization:
-nightshiftctl cards resume <card-id> --actor V --note "<correction>" --allow-new-operation
+nightshiftctl cards retry <card-id> --actor V --note "<correction>" --allow-new-operation
 ```
 
-The endpoint is `POST /api/cards/:id/resume`, with `note` and the boolean
+The existing endpoint is `POST /api/cards/:id/retry`, with `note` (or legacy
+`evidence`) and the boolean
 `allowNewOperation`. It derives project/stage/item from the actual card, takes the
 authenticated actor (or local V identity), serializes recovery, and enqueues only
 the existing guarded scheduler. It does not start a second Agent or bypass
@@ -116,10 +117,39 @@ A paused project stays paused. Repeated resume of a replaced or already queued
 card is a no-op; old open requests are superseded, not falsely recorded as a
 person's decision. The caller and note are recorded as `stage.resume.requested`.
 
-The dashboard's `decisions decide` path remains available. `cards retry` still
-means retry the same card/key; use `resume` to recover a failed external operation
-under a new revision. Do not create a replacement project, clear the old ledger,
-or retry a completed upstream purchase.
+Agent first: V uses the existing `cards retry` control; the existing dashboard
+Retry button and `decisions decide` remain auxiliary entry points. No new UI
+button is introduced. `cards resume` and `/api/cards/:id/resume` are aliases, not
+a second recovery policy. Both public HTTP routes use the same serialized,
+ledger-aware runtime operation. The internal same-card retry helper still resets
+the native failure budget and releases stale claims; it is not a public bypass.
+A legacy Retry click never silently authorizes a new paid/external operation.
+Do not create a replacement project, clear the old ledger, or retry a completed
+upstream purchase. Existing owned operations and their keys survive input edits
+and legacy formats. Multiple owned operations require readback, not guessing.
+
+### Why the anti-duplicate gate stays
+
+- [Platform #20](https://github.com/vegekyd-sys/v-openclaw-platform/pull/20)
+  introduced paid/public-operation checkpoints: interruption of local work does
+  not prove the supplier did not execute or charge.
+- [Platform #28](https://github.com/vegekyd-sys/v-openclaw-platform/pull/28)
+  repaired stale claims while preserving the key: executing+task ID continues the
+  original task; reserved without a task ID requires readback, never resubmission.
+- [Platform #47](https://github.com/vegekyd-sys/v-openclaw-platform/pull/47)
+  reset exhausted native failure budgets so reopening a card actually executes.
+- [Platform #128](https://github.com/vegekyd-sys/v-openclaw-platform/pull/128)
+  and [#132](https://github.com/vegekyd-sys/v-openclaw-platform/pull/132)
+  added item revisions and fixed keys after real board normalization. That
+  recovery was limited to content items, leaving project stages without it.
+- [Nightshift #4](https://github.com/vegekyd-sys/v-nightshift/pull/4) added
+  ledger-aware continuation and bounded automatic recovery. This PR extends the
+  explicit caller-driven project recovery, not that scheduler's retry policy.
+
+A recorded `failed` status is not evidence of zero cost. A new revision may charge
+again and needs caller intent within existing approval. Successful results remain
+reusable; readable executing tasks keep their ID; ambiguous project/V outcomes
+remain held. These protections do not require a human-only button.
 
 Pre-merge integration scenario: `lab/candidate/project-stage-recovery.mjs`. It
 uses a private Gateway's real Workboard plus synthetic SQLite, reopens the DB,

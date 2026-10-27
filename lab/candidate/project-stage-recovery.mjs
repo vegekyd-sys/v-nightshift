@@ -151,7 +151,7 @@ ${stage === "login" ? "sideEffects: [paid-production]\napproval: {before: paid-p
     response.setHeader("content-type", "application/json");
     try {
       assert.equal(request.method, "POST");
-      assert.equal(request.url, `/api/cards/${vCard.id}/resume`);
+      assert.equal(request.url, `/api/cards/${vCard.id}/retry`);
       let raw = "";
       for await (const chunk of request) raw += chunk;
       const body = JSON.parse(raw);
@@ -165,7 +165,7 @@ ${stage === "login" ? "sideEffects: [paid-production]\napproval: {before: paid-p
   await new Promise(resolve => api.listen(0, "127.0.0.1", resolve));
   try {
     const cli = fileURLToPath(new URL("../../scripts/nightshiftctl.mjs", import.meta.url));
-    const args = [cli, "cards", "resume", vCard.id, "--actor", "V", "--note", "按已有任务授权省略可选参数", "--allow-new-operation"];
+    const args = [cli, "cards", "retry", vCard.id, "--actor", "V", "--note", "按已有任务授权省略可选参数", "--allow-new-operation"];
     const env = { ...process.env, NIGHTSHIFT_URL: `http://127.0.0.1:${api.address().port}` };
     assert.equal(JSON.parse((await promisify(execFile)(process.execPath, args, { env })).stdout).how, "fresh");
     store.close();
@@ -182,6 +182,20 @@ ${stage === "login" ? "sideEffects: [paid-production]\napproval: {before: paid-p
     assert.equal(store.listEvents(vId).filter(event => event.type === "stage.resume.requested").length, 1);
     assert.equal(store.listStageRuns(vId).filter(run => run.stageId === "purchase").length, 1);
     assert.equal((await workboard.listCards({ cardIds: [vPurchase.cardId] }))[0].status, "done");
+    store.checkpointExternalOperation(vNewKey, { status: "succeeded", externalTaskId: "candidate-only-receipt", result: { synthetic: true } });
+    const settled = store.getExternalOperation(vNewKey);
+    runtime.updateInstanceInputs(vId, { correctedOptionalParameter: true });
+    await workboard.moveCard(vNewCard.id, "blocked");
+    store.upsertStageRun({ ...vNewRun, status: "blocked", failure });
+    assert.equal((await runtime.resume({ cardId: vNewCard.id, actor: "V" })).how, "same");
+    const [reopened] = await workboard.listCards({ cardIds: [vNewCard.id] });
+    assert.equal(reopened.metadata.automation.idempotencyKey, vNewKey);
+    const changedKeys = resolveNightShiftOperationKeys({ card: reopened, projectRun: vNewRun, release: release.manifest, instance: store.getInstance(vId) });
+    assert.equal(findNightShiftExternalOperation({ card: reopened, candidateIdempotencyKeys: changedKeys.candidateIdempotencyKeys,
+      operations: store.listExternalOperations(vId) }).idempotencyKey, vNewKey);
+    assert.equal(store.reserveExternalOperation({ ...settled, requestHash: "d".repeat(64) }).reused, true);
+    assert.deepEqual(store.getExternalOperation(vNewKey), settled);
+    checks.settledResultAndKeySurviveInputEdit = true;
     checks.vCliResumesWithoutHumanDecision = true;
     checks.vCliReplayAfterDbReopenDoesNotDuplicate = true;
   } finally {
