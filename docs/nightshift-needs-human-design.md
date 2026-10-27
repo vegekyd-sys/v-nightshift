@@ -61,6 +61,42 @@ The rules:
 - **One way to go on.** Going on uses the same card when its external call can still move: nothing registered, a result to reuse, a task still running once. Otherwise it is a fresh attempt: the item's revision goes up, the stage (and later stages that ran on it) start over with new cards, and their paid call is a new operation. Old operations are never touched.
 - **The card asks, it does not report.** It shows what to do and one sentence of why, then the answers: 继续 (labelled 处理好了，继续 after an ask, 再试一次 otherwise, with its cost in the description), 这条不做了, 暂停项目. A paid result that exists but failed its checks offers 用这次的结果 or 重新生成 instead of 继续. A published post is never published again.
 
+## Project-scope external-operation recovery (2026-10-27)
+
+For a stopped `scope: project` stage, a person's **continue** can now authorize a
+new operation after its ledger records a definitive `failed` outcome. Its choice
+explicitly warns about a new external action and, for paid stages, possible new
+charges. This is not an automatic retry and does not imply that the failed call
+was free: that conclusion still needs supplier evidence. Requests carrying the
+older no-charge wording must refresh before they can authorize a new operation.
+
+- The new identity is derived from a new persisted `stage_runs.attempt`; no schema
+  migration is needed. The old card, request hash, operation and receipt remain.
+- Only that stage and already-run dependent project stages are revised. Upstream
+  stages (such as a completed purchase) stay done. A dependent stage that is
+  running, has an external operation, or has already fanned out content items
+  needs a separate explicit recovery plan; this path refuses to invalidate it.
+- Revision reservations and `project-stage.redo.requested` are one transaction.
+  The stopped source card is their idempotency boundary. Replaying a decision,
+  including after a process restart, cannot allocate another revision.
+- `succeeded` reuses its result; `executing` with an external task ID resumes
+  reading that task, on the same card and operation. `reserved`, `unknown`, or
+  `executing` without a readable task remain blocked for supplier readback. A
+  person's generic continue does not bypass an ambiguous-outcome payment gate.
+- Existing stage approvals still apply to the pinned target; planning a new
+  card does not bypass an approval that is missing or expired. Content-item
+  recovery and redo keep their existing behavior.
+
+After deployment, inspect the existing project's current request, supplier
+failure receipt and operation status. Ask the person to confirm the new-call
+choice (and any possible cost), then use `nightshiftctl decisions decide` on that
+request with their correction in `--note`. Do not create a replacement project,
+manually clear the old ledger, or retry the upstream purchase.
+
+Pre-merge integration scenario: `lab/candidate/project-stage-recovery.mjs`. It
+uses a private Gateway's real Workboard plus synthetic SQLite, reopens the DB,
+and proves corrected-hash reservation without dispatching an Agent or supplier.
+
 ## Model
 
 A new table, `decision_requests`, holds one row per card attempt that needs a person:

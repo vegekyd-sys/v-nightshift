@@ -138,6 +138,12 @@ export class NightShiftRuntime {
       if (!stage || !stageEnabled(stage, instance.inputs ?? {})) continue;
       const storedRuns = contentItemLabel ? this.store.listContentItemRuns(instanceId) : this.store.listStageRuns(instanceId);
       const storedRun = storedRuns.filter((entry) => entry.cardId === card.id && entry.stageId === stageId).at(-1);
+      if (!contentItemId && storedRun && storedRuns.some(entry => entry.stageId === stageId && entry.attempt > storedRun.attempt)) {
+        // A historical project card must not auto-retry while its replacement
+        // is being made or executed. Its run and operation remain audit evidence.
+        this.store.supersedeDecisionRequests(card.id);
+        continue;
+      }
       let failure = storedRun?.failure ?? null;
       let completionAlreadyValidated = false;
       let completionValidationDeferred = false;
@@ -638,6 +644,7 @@ export class NightShiftRuntime {
             contentItemId: target.contentItemId,
             instanceId: target.instanceId,
             stageId: target.stageId,
+            freshProjectOperation: target.options.some(choice => choice.effect === "continue" && choice.freshOperation === true),
             note: [`${actor} 的决定：${option.label}`, note].filter(Boolean).join("\n"),
           });
           this.store.decideRequest(target.id, { optionId, note, actor });
@@ -1113,8 +1120,13 @@ export class NightShiftRuntime {
       ? this.contentItemsWithRevisions(instanceId).find((entry) => entry.id === contentItemId)
       : null;
     if (contentItemId && !contentItem) throw new Error(`Unknown content item ${contentItemId}`);
+    const runs = contentItemId ? this.store.listContentItemRuns(instanceId) : this.store.listStageRuns(instanceId);
+    const run = runs.find((entry) => entry.cardId === cardId && entry.stageId === stageId);
+    if (!contentItemId && runs.some(entry => entry.stageId === stageId && entry.attempt > (run?.attempt ?? 1))) {
+      throw new Error("This project stage card has been superseded by a newer revision");
+    }
     await this.workboard.updateCard(cardId, {
-      idempotencyKey: nativeActionKey(actionKey(release, instance, stage, "run", contentItem)),
+      idempotencyKey: nativeActionKey(actionKey(release, instance, stage, "run", contentItem, contentItemId ? 1 : run?.attempt)),
       notes: withDecisionNote(buildAgentBrief(release, instance, stage, contentItem,
         this.contentItemsWithRevisions(instanceId).filter((item) => !this.isContentItemSkipped(instanceId, item.id)),
         this.skippedContentItems(instanceId)), decisionNote),
@@ -1131,8 +1143,6 @@ export class NightShiftRuntime {
     // Worker; moving it to ready without releasing that claim makes it look
     // queued while native dispatch correctly refuses to start it.
     await this.workboard.releaseCard(cardId, "ready");
-    const runs = contentItemId ? this.store.listContentItemRuns(instanceId) : this.store.listStageRuns(instanceId);
-    const run = runs.find((entry) => entry.cardId === cardId && entry.stageId === stageId);
     const updated = {
       ...(run ?? { instanceId, contentItemId, stageId, attempt: 1, cardId }),
       status: "ready",
@@ -1440,12 +1450,22 @@ export class NightShiftRuntime {
   // Going on with a stopped card: the same card when its external call can
   // still move (nothing registered, a result to reuse, a task still running),
   // a fresh attempt when it cannot (needs-you continuation). Returns how.
-  async goOn({ actor, cardId, contentItemId, instanceId, stageId, note = null, hung = false }) {
+  async goOn({ actor, cardId, contentItemId, instanceId, stageId, note = null, hung = false, freshProjectOperation = false }) {
     const instance = this.store.getInstance(instanceId);
     const release = instance ? this.store.getRelease(instance.workflowSha256)?.manifest : null;
     const stage = release?.spec?.stages?.find((entry) => entry.id === stageId);
     const operation = this.store.listExternalOperations(instanceId).filter((entry) => entry.ownerCardId === cardId).at(-1) ?? null;
     const ledger = ledgerOf(stage, operation);
+    if (!contentItemId && (stage?.scope ?? "project") === "project") {
+      if (["unsubmitted", "unknown"].includes(ledger?.state)) {
+        throw Object.assign(new Error("External operation outcome is ambiguous; supplier readback is required before continuing"), { statusCode: 409 });
+      }
+      if (ledger?.state === "failed") {
+        if (!freshProjectOperation) throw Object.assign(new Error("This decision now requires a new external operation that may incur a charge; refresh the request and confirm that choice"), { statusCode: 409 });
+        const redo = await this.redoProjectStoppedStage({ actor, cardId, instanceId, stageId, note });
+        return { how: "fresh", paid: stage.sideEffects.includes("paid-production"), revision: redo.revision };
+      }
+    }
     const fresh = contentItemId && (stage?.scope ?? "project") === "content-item" &&
       (continuation(ledger) === "fresh" || (hung && ledger?.state === "executing"));
     if (fresh) {
@@ -1517,6 +1537,52 @@ export class NightShiftRuntime {
     } catch {
       return null;
     }
+  }
+
+  // A person's continue after a definitively failed project call. Project
+  // recovery is deliberately not added to automatic fresh/paid recovery.
+  async redoProjectStoppedStage({ actor, cardId, instanceId, stageId, note = null }) {
+    const instance = this.store.getInstance(instanceId);
+    const release = instance ? this.store.getRelease(instance.workflowSha256)?.manifest : null;
+    const stages = release?.spec?.stages ?? [];
+    const stage = stages.find(entry => entry.id === stageId);
+    if (!stage || (stage.scope ?? "project") !== "project" || !["agent", "system"].includes(stage.actor)) {
+      throw new Error("Only an executable project stage can be revised");
+    }
+    const runs = this.store.listStageRuns(instanceId);
+    const prior = this.store.getEvent(`project-stage-redo:${cardId}`);
+    if (prior) return { redone: true, reused: true, revision: prior.payload.revision, stageIds: prior.payload.stageIds };
+    const operations = this.store.listExternalOperations(instanceId);
+    const owned = operations.filter(entry => entry.ownerCardId === cardId);
+    if (!owned.length || owned.some(entry => entry.status !== "failed")) {
+      throw new Error("A new project operation requires a recorded failed outcome; supplier readback is required otherwise");
+    }
+    const after = new Set([stageId]);
+    for (let size = -1; size !== after.size;) {
+      size = after.size;
+      for (const entry of stages) if ((entry.needs ?? []).some(id => after.has(id))) after.add(entry.id);
+    }
+    const itemRuns = this.store.listContentItemRuns(instanceId).filter(run => after.has(run.stageId));
+    if (itemRuns.length) throw new Error("Project recovery with existing downstream content items needs an explicit recovery plan");
+    const stageIds = [stageId, ...stages.filter(entry => entry.id !== stageId && after.has(entry.id) &&
+      stageEnabled(entry, instance.inputs ?? {}) && runs.some(run => run.stageId === entry.id)).map(entry => entry.id)];
+    const cards = await this.workboard.listCards({ cardIds: runs.filter(run => stageIds.includes(run.stageId)).map(run => run.cardId).filter(Boolean) });
+    const card = cards.find(entry => entry.id === cardId);
+    if (!card || card.status !== "blocked" || card.labels?.includes("nightshift:approval") || card.execution?.status === "running") {
+      throw new Error("A project revision needs the stopped executable card, not a running task or approval gate");
+    }
+    const latest = id => this.store.listStageRuns(instanceId).filter(run => run.stageId === id).sort((a, b) => b.attempt - a.attempt)[0];
+    for (const id of stageIds.filter(id => id !== stageId)) {
+      const run = latest(id);
+      const downstream = cards.find(entry => entry.id === run?.cardId);
+      if (downstream && ["ready", "running", "scheduled", "review"].includes(downstream.status)) {
+        throw new Error(`${id} is already running or waiting; stop it before revising its input`);
+      }
+      if (operations.some(entry => entry.ownerCardId === run?.cardId)) {
+        throw new Error(`${id} has an external operation; an explicit downstream recovery plan is required`);
+      }
+    }
+    return this.store.reviseProjectStages({ instanceId, cardId, stageId, stageIds, actor, note });
   }
 
   // A fresh attempt of a stopped stage: the stage of one content item, and any

@@ -836,7 +836,8 @@ async function handleApi(request, response, url) {
       json(response, 422, { error: "Card references an unknown Night Shift content item" });
       return;
     }
-    const operationKeys = resolveNightShiftOperationKeys({ card, release, instance, contentItem });
+    const projectRun = context.contentItemId ? null : store.listStageRuns(instance.id).find(run => run.cardId === card.id && run.stageId === context.stageId);
+    const operationKeys = resolveNightShiftOperationKeys({ card, release, instance, contentItem, projectRun });
     const existingOperation = findNightShiftExternalOperation({
       card,
       candidateIdempotencyKeys: operationKeys.candidateIdempotencyKeys,
@@ -1618,7 +1619,8 @@ async function validateCompletion({ card, contentItemId, instance, release, reus
       const contentItem = contentItemId
         ? runtime.contentItemsWithRevisions(instance.id).find((entry) => entry.id === contentItemId)
         : null;
-      const operationKeys = resolveNightShiftOperationKeys({ card, release, instance, contentItem });
+      const projectRun = contentItemId ? null : store.listStageRuns(instance.id).find(run => run.cardId === card.id && run.stageId === stageId);
+      const operationKeys = resolveNightShiftOperationKeys({ card, release, instance, contentItem, projectRun });
       const operation = findNightShiftExternalOperation({
         card,
         candidateIdempotencyKeys: operationKeys.candidateIdempotencyKeys,

@@ -87,3 +87,16 @@ test("a redone item's paid call is a new ledger operation, never its first attem
   const settled = [{ idempotencyKey: first.preferredIdempotencyKey, ownerCardId: "first-card", status: "succeeded" }];
   assert.equal(findNightShiftExternalOperation({ card, candidateIdempotencyKeys: redo.candidateIdempotencyKeys, operations: settled }), null);
 });
+
+test("a project revision uses its persisted run, not fields the native board discards", () => {
+  const card = { id: "new-card", labels: ["instance:NS-1", "stage:generate"], metadata: { automation: {} } };
+  const instance = { id: "NS-1", inputHash: "input-hash" };
+  const first = resolveNightShiftOperationKeys({ card, release, instance });
+  const projectRun = { instanceId: "NS-1", stageId: "generate", cardId: "new-card", attempt: 2 };
+  const redo = resolveNightShiftOperationKeys({ card, release, instance, projectRun });
+  assert.match(redo.logicalIdempotencyKey, /:project-revision-1$/);
+  assert.notEqual(redo.preferredIdempotencyKey, first.preferredIdempotencyKey);
+  assert.equal(findNightShiftExternalOperation({ card, candidateIdempotencyKeys: redo.candidateIdempotencyKeys,
+    operations: [{ idempotencyKey: first.preferredIdempotencyKey, ownerCardId: "old-card", status: "failed" }] }), null);
+  assert.throws(() => resolveNightShiftOperationKeys({ card, release, instance, projectRun: { ...projectRun, cardId: "old-card" } }), /does not match/);
+});

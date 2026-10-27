@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import {
+  DESCRIBE_VERSION,
   NeedsYouTracker,
   NightShiftRuntime,
   NightShiftStore,
@@ -2493,6 +2494,197 @@ async function stoppedPaidItem(id, operationStatus, { report = "需要人做：�
 const produceCards = (workboard) => workboard.cards.filter((card) => (card.labels ?? []).includes("stage:produce"));
 const recoveries = (store, id) => store.listEvents(id).filter((event) => event.type === "stage.stop.recovered");
 
+// Synthetic account-like project: purchase has already succeeded. Only login
+// failed; no provider, account data or production state is used here.
+async function stoppedProject(operationStatus = "failed", { effects = ["paid-production"], taskId = null } = {}) {
+  const store = new NightShiftStore();
+  const workboard = new FakeWorkboard();
+  const needsYou = new NeedsYouTracker({ store });
+  const runtime = new NightShiftRuntime({ store, workboard, needsYou });
+  const source = `---
+apiVersion: nightshift.versa.ai/v1alpha1
+kind: Workflow
+metadata: {id: project-recovery-test, version: 0.1.0, name: Project recovery}
+spec:
+  ownerAgentRole: operator
+  concurrency: {perInstance: 2}
+---
+${["purchase", "login", "decorate", "writeback"].map((id, i, ids) => `
+## STAGE ${id}｜${id}
+\`\`\`stage
+actor: agent
+scope: project
+${i ? `needs: [${ids[i - 1]}]` : ""}
+skills: [test-skill]
+outputs: [receipt]
+completeWhen: [output.receipt.exists]
+timeout: 10m
+retry: {maxAttempts: 1, idempotencyKey: "project-recovery:${id}"}
+${id === "login" ? `sideEffects: ${JSON.stringify(effects)}\napproval: {before: paid-production, scope: project}` : ""}
+\`\`\`
+`).join("\n")}`;
+  assert.equal(runtime.validate(source).ok, true, JSON.stringify(runtime.validate(source).issues));
+  const release = runtime.publish(source);
+  const id = "NS-PROJECT-RECOVERY";
+  runtime.startInstance({ id, workflowSha256: release.workflowSha256, agentBindings: { operator: "main" }, inputs: { authorizationScope: { paidProduction: true } } });
+  const failure = { kind: "agent_error", automaticRetry: false, retryable: false, agentReport: "需要人做：请确认修正请求后继续\n原因：供应商拒绝了可选参数" };
+  for (const [stageId, status] of [["purchase", "done"], ["login", "blocked"]]) {
+    const card = { id: `project-${stageId}`, status, labels: [`instance:${id}`, `stage:${stageId}`] };
+    workboard.cards.push(card);
+    store.upsertStageRun({ instanceId: id, stageId, attempt: 1, cardId: card.id, status, ...(status === "blocked" ? { failure } : {}) });
+  }
+  const card = workboard.cards.at(-1);
+  const instance = store.getInstance(id);
+  const stage = release.manifest.spec.stages.find(entry => entry.id === "login");
+  const keys = resolveNightShiftOperationKeys({ card, release: release.manifest, instance });
+  const oldKey = keys.preferredIdempotencyKey;
+  store.reserveExternalOperation({ idempotencyKey: "paid-purchase", instanceId: id, stageId: "purchase", ownerCardId: "project-purchase", requestHash: "d".repeat(64) });
+  store.checkpointExternalOperation("paid-purchase", { status: "succeeded", externalTaskId: "purchase-receipt", result: { purchased: true } });
+  store.reserveExternalOperation({ idempotencyKey: oldKey, instanceId: id, stageId: "login", ownerCardId: card.id, requestHash: "a".repeat(64) });
+  if (operationStatus !== "reserved") store.checkpointExternalOperation(oldKey, { status: operationStatus, externalTaskId: taskId, result: { reason: "unsupported optional parameter", successAmount: 0 } });
+  const request = needsYou.observe({ card, instance, stage, stageId: "login", status: "blocked", failure, operation: store.getExternalOperation(oldKey) });
+  return { id, store, workboard, runtime, release, request, oldKey };
+}
+
+test("project continue after a failed external call gives only that stage a new operation identity", async () => {
+  const { id, store, workboard, runtime, release, request, oldKey } = await stoppedProject();
+  assert.throws(() => store.reserveExternalOperation({ ...store.getExternalOperation(oldKey), requestHash: "b".repeat(64) }), /different request hash/);
+  const oldOperation = store.getExternalOperation(oldKey);
+  const paidPurchase = store.getExternalOperation("paid-purchase");
+  await runtime.decide({ decisionId: request.id, optionId: "continue", note: "允许这一步新调用；去掉可选参数", actor: "test-operator" });
+  const again = await runtime.decide({ decisionId: request.id, optionId: "continue", actor: "test-operator" });
+  assert.equal(again.alreadyDecided, true);
+  // Reserved revision survives a new runtime, and multiple planning passes.
+  const restarted = new NightShiftRuntime({ store, workboard, needsYou: new NeedsYouTracker({ store }) });
+  await restarted.tick(id, { dispatch: false });
+  await restarted.tick(id, { dispatch: false });
+  const login = workboard.cards.filter(card => card.labels.includes("stage:login"));
+  assert.equal(login.length, 2);
+  assert.equal(login[0].status, "blocked", "the old card remains audit evidence");
+  const fresh = login[1];
+  const projectRun = store.listStageRuns(id).find(run => run.cardId === fresh.id);
+  assert.equal(projectRun.attempt, 2);
+  assert.match(fresh.notes, /去掉可选参数/);
+  const keys = resolveNightShiftOperationKeys({ card: fresh, release: release.manifest, instance: store.getInstance(id), projectRun });
+  assert.notEqual(keys.preferredIdempotencyKey, oldKey);
+  const operation = { idempotencyKey: keys.preferredIdempotencyKey, instanceId: id, stageId: "login", ownerCardId: fresh.id, requestHash: "b".repeat(64) };
+  assert.equal(store.reserveExternalOperation(operation).reused, false);
+  assert.equal(store.reserveExternalOperation(operation).reused, true);
+  assert.deepEqual(store.getExternalOperation(oldKey), oldOperation);
+  assert.deepEqual(store.getExternalOperation("paid-purchase"), paidPurchase);
+  assert.match(request.options[0].description, /可能再次付费/);
+  assert.deepEqual(store.listStageRuns(id).filter(run => run.stageId === "purchase").map(run => [run.attempt, run.status, run.cardId]), [[1, "done", "project-purchase"]]);
+  assert.equal(workboard.cards.filter(card => card.labels.includes("stage:purchase")).length, 1);
+  assert.ok(store.listEvents(id).some(event => event.type === "project-stage.redo.requested" && event.payload.cardId === "project-login"));
+  store.close();
+});
+
+for (const status of ["reserved", "unknown", "executing"]) {
+  test(`project ${status} without a readable task is held, never given a new paid identity`, async () => {
+    const { id, store, runtime, workboard, request, oldKey } = await stoppedProject(status);
+    assert.doesNotMatch(request.options[0].description, /不会再付钱/);
+    await assert.rejects(runtime.decide({ decisionId: request.id, optionId: "continue", actor: "test-operator" }), /readback|ambiguous/i);
+    assert.equal(store.getDecisionRequest(request.id).status, "open");
+    assert.equal(store.listStageRuns(id).length, 2);
+    assert.equal(workboard.cards.length, 2);
+    assert.equal(store.getExternalOperation(oldKey).status, status);
+    store.close();
+  });
+}
+
+for (const status of ["succeeded", "executing"]) {
+  test(`project ${status} result stays on the same card and ledger key`, async () => {
+    const { id, store, runtime, workboard, request, oldKey } = await stoppedProject(status, { taskId: "provider-task" });
+    assert.match(request.options[0].description, /不会再付钱/);
+    await runtime.decide({ decisionId: request.id, optionId: "continue", actor: "test-operator" });
+    assert.equal(store.listStageRuns(id).filter(run => run.stageId === "login").length, 1);
+    assert.equal(workboard.cards.at(-1).status, "ready");
+    assert.equal(store.listExternalOperations(id).filter(operation => operation.stageId === "login").length, 1);
+    assert.equal(store.getExternalOperation(oldKey).status, status);
+    store.close();
+  });
+}
+
+test("a project recovery decision with old no-charge wording must be refreshed before a fresh operation", async () => {
+  const { runtime, store, request, id } = await stoppedProject();
+  store.updateDecisionRequestText(request.id, { ...request, options: [{ id: "continue", label: "继续", effect: "continue", description: "不会再付钱" }], evidence: { ...request.evidence, describeVersion: 4 } });
+  await assert.rejects(runtime.decide({ decisionId: request.id, optionId: "continue", actor: "test-operator" }), /refresh.*confirm/);
+  assert.equal(store.listStageRuns(id).length, 2);
+  await runtime.reconcile(id, null, { inspectSessions: false });
+  const refreshed = store.getDecisionRequest(request.id);
+  assert.match(refreshed.options[0].description, /可能再次付费/);
+  assert.equal(refreshed.options[0].freshOperation, true);
+  await runtime.decide({ decisionId: request.id, optionId: "continue", actor: "test-operator" });
+  assert.equal(store.listStageRuns(id).length, 3);
+  store.close();
+});
+
+test("a project revision and its audit event roll back together; a replay cannot stack revisions", async () => {
+  const { runtime, store, request, id } = await stoppedProject();
+  const append = store.appendEvent.bind(store);
+  store.appendEvent = event => {
+    if (event.type === "project-stage.redo.requested") throw new Error("test audit write failure");
+    return append(event);
+  };
+  await assert.rejects(runtime.decide({ decisionId: request.id, optionId: "continue", actor: "test-operator" }), /audit write failure/);
+  assert.equal(store.listStageRuns(id).length, 2);
+  assert.equal(store.getDecisionRequest(request.id).status, "open");
+  store.appendEvent = append;
+  // Simulate a crash after reserving the revision but before deciding the request.
+  await runtime.redoProjectStoppedStage({ actor: "test-operator", cardId: "project-login", instanceId: id, stageId: "login" });
+  await runtime.decide({ decisionId: request.id, optionId: "continue", actor: "test-operator" });
+  assert.equal(store.listStageRuns(id).length, 3);
+  assert.equal(store.listEvents(id).filter(event => event.type === "project-stage.redo.requested").length, 1);
+  store.close();
+});
+
+test("project recovery invalidates only already-run dependent stages, never upstream purchases", async () => {
+  const { runtime, store, request, id, workboard } = await stoppedProject();
+  workboard.cards.push({ id: "project-decorate-old", status: "done", labels: [`instance:${id}`, "stage:decorate"] });
+  store.upsertStageRun({ instanceId: id, stageId: "decorate", attempt: 1, cardId: "project-decorate-old", status: "done" });
+  await runtime.decide({ decisionId: request.id, optionId: "continue", actor: "test-operator" });
+  assert.deepEqual(store.listStageRuns(id).filter(run => run.status === "redo").map(run => run.stageId), ["login", "decorate"]);
+  await runtime.tick(id, { dispatch: false });
+  assert.equal(workboard.cards.filter(card => card.labels.includes("stage:decorate")).length, 1, "downstream waits for the new login result");
+  assert.equal(workboard.cards.filter(card => card.labels.includes("stage:purchase")).length, 1);
+  store.close();
+});
+
+for (const downstream of ["running", "external"]) {
+  test(`project recovery refuses a ${downstream} downstream rather than duplicating its side effect`, async () => {
+    const { runtime, store, request, id, workboard } = await stoppedProject();
+    const status = downstream === "running" ? "running" : "done";
+    workboard.cards.push({ id: "project-decorate-old", status, labels: [`instance:${id}`, "stage:decorate"] });
+    store.upsertStageRun({ instanceId: id, stageId: "decorate", attempt: 1, cardId: "project-decorate-old", status });
+    if (downstream === "external") store.reserveExternalOperation({ idempotencyKey: "downstream-operation", instanceId: id, stageId: "decorate", ownerCardId: "project-decorate-old", requestHash: "c".repeat(64) });
+    await assert.rejects(runtime.decide({ decisionId: request.id, optionId: "continue", actor: "test-operator" }), /running|recovery plan/);
+    assert.equal(store.listStageRuns(id).length, 3);
+    assert.equal(store.getDecisionRequest(request.id).status, "open");
+    store.close();
+  });
+}
+
+test("project external-publication recovery warns about a repeated external action, not a free retry", async () => {
+  const { store, request } = await stoppedProject("failed", { effects: ["external-publication"] });
+  assert.match(request.options[0].description, /再次执行对外操作/);
+  assert.doesNotMatch(request.options[0].description, /不会再付钱/);
+  assert.equal(request.options[0].freshOperation, true);
+  store.close();
+});
+
+test("a supplier outcome changed while reading the board cannot be revised as a failed call", async () => {
+  const { runtime, store, request, id, workboard, oldKey } = await stoppedProject();
+  const list = workboard.listCards.bind(workboard);
+  workboard.listCards = async (...args) => {
+    store.checkpointExternalOperation(oldKey, { status: "succeeded", result: { receipt: "late success" } });
+    return list(...args);
+  };
+  await assert.rejects(runtime.decide({ decisionId: request.id, optionId: "continue", actor: "test-operator" }), /outcome changed/);
+  assert.equal(store.listStageRuns(id).length, 2);
+  assert.equal(store.getDecisionRequest(request.id).status, "open");
+  store.close();
+});
+
 test("继续 after a failed paid call starts a fresh attempt under a new revision, so its paid call is a new operation", async () => {
   const id = "NS-STOP-FRESH";
   const { release, request, runtime, store, workboard, oldKey, advance } = await stoppedPaidItem(id, "failed");
@@ -2631,7 +2823,7 @@ test("after a restart, a stop already in front of a person is observed and its r
   });
   await runtime.reconcile(id, null, { inspectSessions: false });
   const rewritten = store.getDecisionRequest(opened.id);
-  assert.equal(rewritten.evidence.describeVersion, 4);
+  assert.equal(rewritten.evidence.describeVersion, DESCRIBE_VERSION);
   assert.deepEqual(rewritten.options.map((option) => option.label), ["再试一次", "暂停项目"]);
   assert.equal(rewritten.cause, "Card completed cleanly.", "the Agent's words read before the restart stay");
   assert.equal(store.listEvents(id).filter((event) => event.type === "stage.stop.recovered").length, 0, "still the person's");

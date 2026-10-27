@@ -782,6 +782,45 @@ export class NightShiftStore {
     `).all(instanceId).map(contentItemRow);
   }
 
+  // Reserve a project-stage revision and its audit event together. The source
+  // card is the durable idempotency boundary, even if deciding the request or
+  // materializing its new card fails afterwards. No new schema is needed.
+  reviseProjectStages({ instanceId, cardId, stageId, stageIds, actor, note = null }, now = new Date()) {
+    const eventId = `project-stage-redo:${cardId}`;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const existing = this.getEvent(eventId);
+      if (existing) {
+        this.db.exec("COMMIT");
+        return { redone: true, reused: true, revision: existing.payload.revision, stageIds: existing.payload.stageIds };
+      }
+      const runs = this.listStageRuns(instanceId);
+      const latest = id => runs.filter(run => run.stageId === id).sort((a, b) => b.attempt - a.attempt)[0];
+      const source = latest(stageId);
+      if (source?.cardId !== cardId || source.status !== "blocked") throw new Error("Project revision requires the latest stopped card");
+      const operations = this.listExternalOperations(instanceId);
+      const owned = operations.filter(operation => operation.ownerCardId === cardId);
+      if (!owned.length || owned.some(operation => operation.status !== "failed")) throw new Error("Supplier outcome changed; readback is required before a new operation");
+      if (stageIds.some(id => id !== stageId && operations.some(operation => operation.ownerCardId === latest(id)?.cardId))) {
+        throw new Error("Downstream external operations require an explicit recovery plan");
+      }
+      const busy = stageIds.map(latest).find(run => run && ["ready", "running", "redo", "scheduled", "review"].includes(run.status));
+      if (busy) throw new Error(`${busy.stageId} is already running or being redone`);
+      for (const id of stageIds) {
+        this.upsertStageRun({ instanceId, stageId: id, attempt: (latest(id)?.attempt ?? 0) + 1,
+          status: "redo", cardId: null, summary: `Fresh project stage requested by ${actor}: ${note ?? "no note"}` }, now);
+      }
+      const revision = source.attempt;
+      this.appendEvent({ eventId, instanceId, type: "project-stage.redo.requested",
+        payload: { actor, cardId, stageId, stageIds, revision, note }, now });
+      this.db.exec("COMMIT");
+      return { redone: true, reused: false, revision, stageIds };
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   upsertStageRun(run, now = new Date()) {
     this.db
       .prepare(`

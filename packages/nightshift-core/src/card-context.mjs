@@ -29,7 +29,7 @@ export function resolveNightShiftCardContext({ card, release = null }) {
   };
 }
 
-export function resolveNightShiftOperationKeys({ card, release, instance, contentItem = null }) {
+export function resolveNightShiftOperationKeys({ card, release, instance, contentItem = null, projectRun = null }) {
   const context = resolveNightShiftCardContext({ card, release });
   if (!instance || instance.id !== context.instanceId) {
     throw new Error("Card is not linked to the supplied Night Shift project");
@@ -37,7 +37,10 @@ export function resolveNightShiftOperationKeys({ card, release, instance, conten
   if (context.contentItemId && contentItem?.id !== context.contentItemId) {
     throw new Error(`Card references an unknown content item: ${context.contentItemId}`);
   }
-  const logicalIdempotencyKey = actionKey(release, instance, context.stage, "run", contentItem);
+  if (projectRun && (context.contentItemId || projectRun.cardId !== card.id || projectRun.stageId !== context.stageId || projectRun.instanceId !== instance.id)) {
+    throw new Error("Project stage run does not match this card");
+  }
+  const logicalIdempotencyKey = actionKey(release, instance, context.stage, "run", contentItem, projectRun?.attempt);
   const boundedNativeIdempotencyKey = nativeActionKey(logicalIdempotencyKey);
   return {
     context,
