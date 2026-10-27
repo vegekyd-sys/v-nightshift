@@ -3,6 +3,9 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+import { createServer } from "node:http";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import {
   DESCRIBE_VERSION,
   NeedsYouTracker,
@@ -2496,7 +2499,7 @@ const recoveries = (store, id) => store.listEvents(id).filter((event) => event.t
 
 // Synthetic account-like project: purchase has already succeeded. Only login
 // failed; no provider, account data or production state is used here.
-async function stoppedProject(operationStatus = "failed", { effects = ["paid-production"], taskId = null } = {}) {
+async function stoppedProject(operationStatus = "failed", { effects = ["paid-production"], taskId = null, observe = true } = {}) {
   const store = new NightShiftStore();
   const workboard = new FakeWorkboard();
   const needsYou = new NeedsYouTracker({ store });
@@ -2542,7 +2545,7 @@ ${id === "login" ? `sideEffects: ${JSON.stringify(effects)}\napproval: {before: 
   store.checkpointExternalOperation("paid-purchase", { status: "succeeded", externalTaskId: "purchase-receipt", result: { purchased: true } });
   store.reserveExternalOperation({ idempotencyKey: oldKey, instanceId: id, stageId: "login", ownerCardId: card.id, requestHash: "a".repeat(64) });
   if (operationStatus !== "reserved") store.checkpointExternalOperation(oldKey, { status: operationStatus, externalTaskId: taskId, result: { reason: "unsupported optional parameter", successAmount: 0 } });
-  const request = needsYou.observe({ card, instance, stage, stageId: "login", status: "blocked", failure, operation: store.getExternalOperation(oldKey) });
+  const request = observe ? needsYou.observe({ card, instance, stage, stageId: "login", status: "blocked", failure, operation: store.getExternalOperation(oldKey) }) : null;
   return { id, store, workboard, runtime, release, request, oldKey };
 }
 
@@ -2576,6 +2579,118 @@ test("project continue after a failed external call gives only that stage a new 
   assert.deepEqual(store.listStageRuns(id).filter(run => run.stageId === "purchase").map(run => [run.attempt, run.status, run.cardId]), [[1, "done", "project-purchase"]]);
   assert.equal(workboard.cards.filter(card => card.labels.includes("stage:purchase")).length, 1);
   assert.ok(store.listEvents(id).some(event => event.type === "project-stage.redo.requested" && event.payload.cardId === "project-login"));
+  store.close();
+});
+
+test("V can resume a failed project stage without any human decision request", async () => {
+  const { id, runtime, store, workboard, oldKey, release } = await stoppedProject("failed", { observe: false });
+  const purchased = store.getExternalOperation("paid-purchase");
+  const failed = store.getExternalOperation(oldKey);
+  const result = await runtime.resume({ cardId: "project-login", actor: "V", allowNewOperation: true, note: "已有授权内恢复，省略不支持的可选参数" });
+  assert.equal(result.how, "fresh");
+  assert.equal(store.listDecisionRequests({ instanceId: id }).length, 0);
+  const again = await runtime.resume({ cardId: "project-login", actor: "V", allowNewOperation: true });
+  assert.equal(again.alreadyResumed, true);
+  await runtime.tick(id, { dispatch: false });
+  const run = store.listStageRuns(id).find(entry => entry.stageId === "login" && entry.attempt === 2);
+  const fresh = workboard.cards.find(card => card.id === run.cardId);
+  const key = resolveNightShiftOperationKeys({ card: fresh, release: release.manifest, instance: store.getInstance(id), projectRun: run }).preferredIdempotencyKey;
+  assert.notEqual(key, oldKey);
+  assert.equal(store.reserveExternalOperation({ idempotencyKey: key, instanceId: id, stageId: "login", ownerCardId: fresh.id, requestHash: "b".repeat(64) }).reused, false);
+  assert.deepEqual(store.getExternalOperation(oldKey), failed);
+  assert.deepEqual(store.getExternalOperation("paid-purchase"), purchased);
+  assert.match(fresh.notes, /省略不支持/);
+  assert.equal(store.listEvents(id).filter(event => event.type === "stage.resume.requested").length, 1);
+  store.close();
+});
+
+test("nightshiftctl lets V from another chat resume by card ID through the service API", async () => {
+  const { id, runtime, store } = await stoppedProject("failed", { observe: false });
+  const received = [];
+  const server = createServer(async (request, response) => {
+    response.setHeader("content-type", "application/json");
+    try {
+      assert.equal(request.method, "POST");
+      assert.equal(request.url, "/api/cards/project-login/resume");
+      let raw = "";
+      for await (const chunk of request) raw += chunk;
+      const body = JSON.parse(raw);
+      received.push(body);
+      const result = await runtime.resume({ ...body, cardId: "project-login" });
+      response.end(JSON.stringify(result));
+    } catch (error) {
+      response.statusCode = error.statusCode ?? 500;
+      response.end(JSON.stringify({ error: error.message }));
+    }
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const args = [resolve(here, "../../../scripts/nightshiftctl.mjs"), "cards", "resume", "project-login", "--actor", "V", "--note", "来自另一个会话的恢复请求", "--allow-new-operation"];
+    const options = { encoding: "utf8", env: { ...process.env, NIGHTSHIFT_URL: `http://127.0.0.1:${server.address().port}` } };
+    const first = await promisify(execFile)(process.execPath, args, options);
+    assert.equal(first.stderr, "");
+    assert.equal(JSON.parse(first.stdout).how, "fresh");
+    assert.equal(JSON.parse((await promisify(execFile)(process.execPath, args, options)).stdout).alreadyResumed, true);
+    assert.equal(received[0].actor, "V");
+    assert.equal(received[0].allowNewOperation, true);
+    assert.equal(store.listStageRuns(id).filter(run => run.stageId === "login").length, 2);
+    assert.equal(store.listDecisionRequests({ instanceId: id }).length, 0);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    store.close();
+  }
+});
+
+test("V resume requires an explicit new-operation intent, but no human button or request", async () => {
+  const { runtime, store, id } = await stoppedProject("failed", { observe: false });
+  await assert.rejects(runtime.resume({ cardId: "project-login", actor: "V" }), /allow-new-operation/);
+  assert.equal(store.listStageRuns(id).length, 2);
+  assert.equal(store.listDecisionRequests({ instanceId: id }).length, 0);
+  store.close();
+});
+
+for (const status of ["reserved", "unknown", "executing"]) {
+  test(`V resume cannot bypass the ${status} outcome gate by requesting a new operation`, async () => {
+    const { runtime, store, id } = await stoppedProject(status, { observe: false });
+    await assert.rejects(runtime.resume({ cardId: "project-login", actor: "V", allowNewOperation: true }), /readback/);
+    assert.equal(store.listStageRuns(id).length, 2);
+    store.close();
+  });
+}
+
+for (const status of ["succeeded", "executing"]) {
+  test(`V resumes a ${status} project operation without a fresh call or decision request`, async () => {
+    const { runtime, store, id, oldKey } = await stoppedProject(status, { observe: false, taskId: "provider-task" });
+    const operation = store.getExternalOperation(oldKey);
+    const result = await runtime.resume({ cardId: "project-login", actor: "V" });
+    assert.equal(result.how, "same");
+    assert.equal((await runtime.resume({ cardId: "project-login", actor: "V" })).alreadyResumed, true);
+    assert.deepEqual(store.getExternalOperation(oldKey), operation);
+    assert.equal(store.listStageRuns(id).length, 2);
+    store.close();
+  });
+}
+
+test("V resume respects missing authorization and never unpauses a project", async () => {
+  const { runtime, store, id } = await stoppedProject("failed", { observe: false });
+  const approval = store.getInstance(id).inputs.authorizationScope;
+  store.db.prepare("UPDATE instances SET inputs_json = ? WHERE id = ?").run(JSON.stringify({ authorizationScope: { paidProduction: false } }), id);
+  await assert.rejects(runtime.resume({ cardId: "project-login", actor: "V", allowNewOperation: true }), /authorization/);
+  assert.equal(store.listStageRuns(id).length, 2);
+  store.db.prepare("UPDATE instances SET inputs_json = ? WHERE id = ?").run(JSON.stringify({ authorizationScope: approval }), id);
+  store.updateInstanceStatus(id, "paused");
+  await runtime.resume({ cardId: "project-login", actor: "V", allowNewOperation: true });
+  assert.equal(store.getInstance(id).status, "paused");
+  store.close();
+});
+
+test("V resume supersedes an old open request instead of pretending a human clicked it", async () => {
+  const { runtime, store, request, id } = await stoppedProject();
+  await runtime.resume({ cardId: "project-login", actor: "V", allowNewOperation: true });
+  const old = store.getDecisionRequest(request.id);
+  assert.equal(old.status, "superseded");
+  assert.equal(old.decision, null);
+  assert.equal(store.listEvents(id).find(event => event.type === "stage.resume.requested").payload.actor, "V");
   store.close();
 });
 

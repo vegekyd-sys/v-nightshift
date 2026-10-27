@@ -1111,6 +1111,23 @@ async function handleApi(request, response, url) {
     }
     return;
   }
+  const resumeMatch = url.pathname.match(/^\/api\/cards\/([^/]+)\/resume$/);
+  if (request.method === "POST" && resumeMatch) {
+    const body = await bodyJson(request);
+    try {
+      const actor = operatorIdentity(request, body);
+      const result = await serializedOperation(() => runtime.resume({
+        cardId: decodeURIComponent(resumeMatch[1]), actor, note: body.note ?? null,
+        allowNewOperation: body.allowNewOperation === true,
+      }));
+      await refreshCards({ cardIds: result.affectedCardIds });
+      changeScheduler.enqueue("card.resumed");
+      json(response, 200, result);
+    } catch (error) {
+      json(response, error.statusCode ?? 409, { error: error.message });
+    }
+    return;
+  }
   const retryMatch = url.pathname.match(/^\/api\/cards\/([^/]+)\/retry$/);
   if (request.method === "POST" && retryMatch) {
     const body = await bodyJson(request);

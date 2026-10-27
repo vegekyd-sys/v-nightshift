@@ -5,6 +5,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { createServer } from "node:http";
+import { fileURLToPath } from "node:url";
 import { NightShiftRuntime } from "../../packages/nightshift-core/src/runtime.mjs";
 import { NightShiftStore } from "../../packages/nightshift-core/src/store.mjs";
 import { NeedsYouTracker } from "../../packages/nightshift-core/src/needs-you.mjs";
@@ -70,7 +74,7 @@ ${i ? `needs: [${stages[i - 1]}]` : ""}
 outputs: [receipt]
 completeWhen: [output.receipt.exists]
 timeout: 10m
-retry: {maxAttempts: 1, idempotencyKey: "project-recovery:${stage}"}
+retry: {maxAttempts: 1, idempotencyKey: "\${instance.id}:project-recovery:${stage}"}
 ${stage === "login" ? "sideEffects: [paid-production]\napproval: {before: paid-production, scope: project}" : ""}
 \`\`\`
 `).join("\n")}`;
@@ -126,6 +130,63 @@ ${stage === "login" ? "sideEffects: [paid-production]\napproval: {before: paid-p
   checks.nativeCardRevisionAndCorrectedHash = true;
   checks.sqliteRestartAndRepeatedContinueIdempotent = true;
   checks.purchaseUntouchedAndFailedReceiptPreserved = true;
+  // A different V session uses the ordinary HTTP CLI with only a card ID:
+  // no human request, browser button, special chat or scheduler auto-retry.
+  const vId = "NS-V-RESUME-CANDIDATE";
+  runtime.startInstance({ id: vId, workflowSha256: release.workflowSha256,
+    inputs: { authorizationScope: { paidProduction: true } } });
+  await runtime.tick(vId, { dispatch: false });
+  const vPurchase = store.listStageRuns(vId).find(run => run.stageId === "purchase");
+  await workboard.moveCard(vPurchase.cardId, "done");
+  await runtime.tick(vId, { dispatch: false });
+  const vLogin = store.listStageRuns(vId).find(run => run.stageId === "login");
+  const [vCard] = await workboard.listCards({ cardIds: [vLogin.cardId] });
+  const vInstance = store.getInstance(vId);
+  const vOldKey = resolveNightShiftOperationKeys({ card: vCard, projectRun: vLogin, release: release.manifest, instance: vInstance }).preferredIdempotencyKey;
+  store.reserveExternalOperation({ idempotencyKey: vOldKey, instanceId: vId, stageId: "login", ownerCardId: vCard.id, requestHash: "c".repeat(64) });
+  store.checkpointExternalOperation(vOldKey, { status: "failed", result: { reason: "unsupported optional parameter" } });
+  await workboard.moveCard(vCard.id, "blocked");
+  store.upsertStageRun({ ...vLogin, status: "blocked", failure });
+  const api = createServer(async (request, response) => {
+    response.setHeader("content-type", "application/json");
+    try {
+      assert.equal(request.method, "POST");
+      assert.equal(request.url, `/api/cards/${vCard.id}/resume`);
+      let raw = "";
+      for await (const chunk of request) raw += chunk;
+      const body = JSON.parse(raw);
+      response.end(JSON.stringify(await runtime.resume({ cardId: vCard.id, actor: body.actor,
+        note: body.note, allowNewOperation: body.allowNewOperation === true })));
+    } catch (error) {
+      response.statusCode = error.statusCode ?? 500;
+      response.end(JSON.stringify({ error: error.message }));
+    }
+  });
+  await new Promise(resolve => api.listen(0, "127.0.0.1", resolve));
+  try {
+    const cli = fileURLToPath(new URL("../../scripts/nightshiftctl.mjs", import.meta.url));
+    const args = [cli, "cards", "resume", vCard.id, "--actor", "V", "--note", "按已有任务授权省略可选参数", "--allow-new-operation"];
+    const env = { ...process.env, NIGHTSHIFT_URL: `http://127.0.0.1:${api.address().port}` };
+    assert.equal(JSON.parse((await promisify(execFile)(process.execPath, args, { env })).stdout).how, "fresh");
+    store.close();
+    store = new NightShiftStore(db);
+    runtime = createRuntime();
+    assert.equal(JSON.parse((await promisify(execFile)(process.execPath, args, { env })).stdout).alreadyResumed, true);
+    await runtime.tick(vId, { dispatch: false });
+    const vNewRun = store.listStageRuns(vId).find(run => run.stageId === "login" && run.attempt === 2);
+    const [vNewCard] = await workboard.listCards({ cardIds: [vNewRun.cardId] });
+    const vNewKey = resolveNightShiftOperationKeys({ card: vNewCard, projectRun: vNewRun, release: release.manifest, instance: vInstance }).preferredIdempotencyKey;
+    assert.notEqual(vNewKey, vOldKey);
+    assert.equal(store.reserveExternalOperation({ idempotencyKey: vNewKey, instanceId: vId, stageId: "login", ownerCardId: vNewCard.id, requestHash: "d".repeat(64) }).reused, false);
+    assert.equal(store.listDecisionRequests({ instanceId: vId }).length, 0);
+    assert.equal(store.listEvents(vId).filter(event => event.type === "stage.resume.requested").length, 1);
+    assert.equal(store.listStageRuns(vId).filter(run => run.stageId === "purchase").length, 1);
+    assert.equal((await workboard.listCards({ cardIds: [vPurchase.cardId] }))[0].status, "done");
+    checks.vCliResumesWithoutHumanDecision = true;
+    checks.vCliReplayAfterDbReopenDoesNotDuplicate = true;
+  } finally {
+    await new Promise(resolve => api.close(resolve));
+  }
   checks.noAgentDispatchedOrSupplierCalled = true;
   console.log(JSON.stringify({ ok: true, checks, passed: Object.keys(checks).length }));
 } finally {

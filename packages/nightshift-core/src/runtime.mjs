@@ -9,6 +9,7 @@ import { actionKey, buildAgentBrief, nativeActionKey, planNextActions, projectCo
 import { classifyRunOutcome, classifyTerminalFailure, infrastructureFailureSummary, runEndedNormally, scheduleAutomaticRetry } from "./failure-policy.mjs";
 import { normalizeProjectCollaboration } from "./project.mjs";
 import { cardAttempt, continuation, ledgerOf, readStopReport } from "./needs-you.mjs";
+import { resolveNightShiftCardContext } from "./card-context.mjs";
 
 // A blocked card with an empty Session is read as never started only after this
 // long, so a transcript still being written is not mistaken for one.
@@ -1445,6 +1446,45 @@ export class NightShiftRuntime {
       return { redone: false, why: "no Agent stage before this review" };
     }
     return this.startRevision({ actor, contentItemId, instanceId, fromStageId: stageId, stageIds, note: evidence, reason: "review" });
+  }
+
+  // V can recover an existing card from any authorized chat/session, without
+  // waiting for a human decision request. This is an explicit caller action,
+  // not a new scheduler policy. The caller may accept a new external operation
+  // within the task's existing authorization, not silently expand that scope.
+  async resume({ actor, cardId, note = null, allowNewOperation = false }) {
+    if (!actor || !cardId) throw Object.assign(new Error("actor and cardId are required"), { statusCode: 400 });
+    const card = (await this.workboard.listCards({ cardIds: [cardId] })).find(entry => entry.id === cardId);
+    if (!card) throw Object.assign(new Error("Workboard card not found"), { statusCode: 404 });
+    const coordinates = resolveNightShiftCardContext({ card });
+    const instance = this.store.getInstance(coordinates.instanceId);
+    const release = instance ? this.store.getRelease(instance.workflowSha256)?.manifest : null;
+    if (!instance || !release) throw Object.assign(new Error("Card is not linked to a pinned Night Shift project"), { statusCode: 422 });
+    const { stage, stageId, contentItemId } = resolveNightShiftCardContext({ card, release });
+    if (!stage || !["agent", "system"].includes(stage.actor) || card.labels?.includes("nightshift:approval")) {
+      throw Object.assign(new Error("Resume applies to executable work, not approval or human-review gates"), { statusCode: 409 });
+    }
+    const runs = contentItemId ? this.store.listContentItemRuns(instance.id) : this.store.listStageRuns(instance.id);
+    const source = runs.find(run => run.cardId === cardId && run.stageId === stageId && (run.contentItemId ?? null) === contentItemId);
+    if (!source) throw Object.assign(new Error("Card has no persisted Night Shift stage run"), { statusCode: 409 });
+    const latest = runs.filter(run => run.stageId === stageId && (run.contentItemId ?? null) === contentItemId).sort((a, b) => b.attempt - a.attempt)[0];
+    const base = { instanceId: instance.id, stageId, contentItemId, sourceCardId: cardId, affectedCardIds: [cardId] };
+    if (latest.attempt > source.attempt) return { ...base, how: "fresh", alreadyResumed: true, cardId: latest.cardId };
+    if (!["active", "paused"].includes(instance.status)) throw Object.assign(new Error("Only active or paused projects can resume work"), { statusCode: 409 });
+    if (["ready", "running", "scheduled", "done"].includes(card.status)) return { ...base, how: "same", alreadyResumed: true, status: card.status };
+    if (card.status !== "blocked" || card.execution?.status === "running") throw Object.assign(new Error("Resume requires a stopped executable card"), { statusCode: 409 });
+    if (requiredApproval(stage, instance, new Date(), contentItemId)) throw Object.assign(new Error("The stage's execution authorization is missing or expired"), { statusCode: 409 });
+    const operation = this.store.listExternalOperations(instance.id).filter(entry => entry.ownerCardId === cardId).at(-1) ?? null;
+    const ledger = ledgerOf(stage, operation);
+    if (["unsubmitted", "unknown"].includes(ledger?.state)) throw Object.assign(new Error("External outcome is ambiguous; supplier readback is required before resuming"), { statusCode: 409 });
+    if (ledger?.state === "failed" && allowNewOperation !== true) throw Object.assign(new Error("A new external operation may incur a charge; V must explicitly accept it within the authorized scope (--allow-new-operation)"), { statusCode: 409 });
+    const result = await this.goOn({ actor, cardId, instanceId: instance.id, stageId, contentItemId, note,
+      freshProjectOperation: allowNewOperation === true });
+    this.store.appendEvent({ instanceId: instance.id, type: "stage.resume.requested",
+      eventId: `stage-resume:${cardId}:${cardAttempt(card)}:${result.how}`,
+      payload: { actor, cardId, stageId, contentItemId, note, allowNewOperation: allowNewOperation === true, ...result } });
+    this.store.supersedeDecisionRequests(cardId);
+    return { ...base, ...result, alreadyResumed: false };
   }
 
   // Going on with a stopped card: the same card when its external call can

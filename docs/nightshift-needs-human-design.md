@@ -63,8 +63,9 @@ The rules:
 
 ## Project-scope external-operation recovery (2026-10-27)
 
-For a stopped `scope: project` stage, a person's **continue** can now authorize a
-new operation after its ledger records a definitive `failed` outcome. Its choice
+For a stopped `scope: project` stage, a person's **continue**, or V invoking the
+explicit recovery API, can authorize a new operation after its ledger records a
+definitive `failed` outcome. Its choice
 explicitly warns about a new external action and, for paid stages, possible new
 charges. This is not an automatic retry and does not imply that the failed call
 was free: that conclusion still needs supplier evidence. Requests carrying the
@@ -87,11 +88,38 @@ older no-charge wording must refresh before they can authorize a new operation.
   card does not bypass an approval that is missing or expired. Content-item
   recovery and redo keep their existing behavior.
 
-After deployment, inspect the existing project's current request, supplier
-failure receipt and operation status. Ask the person to confirm the new-call
-choice (and any possible cost), then use `nightshiftctl decisions decide` on that
-request with their correction in `--note`. Do not create a replacement project,
-manually clear the old ledger, or retry the upstream purchase.
+### V can recover work from any channel
+
+Tianyi clarified on 2026-10-27: recovery must be callable by V in a group, direct
+chat, or a workflow run. It must not require a person to click a dashboard button
+or wait for an engine-created decision request. This is a caller-initiated
+recovery capability, not a new scheduler auto-retry policy.
+
+```sh
+nightshiftctl cards resume <card-id> --actor V --note "<what was fixed / how to continue>"
+# Only when a new external call is needed and covered by the task authorization:
+nightshiftctl cards resume <card-id> --actor V --note "<correction>" --allow-new-operation
+```
+
+The endpoint is `POST /api/cards/:id/resume`, with `note` and the boolean
+`allowNewOperation`. It derives project/stage/item from the actual card, takes the
+authenticated actor (or local V identity), serializes recovery, and enqueues only
+the existing guarded scheduler. It does not start a second Agent or bypass
+admission. It reads just that card, not a full board snapshot.
+
+V may invoke this within the task's existing authorization without asking a
+person to click again. `--allow-new-operation` is V's explicit intent and audit
+record, not a human-only token and not permission to expand the budget, buy a
+second account, or change the publication target. The stage's approval must
+still be valid. Unknown supplier outcomes require readback even with the flag.
+A paused project stays paused. Repeated resume of a replaced or already queued
+card is a no-op; old open requests are superseded, not falsely recorded as a
+person's decision. The caller and note are recorded as `stage.resume.requested`.
+
+The dashboard's `decisions decide` path remains available. `cards retry` still
+means retry the same card/key; use `resume` to recover a failed external operation
+under a new revision. Do not create a replacement project, clear the old ledger,
+or retry a completed upstream purchase.
 
 Pre-merge integration scenario: `lab/candidate/project-stage-recovery.mjs`. It
 uses a private Gateway's real Workboard plus synthetic SQLite, reopens the DB,
