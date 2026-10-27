@@ -1111,13 +1111,13 @@ async function handleApi(request, response, url) {
     }
     return;
   }
-  const resumeMatch = url.pathname.match(/^\/api\/cards\/([^/]+)\/(?:retry|resume)$/);
-  if (request.method === "POST" && resumeMatch) {
+  const retryMatch = url.pathname.match(/^\/api\/cards\/([^/]+)\/retry$/);
+  if (request.method === "POST" && retryMatch) {
     const body = await bodyJson(request);
     try {
       const actor = operatorIdentity(request, body);
       const result = await serializedOperation(() => runtime.resume({
-        cardId: decodeURIComponent(resumeMatch[1]), actor, note: body.note ?? body.evidence ?? null,
+        cardId: decodeURIComponent(retryMatch[1]), actor, note: body.note ?? body.evidence ?? null,
         allowNewOperation: body.allowNewOperation === true,
       }));
       await refreshCards({ cardIds: result.affectedCardIds });

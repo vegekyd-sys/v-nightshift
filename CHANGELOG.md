@@ -2,7 +2,7 @@
 
 最新的在上面。2026-10-02 之前的记录在 `vegekyd-sys/v-openclaw-platform` 的 CHANGELOG.md。
 
-- #24 fix(recovery): V 可跨会话用 cards resume 恢复已有任务，不依赖人工按钮或决策请求；项目级失败外部阶段支持受控新操作修订，保留上游结果与旧账本，重复恢复不叠加、未知结果须回读；复用已有 retry 入口（resume 为别名），保留历史操作键及 Agent-first 调用能力。
+- #24 fix(recovery): V 可跨会话用 cards resume 恢复已有任务，不依赖人工按钮或决策请求；项目级失败外部阶段支持受控新操作修订，保留上游结果与旧账本，重复恢复不叠加、未知结果须回读；仅复用已有 retry 入口（移除新增 resume），保留历史操作键及 Agent-first 调用能力。
 - #23 fix(engine): 卡片标题按 Workboard 的 180 字上限自动截短（完整标题留在条目里），写清单的阶段完成时按导入同一套规则检查、不合规退回同一个 agent；空清单不再误报「没有数组」（10-23 上线后 DL-1022-21 下一轮即建卡）
 - #22 fix(storage): 成片只和交付页 manifest 里的链接比对，交付后重做过的成片保留（修复 #21 验证时误删 DL-1012-01 的 5 条，已逐字节恢复）
 - #21 fix(storage): 成片清理能读 deliver-page agent 写的各种 link-resolution 格式（之前 21 个项目报错、一条没清），单次扫描到 500 个项目

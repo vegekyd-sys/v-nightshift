@@ -2604,7 +2604,7 @@ test("V can resume a failed project stage without any human decision request", a
   store.close();
 });
 
-for (const action of ["retry", "resume"]) test(`nightshiftctl ${action} lets V recover by card ID through one service API`, async () => {
+test("nightshiftctl retry lets V recover by card ID through the existing service API", async () => {
   const { id, runtime, store } = await stoppedProject("failed", { observe: false });
   const received = [];
   const server = createServer(async (request, response) => {
@@ -2625,7 +2625,7 @@ for (const action of ["retry", "resume"]) test(`nightshiftctl ${action} lets V r
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   try {
-    const args = [resolve(here, "../../../scripts/nightshiftctl.mjs"), "cards", action, "project-login", "--actor", "V", "--evidence", "来自另一个会话的恢复请求", "--allow-new-operation"];
+    const args = [resolve(here, "../../../scripts/nightshiftctl.mjs"), "cards", "retry", "project-login", "--actor", "V", "--evidence", "来自另一个会话的恢复请求", "--allow-new-operation"];
     const options = { encoding: "utf8", env: { ...process.env, NIGHTSHIFT_URL: `http://127.0.0.1:${server.address().port}` } };
     const first = await promisify(execFile)(process.execPath, args, options);
     assert.equal(first.stderr, "");
@@ -3130,4 +3130,15 @@ test("a manifest stage the import would refuse goes back to its Agent with every
   assert.equal(store.listDecisionRequests({ instanceId: id }).filter((entry) => entry.status === "open").length, 0);
   for (const problem of problems) assert.ok(plan.notes.includes(problem), problem);
   store.close();
+});
+
+test("nightshiftctl does not expose the PR-only resume command", async () => {
+  await assert.rejects(promisify(execFile)(process.execPath,
+    [resolve(here, "../../../scripts/nightshiftctl.mjs"), "cards", "resume", "source-card"],
+    { env: { ...process.env, NIGHTSHIFT_URL: "http://127.0.0.1:1" } }), error => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Usage: nightshiftctl/);
+      assert.doesNotMatch(error.stderr, /fetch failed/);
+      return true;
+    });
 });

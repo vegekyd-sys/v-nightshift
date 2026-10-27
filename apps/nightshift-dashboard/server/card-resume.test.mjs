@@ -5,13 +5,13 @@ import test from "node:test";
 
 // Exercise the actual HTTP branch without booting the production service.
 const source = readFileSync(new URL("./index.mjs", import.meta.url), "utf8");
-const route = source.slice(source.indexOf("  const resumeMatch ="), source.indexOf('  json(response, 404, { error: "Not found" });', source.indexOf("  const resumeMatch =")));
-for (const action of ["retry", "resume"]) test(`card ${action} uses the signed-in identity and card ID, and only queues guarded scheduling`, async () => {
+const route = source.slice(source.indexOf("  const retryMatch ="), source.indexOf('  json(response, 404, { error: "Not found" });', source.indexOf("  const retryMatch =")));
+test(`card retry uses the signed-in identity and card ID, and only queues guarded scheduling`, async () => {
   const calls = [], queued = [], refreshes = [];
   let serializing = false;
   let response;
   await vm.runInNewContext(`(async () => {${route}})()`, {
-    request: { method: "POST" }, response: {}, url: { pathname: `/api/cards/source-card/${action}` },
+    request: { method: "POST" }, response: {}, url: { pathname: "/api/cards/source-card/retry" },
     bodyJson: async () => ({ actor: "spoofed", instanceId: "another-project", stageId: "purchase", evidence: "继续原任务", allowNewOperation: true }),
     operatorIdentity: () => "authenticated:V",
     serializedOperation: async f => { serializing = true; try { return await f(); } finally { serializing = false; } },
@@ -31,10 +31,10 @@ for (const action of ["retry", "resume"]) test(`card ${action} uses the signed-i
   assert.equal(response.status, 200);
 });
 
-test("card resume returns a recovery conflict without scheduling work", async () => {
+test("card retry returns a recovery conflict without scheduling work", async () => {
   let result;
   await vm.runInNewContext(`(async () => {${route}})()`, {
-    request: { method: "POST" }, response: {}, url: { pathname: "/api/cards/source-card/resume" },
+    request: { method: "POST" }, response: {}, url: { pathname: "/api/cards/source-card/retry" },
     bodyJson: async () => ({}), operatorIdentity: () => "local:V", serializedOperation: f => f(),
     runtime: { resume: async () => { throw Object.assign(new Error("supplier readback required"), { statusCode: 409 }); } },
     refreshCards: () => assert.fail("conflicts do not mutate the board cache"),
@@ -43,4 +43,15 @@ test("card resume returns a recovery conflict without scheduling work", async ()
   });
   assert.equal(result.status, 409);
   assert.equal(result.body.error, "supplier readback required");
+});
+
+test("the PR-only resume endpoint is not available", async () => {
+  let result;
+  await vm.runInNewContext(`(async () => {${route}
+json(response, 404, { error: "Not found" });})()`, {
+    request: { method: "POST" }, response: {}, url: { pathname: "/api/cards/source-card/resume" },
+    bodyJson: () => assert.fail("removed endpoint must not read a body or execute recovery"),
+    json: (_res, status) => { result = status; },
+  });
+  assert.equal(result, 404);
 });

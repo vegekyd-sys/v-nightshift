@@ -119,9 +119,9 @@ person's decision. The caller and note are recorded as `stage.resume.requested`.
 
 Agent first: V uses the existing `cards retry` control; the existing dashboard
 Retry button and `decisions decide` remain auxiliary entry points. No new UI
-button is introduced. `cards resume` and `/api/cards/:id/resume` are aliases, not
-a second recovery policy. Both public HTTP routes use the same serialized,
-ledger-aware runtime operation. The internal same-card retry helper still resets
+button is introduced. The PR-only `cards resume` command and
+`/api/cards/:id/resume` route have been removed. The existing retry route uses
+the serialized, ledger-aware recovery operation. The internal same-card retry helper still resets
 the native failure budget and releases stale claims; it is not a public bypass.
 A legacy Retry click never silently authorizes a new paid/external operation.
 Do not create a replacement project, clear the old ledger, or retry a completed
