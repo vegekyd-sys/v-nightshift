@@ -284,3 +284,9 @@ export function cardAttention(card, { run = null, operation = null, shelved = fa
   const status = run?.status === "blocked" && run.failure?.automaticRetry && run.failure?.nextRetryAt ? "retry_wait" : card.status;
   return taskAttention({ ...(run ?? {}), card: { ...card, status: status === "retry_wait" ? "blocked" : card.status }, status, requiresApproval: approval, skipped, skipReason }, { operation, shelved, queue });
 }
+
+// A call controller occupies native review to avoid dispatch, not to ask for a
+// human verdict. Real child review/approval cards retain their ordinary UI.
+export function canReviewCard(card) {
+  return !card?.metadata?.automation?.workflowCall && (card?.status === "review" || Boolean(card?.metadata?.automation?.approval));
+}

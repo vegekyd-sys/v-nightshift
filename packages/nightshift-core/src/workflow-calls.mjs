@@ -194,6 +194,6 @@ export function publicCallSummary(store, instanceId) {
     iteration: call.iteration, state: call.state, blocked: call.state === "held" || call.reason.startsWith("child-work-stopped"), reason: call.reason, deadline: call.deadline,
     totalOperations: store.listCalls(call.parentId).filter(entry => entry.cardId === call.cardId).flatMap(entry => store.executionIds(entry.childId)).reduce((sum, id) => sum + store.listExternalOperations(id).length, 0),
     operations: store.executionIds(call.childId).reduce((sum, id) => sum + store.listExternalOperations(id).length, 0), maxOperations: call.maxOperations,
-    cardIds: store.executionIds(call.childId).flatMap(id => [...store.listStageRuns(id), ...store.listContentItemRuns(id)].map(run => run.cardId).filter(Boolean)),
+    cardIds: [...new Set(store.executionIds(call.childId).flatMap(id => [...store.listStageRuns(id), ...store.listContentItemRuns(id)].map(run => run.cardId).filter(Boolean).concat(store.listActionCardIds(id))))],
   }));
 }

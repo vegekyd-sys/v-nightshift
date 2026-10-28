@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { cardAttention, countByKind, expectedTasks, inScope, preferTask, projectProgress, projectScope, scopeAuthorizes, stageExpected, supersededCards, taskAttention } from "./attention.js";
+import { canReviewCard, cardAttention, countByKind, expectedTasks, inScope, preferTask, projectProgress, projectScope, scopeAuthorizes, stageExpected, supersededCards, taskAttention } from "./attention.js";
 
 const NOW = Date.parse("2026-09-28T10:00:00Z");
 const daysAgo = (days) => new Date(NOW - days * 86_400_000).toISOString();
@@ -214,4 +214,12 @@ test("a stage shows an item's newest attempt, whatever its status", () => {
   assert.equal(preferTask({ ...oldRun }, { ...newRun }), false);
   // Same attempt: the approval waiting on a person still shows over its blocked execution card.
   assert.equal(preferTask({ attempt: 1, status: "review", isApproval: true }, { attempt: 1, status: "blocked" }), true);
+});
+
+
+test("review is a human decision only for real review/approval cards, not call controllers", () => {
+  assert.equal(canReviewCard({ status: "review", metadata: { automation: { workflowCall: { state: "running", iteration: 1 } } } }), false);
+  assert.equal(canReviewCard({ status: "blocked", metadata: { automation: { workflowCall: { state: "held" } } } }), false);
+  assert.equal(canReviewCard({ status: "review" }), true);
+  assert.equal(canReviewCard({ status: "blocked", metadata: { automation: { approval: { effect: "external-publication", scope: "content-item" } } } }), true);
 });

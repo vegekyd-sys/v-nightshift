@@ -1337,7 +1337,7 @@ function withDecisionContext(card, data) {
   const stage = release?.manifest?.spec?.stages?.find((entry) => entry.id === stageId);
   const required = stage?.approval?.before
     ? { effect: stage.approval.before, scope: stage.approval.scope ?? "stage" }
-    : null;
+    : fresh.metadata?.automation?.approval ?? null;
   const approvalCard = (data.cards ?? []).find((entry) => {
     if (!(entry.labels ?? []).includes("nightshift:approval")) return false;
     if (cardLabel(entry, "instance") !== instanceId || label(entry, "stage") !== stageId) return false;
