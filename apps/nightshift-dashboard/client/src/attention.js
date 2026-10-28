@@ -138,6 +138,28 @@ export function enabledStages(stages, inputs = {}) {
   return stages.filter((stage) => stageEnabled(stage, inputs));
 }
 
+// Overview omits private inputs. Its server-computed facts are authoritative;
+// full project/bootstrap responses from older servers still use their inputs.
+function projectStageEnabled(stage, instance) {
+  const condition = instance.stageConditions?.[stage.id];
+  return typeof condition === "boolean" ? condition : stageEnabled(stage, instance.inputs ?? {});
+}
+
+// A changed condition must not erase work that already has a persisted run.
+// This is display-only: it does not enable the branch in the scheduler.
+function recordedTasks(stage, instance) {
+  if (stage.scope !== "content-item") return (instance.stageRuns ?? []).some((run) => run.stageId === stage.id) ? 1 : 0;
+  const skipped = skippedItems(instance);
+  return new Set((instance.contentItemRuns ?? [])
+    .filter((run) => run.stageId === stage.id && !skipped.has(run.contentItemId))
+    .map((run) => run.contentItemId)).size;
+}
+
+export function visibleStages(stages, instances) {
+  if (!instances.length) return stages;
+  return stages.filter((stage) => instances.some((instance) => projectStageEnabled(stage, instance) || recordedTasks(stage, instance) > 0));
+}
+
 function stageEnabled(stage, inputs) {
   const when = stage.when;
   if (!when || typeof when !== "object") return true;
@@ -149,9 +171,8 @@ function stageEnabled(stage, inputs) {
 }
 
 // Expected task count for a project, so a bar shows the whole job and not
-// only the cards that exist so far. It reads only the Workflow's stages, their
-// `when`, and the project's content items, so it means the same thing for any
-// Workflow.
+// only the cards that exist so far. Branch facts and content items size planned
+// work; historical runs retain only the actual work of a now-disabled stage.
 export function expectedTasks(stages, instance) {
   return projectProgress(stages, instance).expected;
 }
@@ -160,14 +181,16 @@ export function expectedTasks(stages, instance) {
 // bar of 1/2 that later becomes 1/42 reads as going backwards, so a declared
 // target count stands in; without one the bar says it is still splitting.
 export function projectProgress(stages, instance) {
-  const enabled = enabledStages(stages, instance.inputs ?? {});
+  const enabled = stages.filter((stage) => projectStageEnabled(stage, instance));
+  const historical = stages.filter((stage) => !projectStageEnabled(stage, instance))
+    .reduce((sum, stage) => sum + recordedTasks(stage, instance), 0);
   const itemStages = enabled.filter((stage) => stage.scope === "content-item").length;
   const known = Math.max(0, (instance.contentItems ?? []).length - skippedItems(instance).size);
   const target = Number(instance.inputs?.targetCount);
   const splitting = itemStages > 0 && known === 0;
   const items = splitting && Number.isFinite(target) && target > 0 ? target : known;
   return {
-    expected: enabled.length - itemStages + itemStages * items,
+    expected: enabled.length - itemStages + itemStages * items + historical,
     estimated: splitting && items > 0,
     splitting: splitting && items === 0,
   };
@@ -176,7 +199,7 @@ export function projectProgress(stages, instance) {
 // How many tasks one stage will have across the shown projects.
 export function stageExpected(stage, instances) {
   return instances.reduce((sum, instance) => {
-    if (enabledStages([stage], instance.inputs ?? {}).length === 0) return sum;
+    if (!projectStageEnabled(stage, instance)) return sum + recordedTasks(stage, instance);
     return sum + (stage.scope === "content-item" ? Math.max(0, (instance.contentItems ?? []).length - skippedItems(instance).size) : 1);
   }, 0);
 }

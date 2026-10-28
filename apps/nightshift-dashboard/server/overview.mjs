@@ -4,6 +4,7 @@
 // need for one card at a time. This keeps what the pages draw and nothing
 // else; detail is fetched when a card or workflow is opened.
 import { projectScope } from "../client/src/attention.js";
+import { stageEnabled } from "../../../packages/nightshift-core/src/workflow.mjs";
 
 export const OVERVIEW_SCOPES = ["live", "paused", "delivered", "shelved", "all"];
 
@@ -18,6 +19,7 @@ export function buildOverview({ scope = "live", instances, cards, releases, oper
   const detailed = new Set(visible.filter((instance) => wanted === "all" || projectScope(instance, now) === wanted).map((instance) => instance.id));
   const usedShas = new Set(visible.filter((instance) => detailed.has(instance.id)).map((instance) => instance.workflowSha256));
   const latestShas = latestReleaseShas(releases);
+  const stagesBySha = new Map(releases.map((release) => [release.workflowSha256, release.manifest?.spec?.stages]));
   // Counts the pages show for scopes they did not load: a tab's size, and each
   // agent's finished work today across every project.
   const scopeOf = new Map(visible.map((instance) => [instance.id, projectScope(instance, now)]));
@@ -38,7 +40,7 @@ export function buildOverview({ scope = "live", instances, cards, releases, oper
     cardCounts,
     agentDoneToday,
     instances: visible.map((instance) => detailed.has(instance.id)
-      ? leanProject(instance, operationsFor?.(instance.id) ?? [], skippedFor?.(instance.id) ?? [], workStartedAt.get(instance.id))
+      ? leanProject(instance, operationsFor?.(instance.id) ?? [], skippedFor?.(instance.id) ?? [], workStartedAt.get(instance.id), stagesBySha.get(instance.workflowSha256))
       : projectSummary(instance, workStartedAt.get(instance.id))),
     cards: cards.filter((card) => detailed.has(cardInstanceId(card))).map(leanCard),
     workflows: releases.map((release) => usedShas.has(release.workflowSha256) || latestShas.has(release.workflowSha256)
@@ -78,11 +80,14 @@ export function leanRun(run) {
   };
 }
 
-function leanProject(instance, operations, skipped = [], workStartedAt = null) {
+function leanProject(instance, operations, skipped = [], workStartedAt = null, stages) {
   return {
     ...projectSummary(instance, workStartedAt),
     detail: true,
     inputs: pick(instance.inputs ?? {}, INPUT_FIELDS),
+    // Evaluate against full inputs on the server, using the engine's semantics.
+    // The board needs branch facts, never the (possibly secret) input values.
+    ...(stages ? { stageConditions: Object.fromEntries(stages.map((stage) => [stage.id, stageEnabled(stage, instance.inputs ?? {})])) } : {}),
     approvals: instance.approvals ?? [],
     contentItems: (instance.contentItems ?? []).map((item) => pick(item, ["id", "title", "route", "status"])),
     contentItemRuns: (instance.contentItemRuns ?? []).map(leanRun),

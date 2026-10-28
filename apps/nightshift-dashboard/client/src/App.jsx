@@ -17,7 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { api } from "./api.js";
-import { cardAttention, countByKind, enabledStages, inScope, isToday, needsYouQueue, preferTask, projectProgress, projectRuns, projectScope, scopeAuthorizes, skippedItems, stageExpected, supersededCards, taskAttention } from "./attention.js";
+import { cardAttention, countByKind, inScope, isToday, needsYouQueue, preferTask, projectProgress, projectRuns, projectScope, scopeAuthorizes, skippedItems, stageExpected, supersededCards, taskAttention, visibleStages } from "./attention.js";
 import { Drawer, Icons, Sidebar } from "./components.jsx";
 import { projectTiming } from "./timing.js";
 
@@ -458,10 +458,7 @@ function WorkflowStudio({ onScopeChange, data, refresh, initialProjectId, initia
   const stages = pinnedRelease?.manifest?.spec?.stages ?? [];
   // A stage that none of the shown projects will run (a publish step in a
   // download batch) is an empty column that only adds noise.
-  const runwayStages = useMemo(() => {
-    const used = stages.filter((stage) => visibleProjects.some((project) => enabledStages([stage], project.inputs ?? {}).length > 0));
-    return used.length ? used : stages;
-  }, [stages, visibleProjects]);
+  const runwayStages = useMemo(() => visibleStages(stages, visibleProjects), [stages, visibleProjects]);
   const queue = useMemo(() => needsYouQueue(data?.needsYou, data?.gatewayRestart), [data?.needsYou, data?.gatewayRestart]);
   const taskIndex = useMemo(() => indexStageTasks(stages, visibleProjects, data?.cards ?? [], queue), [stages, visibleProjects, data?.cards, queue]);
   const allTasks = useMemo(() => [...taskIndex.values()].flat(), [taskIndex]);
@@ -747,7 +744,7 @@ function productionLines(groups, data, queue) {
     const used = group.releases.filter((release) => projects.some((project) => project.workflowSha256 === release.workflowSha256));
     const release = used.sort((left, right) => String(right.publishedAt ?? "").localeCompare(String(left.publishedAt ?? "")))[0] ?? group.releases[0];
     const allStages = release?.manifest?.spec?.stages ?? [];
-    const stages = allStages.filter((stage) => projects.some((project) => enabledStages([stage], project.inputs ?? {}).length > 0));
+    const stages = visibleStages(allStages, projects);
     const index = indexStageTasks(allStages, projects, data.cards ?? [], queue);
     const tasks = [...index.values()].flat();
     lines.push({ group, release, projects, stages, index, tasks, counts: countByKind(tasks) });
