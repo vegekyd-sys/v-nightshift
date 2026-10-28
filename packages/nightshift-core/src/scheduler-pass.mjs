@@ -55,7 +55,7 @@ export async function runSchedulerPass({
   // Already running native attempts remain eligible so their completion can land.
   const eligible = instances.filter((instance) =>
     store.getInstanceControl(instance.id).automaticDispatch || wasRunning(instance.id) || cards.some((card) =>
-      (card.labels ?? []).includes(`instance:${instance.id}`) && card.sessionKey &&
+      (store.rootInstanceId?.((card.labels ?? []).find(label => label.startsWith("instance:"))?.slice(9)) ?? (card.labels ?? []).find(label => label.startsWith("instance:"))?.slice(9)) === instance.id && card.sessionKey &&
       (card.status === "running" || card.execution?.status === "running")));
   const warnings = [];
   let changed = false;
@@ -124,7 +124,7 @@ export async function runSchedulerPass({
 // idle board lent it, and they wait for the next idle pass.
 function waitsWithinOwnLimit(instance, cards, store, runtime, nowMs) {
   if (!store.getInstanceControl(instance.id).automaticDispatch) return false;
-  const own = cards.filter((card) => (card.labels ?? []).includes(`instance:${instance.id}`));
+  const own = cards.filter((card) => (store.rootInstanceId?.((card.labels ?? []).find(label => label.startsWith("instance:"))?.slice(9)) ?? (card.labels ?? []).find(label => label.startsWith("instance:"))?.slice(9)) === instance.id);
   if (!own.some((card) => cardIsStartable(card, nowMs) && !(card.labels ?? []).includes("nightshift:approval"))) return false;
   return own.filter(cardConsumesDispatchSlot).length < runtime.projectConcurrency(instance);
 }
@@ -156,11 +156,11 @@ export function schedulerCardIds(store, activeInstances = null, { fullSweep = tr
   const activeIds = new Set((activeInstances ?? store.listInstances().filter((instance) => instance.status === "active"))
     .map((instance) => instance.id));
   const ids = [];
-  for (const instance of store.listInstances()) {
+  for (const instance of store.listInstances({ includeInternal: true })) {
     const runs = [...store.listStageRuns(instance.id), ...store.listContentItemRuns(instance.id)];
     const runCardIds = new Set(runs.map(run => run.cardId));
     const ledger = store.listActionCardIds?.(instance.id) ?? [];
-    const include = activeIds.has(instance.id) || runs.some((run) => runIsLive(run, nowMs));
+    const include = activeIds.has((store.rootInstanceId?.(instance.id) ?? instance.id)) || runs.some((run) => runIsLive(run, nowMs));
     if (!include) continue;
     for (const run of runs) {
       if (typeof run.cardId !== "string" || !run.cardId) continue;
@@ -207,13 +207,13 @@ function claimExpiryMs(value) {
 // project's complete board footprint without listing the whole board.
 export function instanceCardIds(store, instanceId) {
   const ids = new Set();
-  for (const run of [...store.listStageRuns(instanceId), ...store.listContentItemRuns(instanceId)]) {
+  for (const id of (store.executionIds?.(instanceId) ?? [instanceId])) for (const run of [...store.listStageRuns(id), ...store.listContentItemRuns(id)]) {
     if (typeof run.cardId === "string" && run.cardId) ids.add(run.cardId);
   }
   // Approval cards are not runs, so the ledger is the only record of them. Leave
   // them out and the idempotency scan cannot see them, which is how one project
   // accumulated 1,346 duplicate approval cards in a day.
-  for (const cardId of store.listActionCardIds?.(instanceId) ?? []) ids.add(cardId);
+  for (const id of (store.executionIds?.(instanceId) ?? [instanceId])) for (const cardId of store.listActionCardIds?.(id) ?? []) ids.add(cardId);
   return [...ids];
 }
 

@@ -54,3 +54,5 @@ export {
 export { validateDeclaredCompletion } from "./completion.mjs";
 export { collectToolCalls, validateExecutionEvidence } from "./execution-evidence.mjs";
 export { auditNightShiftGovernance, normalizeProjectGovernance, validateGovernanceManifest } from "./governance.mjs";
+
+export { boundCallInputs, publicCallSummary, readCallOutputs } from "./workflow-calls.mjs";

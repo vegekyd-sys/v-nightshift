@@ -37,7 +37,8 @@ async function run(input) {
       api(`/api/instances/${encodeURIComponent(subject)}`),
       api("/api/cards?refresh=1"),
     ]);
-    const cards = cardsResult.cards.filter((card) => label(card, "instance") === subject);
+    const executionIds = new Set([subject, ...((project.instance ?? project).calls ?? []).map(call => call.childId)]);
+    const cards = cardsResult.cards.filter((card) => executionIds.has(label(card, "instance")));
     // A card a newer attempt of its stage and item replaced stays blocked on
     // the native board; it is not stuck (DL-1009-02, 2026-10-10).
     const superseded = supersededCards(project.instance ?? project);
@@ -56,6 +57,7 @@ async function run(input) {
         agentId: card.agentId ?? null,
         attempts: Array.isArray(card.metadata?.attempts) ? card.metadata.attempts.length : card.sessionKey ? 1 : 0,
         cardId: card.id,
+        executionInstanceId: label(card, "instance"),
         contentItemId: card.metadata?.automation?.contentItemId ?? label(card, "content-item"),
         links: card.links,
         runId: card.runId ?? card.metadata?.attempts?.at(-1)?.runId ?? null,

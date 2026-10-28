@@ -2,6 +2,7 @@
 
 最新的在上面。2026-10-02 之前的记录在 `vegekyd-sys/v-openclaw-platform` 的 CHANGELOG.md。
 
+- #27 feat(workflows): 已发布 Workflow 可通过 call 复用，repeat 按结果有界循环；复用 Runtime/Workboard/审批与账本，持久化轮次、隔离操作身份、共享并发与操作额度，保留旧回执与成功条目；V 沿用 retry/get/monitor，提供声明、示例和验收说明。
 - #26 fix(dashboard): overview 由服务端安全投影通用条件分支事实，阶段栏与任务汇总一致；保留历史阶段，不透传条件输入或重新启用未选分支。
 - #24 fix(recovery): V 可跨会话用 cards resume 恢复已有任务，不依赖人工按钮或决策请求；项目级失败外部阶段支持受控新操作修订，保留上游结果与旧账本，重复恢复不叠加、未知结果须回读；仅复用已有 retry 入口（移除新增 resume），保留历史操作键及 Agent-first 调用能力。
 - #23 fix(engine): 卡片标题按 Workboard 的 180 字上限自动截短（完整标题留在条目里），写清单的阶段完成时按导入同一套规则检查、不合规退回同一个 agent；空清单不再误报「没有数组」（10-23 上线后 DL-1022-21 下一轮即建卡）

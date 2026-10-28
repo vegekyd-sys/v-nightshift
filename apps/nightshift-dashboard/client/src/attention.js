@@ -49,7 +49,8 @@ const OPERATION_UNDER_WAY = new Set(["reserved", "executing"]);
 export function taskAttention(task, { operation = null, shelved = false, queue = null } = {}) {
   // A person decided not to deliver this item: settled, not waiting on anyone.
   if (task.skipped) return { kind: "skipped", reason: task.skipReason ? `已跳过：${task.skipReason}` : "已跳过" };
-  const attention = queue ? queuedAttention(task, operation, queue) : liveAttention(task, operation);
+  const call = task.workflowCall ?? task.card?.metadata?.automation?.workflowCall;
+  const attention = call ? (call.state === "succeeded" ? {kind: "done"} : call.blocked ? {kind: "needs-you", reason: call.reason} : {kind: "running", reason: `第 ${call.iteration} 轮子流程执行中`}) : queue ? queuedAttention(task, operation, queue) : liveAttention(task, operation);
   if (shelved && attention.kind !== "done") return { kind: "stale", reason: attention.reason ?? "项目已搁置" };
   return attention;
 }
@@ -240,7 +241,7 @@ export function projectRuns(instance, { cardsById = new Map(), now = Date.now(),
   return [...latest.values()].map((run) => {
     const card = run.cardId ? cardsById.get(run.cardId) : undefined;
     const status = run.status === "blocked" && run.failure?.automaticRetry && run.failure?.nextRetryAt ? "retry_wait" : (card?.status ?? run.status);
-    const task = { ...run, card, status, skipped: skipped.has(run.contentItemId), skipReason: skipped.get(run.contentItemId) ?? null };
+    const task = { ...run, card, workflowCall: (instance.calls ?? []).filter(call => call.cardId === run.cardId).at(-1), status, skipped: skipped.has(run.contentItemId), skipReason: skipped.get(run.contentItemId) ?? null };
     return { ...task, attention: taskAttention(task, { operation: operationByCard.get(run.cardId), shelved, queue }) };
   });
 }
@@ -282,4 +283,10 @@ export function cardAttention(card, { run = null, operation = null, shelved = fa
   if (superseded) return { kind: "superseded", reason: "已由新的一次尝试接着做" };
   const status = run?.status === "blocked" && run.failure?.automaticRetry && run.failure?.nextRetryAt ? "retry_wait" : card.status;
   return taskAttention({ ...(run ?? {}), card: { ...card, status: status === "retry_wait" ? "blocked" : card.status }, status, requiresApproval: approval, skipped, skipReason }, { operation, shelved, queue });
+}
+
+// A call controller occupies native review to avoid dispatch, not to ask for a
+// human verdict. Real child review/approval cards retain their ordinary UI.
+export function canReviewCard(card) {
+  return !card?.metadata?.automation?.workflowCall && (card?.status === "review" || Boolean(card?.metadata?.automation?.approval));
 }

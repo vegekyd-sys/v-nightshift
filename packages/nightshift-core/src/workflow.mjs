@@ -1,3 +1,4 @@
+import { validateCallContracts } from "./workflow-call-contract.mjs";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import YAML from "yaml";
@@ -14,7 +15,7 @@ function labelFits(prefix, value) {
   return `${prefix}${value}`.length <= CARD_LABEL_MAX;
 }
 
-const ACTORS = new Set(["agent", "human", "system", "timer"]);
+const ACTORS = new Set(["agent", "human", "system", "timer", "workflow"]);
 const STAGE_SCOPES = new Set(["project", "content-item"]);
 const ROUTE_PATTERN = /^[A-Z][A-Z0-9_]*$/;
 const GUARDED_SIDE_EFFECTS = new Set([
@@ -168,6 +169,7 @@ export function validateWorkflow(document) {
     return issues;
   }
 
+  issues.push(...validateCallContracts(spec));
   const stageIds = new Set();
   for (const [index, stage] of stages.entries()) {
     const path = `spec.stages[${index}]`;
