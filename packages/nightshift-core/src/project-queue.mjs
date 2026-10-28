@@ -39,7 +39,8 @@ export function byQueueOrder(store) {
 export function projectQueue({ store, instances, cards = [], nowMs = Date.now() }) {
   const cardsByInstance = new Map();
   for (const card of cards) {
-    const id = (card.labels ?? []).find((label) => label.startsWith("instance:"))?.slice("instance:".length);
+    const contextId = (card.labels ?? []).find((label) => label.startsWith("instance:"))?.slice("instance:".length);
+    const id = store.rootInstanceId?.(contextId) ?? contextId;
     if (!id) continue;
     if (!cardsByInstance.has(id)) cardsByInstance.set(id, []);
     cardsByInstance.get(id).push(card);

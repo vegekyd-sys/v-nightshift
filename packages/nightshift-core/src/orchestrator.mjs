@@ -155,7 +155,7 @@ export function planNextActions({
           continue;
         }
         const type = stage.actor === "human" ? "create_review_card" : "create_workboard_card";
-        if (!["agent", "system", "human"].includes(stage.actor)) continue;
+        if (!["agent", "system", "human", "workflow"].includes(stage.actor)) continue;
         const resourceKey = stage.actor === "human" ? null : stageResourceLock(stage, instance, contentItem);
         if (resourceKey && reservedResources.has(resourceKey)) continue;
         // A stage a person asked to redo (runtime.redoForChanges) gets a new
@@ -165,7 +165,7 @@ export function planNextActions({
           release,
           instance,
           stage,
-          stage.actor === "human" ? "review" : "ready",
+          ["human", "workflow"].includes(stage.actor) ? "review" : "ready",
           contentItem,
           resourceKey,
           contentItems,
@@ -239,7 +239,7 @@ export function planNextActions({
       continue;
     }
 
-    if (stage.actor === "agent" || stage.actor === "system") {
+    if (stage.actor === "agent" || stage.actor === "system" || stage.actor === "workflow") {
       const resourceKey = stageResourceLock(stage, instance);
       if (resourceKey && reservedResources.has(resourceKey)) continue;
       const attempt = existing?.status === "redo" ? existing.attempt : undefined;
@@ -253,7 +253,7 @@ export function planNextActions({
           release,
           attempt ? { ...instance, projectStageRevision: { stageId: stage.id, attempt, note: existing.summary } } : instance,
           stage,
-          "ready",
+          stage.actor === "workflow" ? "review" : "ready",
           null,
           resourceKey,
           contentItems,
@@ -681,7 +681,7 @@ export function actionKey(release, instance, stage, action, contentItem = null, 
   // A redone item's new cards must not be matched to its old ones.
   const revision = Number.isSafeInteger(contentItem?.revision) && contentItem.revision > 0 ? `:revision-${contentItem.revision}`
     : !contentItem && Number.isSafeInteger(projectAttempt) && projectAttempt > 1 ? `:project-revision-${projectAttempt - 1}` : "";
-  return `${release.metadata.workflowSha256}:${action}:${logicalKey}${revision}`;
+  return `${release.metadata.workflowSha256}:${action}:${logicalKey}${revision}${instance.invocation ? `:call-${instance.id}` : ""}`;
 }
 
 export function nativeActionKey(logicalKey) {

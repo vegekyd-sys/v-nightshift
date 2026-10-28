@@ -49,7 +49,8 @@ const OPERATION_UNDER_WAY = new Set(["reserved", "executing"]);
 export function taskAttention(task, { operation = null, shelved = false, queue = null } = {}) {
   // A person decided not to deliver this item: settled, not waiting on anyone.
   if (task.skipped) return { kind: "skipped", reason: task.skipReason ? `已跳过：${task.skipReason}` : "已跳过" };
-  const attention = queue ? queuedAttention(task, operation, queue) : liveAttention(task, operation);
+  const call = task.workflowCall ?? task.card?.metadata?.automation?.workflowCall;
+  const attention = call ? (call.state === "succeeded" ? {kind: "done"} : call.blocked ? {kind: "needs-you", reason: call.reason} : {kind: "running", reason: `第 ${call.iteration} 轮子流程执行中`}) : queue ? queuedAttention(task, operation, queue) : liveAttention(task, operation);
   if (shelved && attention.kind !== "done") return { kind: "stale", reason: attention.reason ?? "项目已搁置" };
   return attention;
 }
@@ -240,7 +241,7 @@ export function projectRuns(instance, { cardsById = new Map(), now = Date.now(),
   return [...latest.values()].map((run) => {
     const card = run.cardId ? cardsById.get(run.cardId) : undefined;
     const status = run.status === "blocked" && run.failure?.automaticRetry && run.failure?.nextRetryAt ? "retry_wait" : (card?.status ?? run.status);
-    const task = { ...run, card, status, skipped: skipped.has(run.contentItemId), skipReason: skipped.get(run.contentItemId) ?? null };
+    const task = { ...run, card, workflowCall: (instance.calls ?? []).filter(call => call.cardId === run.cardId).at(-1), status, skipped: skipped.has(run.contentItemId), skipReason: skipped.get(run.contentItemId) ?? null };
     return { ...task, attention: taskAttention(task, { operation: operationByCard.get(run.cardId), shelved, queue }) };
   });
 }

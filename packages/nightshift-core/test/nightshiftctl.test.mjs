@@ -72,3 +72,22 @@ test("projects monitor does not count a replaced card as blocked", async () => {
     await new Promise((resolveClose) => server.close(resolveClose));
   }
 });
+
+test("projects monitor includes linked call contexts without unrelated business projects", async () => {
+  const project = { id: "ROOT", stageRuns: [], calls: [{ childId: "WFC-a" }, { childId: "WFC-b" }] };
+  const card = (id, instance, status) => ({ id, status, labels: [`instance:${instance}`, "stage:verify"] });
+  const cards = [card("controller", "ROOT", "review"), card("first", "WFC-a", "done"), card("second", "WFC-b", "running"), card("private-other", "OTHER", "running")];
+  const server = createServer((request, response) => {
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify(request.url.startsWith("/api/cards") ? { cards } : project));
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { stdout } = await execFileAsync(process.execPath, ["scripts/nightshiftctl.mjs", "projects", "monitor", "ROOT"], { cwd: root, env: { ...process.env, NIGHTSHIFT_URL: `http://127.0.0.1:${server.address().port}` } });
+    const result = JSON.parse(stdout);
+    assert.equal(result.tasks.length, 3);
+    assert.equal(result.summary.active, 1);
+    assert.equal(result.tasks.find(task => task.cardId === "second").executionInstanceId, "WFC-b");
+    assert.equal(result.tasks.some(task => task.cardId === "private-other"), false);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});

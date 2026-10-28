@@ -231,7 +231,7 @@ export function needsYouGroups({ items, stages = [], store = null }) {
         options: request.options ?? first.options,
       };
     }
-    const waiting = first.kind === "approval" ? "等你确认" : "等你审核";
+    const waiting = first.kind === "workflow-call" ? "需要处理" : first.kind === "approval" ? "等你确认" : "等你审核";
     return {
       kind: first.kind,
       heading: `${stageTitle}${waiting}：${count} 张卡`,

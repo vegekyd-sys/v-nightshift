@@ -580,7 +580,7 @@ function StageLane({ stage, index, expected, mobileSelected, tasks, onSelect, on
   const total = Math.max(expected ?? 0, tasks.length - counts.skipped);
   const doneShown = showAllDone ? done : done.slice(0, DONE_PREVIEW);
   return <section className={`stage-lane ${isLive ? "is-live" : ""} ${mobileSelected ? "mobile-selected" : ""}`}>
-    <header><span className="stage-index">{String(index + 1).padStart(2, "0")}</span><div><strong>{stage.title}</strong><small>{stage.scope === "content-item" ? "每条内容" : "整个项目"} · {stage.actor === "human" ? "人工" : "Agent"}</small></div></header>
+    <header><span className="stage-index">{String(index + 1).padStart(2, "0")}</span><div><strong>{stage.title}</strong><small>{stage.scope === "content-item" ? "每条内容" : "整个项目"} · {stage.actor === "workflow" ? "流程调用" : stage.actor === "human" ? "人工" : "Agent"}</small></div></header>
     {total > 0 && <div className="factory-lane-progress" aria-label={`已完成 ${counts.done} / ${total}`}><div><span style={{ width: `${(counts.done / total) * 100}%` }} /></div><small>{counts.done === total ? "全部完成" : `${counts.done}/${total}`}</small></div>}
     <div className="stage-counts">
       {ATTENTION_KINDS.filter(([kind]) => kind !== "done" && kind !== "skipped" && counts[kind]).map(([kind, title]) => <span className={`attention-${kind}`} key={kind}>{title} {counts[kind]}</span>)}
@@ -850,6 +850,7 @@ function FactoryOverview({ scope, stages, projects, focused = false, renderContr
             })}
             {(counts.running + counts.healing) > 0 && <em>{counts.running + counts.healing} 个在做</em>}
           </div>
+          {(project.calls ?? []).length > 0 && <div className="factory-project-stages" aria-label="流程调用轮次">{project.calls.map(call => <span key={call.id}>{call.stageId}{call.contentItemId ? ` · ${call.contentItemId}` : ""} · 第 {call.iteration} 轮 · {({running: "执行中", succeeded: "已通过", continued: "已进入下一轮", held: "已停住"})[call.state]} · {call.reason} · 本轮操作 {call.operations}，累计 {call.totalOperations}/{call.maxOperations}{focused && call.cardIds.map(id => <a key={id} href={`/?view=board&card=${encodeURIComponent(id)}`} onClick={event => event.stopPropagation()}> 查看任务</a>)}</span>)}</div>}
           <small className="factory-project-time">{projectTiming(project)}</small>
           {focused && renderControls?.(project)}
         </div>;
@@ -913,7 +914,7 @@ function WorkflowEditor({ initialSource, mode, onClose, onPublished }) {
           </article>)}</div>
           <button className="add-stage" onClick={addStage}><Plus size={15} />增加一个阶段</button>
         </section>
-        <aside className="editor-preview"><strong>运行预览</strong><p>发布后，所有新项目都会沿这条轨道运行。</p><ol>{(workflow.spec?.stages ?? []).map((stage, index) => <li key={`${stage.id}-preview`}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{stage.title || "未命名阶段"}</strong><small>{stage.actor === "human" ? "人工" : "Agent"} · {stage.scope === "content-item" ? "每条内容" : "整个项目"}</small></div></li>)}</ol><button className="advanced-toggle" onClick={() => setAdvanced((value) => !value)}>{advanced ? "隐藏高级源文件" : "查看高级源文件"}</button>{advanced && <textarea aria-label="Workflow Markdown 高级编辑" value={source} onChange={(event) => { const parsed = parseWorkflowAuthoringSource(event.target.value); if (parsed) setWorkflow(parsed); }} />}{issues.length > 0 && <div className="issues"><strong>需要修正</strong>{issues.map((issue) => <p key={`${issue.path}-${issue.code}`}>{issue.path}: {issue.message}</p>)}</div>}{message && <div className="toast-inline">{message}</div>}</aside>
+        <aside className="editor-preview"><strong>运行预览</strong><p>发布后，所有新项目都会沿这条轨道运行。</p><ol>{(workflow.spec?.stages ?? []).map((stage, index) => <li key={`${stage.id}-preview`}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{stage.title || "未命名阶段"}</strong><small>{stage.actor === "workflow" ? "流程调用" : stage.actor === "human" ? "人工" : "Agent"} · {stage.scope === "content-item" ? "每条内容" : "整个项目"}</small></div></li>)}</ol><button className="advanced-toggle" onClick={() => setAdvanced((value) => !value)}>{advanced ? "隐藏高级源文件" : "查看高级源文件"}</button>{advanced && <textarea aria-label="Workflow Markdown 高级编辑" value={source} onChange={(event) => { const parsed = parseWorkflowAuthoringSource(event.target.value); if (parsed) setWorkflow(parsed); }} />}{issues.length > 0 && <div className="issues"><strong>需要修正</strong>{issues.map((issue) => <p key={`${issue.path}-${issue.code}`}>{issue.path}: {issue.message}</p>)}</div>}{message && <div className="toast-inline">{message}</div>}</aside>
       </div>
     </div>
   </div>;

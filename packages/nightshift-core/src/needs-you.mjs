@@ -209,6 +209,11 @@ export class NeedsYouTracker {
 // cards waiting on a person, for every project that is not shelved.
 export function buildNeedsYou({ store, instances, cards, releases, pending = [], now = Date.now(), shelveAfterMs = 3 * DAY_MS }) {
   const eligible = new Map(instances.filter((instance) => eligibleProject(instance, now, shelveAfterMs)).map((instance) => [instance.id, instance]));
+  const rootByContext = new Map();
+  for (const root of [...eligible.values()]) for (const id of store.executionIds?.(root.id) ?? [root.id]) {
+    rootByContext.set(id, root.id);
+    if (id !== root.id) { const child = store.getInstance(id); if (child) eligible.set(id, child); }
+  }
   const stagesBySha = new Map(releases.map((release) => [release.workflowSha256 ?? release.metadata?.workflowSha256, release.manifest?.spec?.stages ?? release.spec?.stages ?? []]));
   const requests = store.listDecisionRequests({ status: "open" }).filter((request) => eligible.has(request.instanceId));
   const groupSizes = new Map();
@@ -216,7 +221,8 @@ export function buildNeedsYou({ store, instances, cards, releases, pending = [],
   const items = requests.map((request) => ({
     id: request.id,
     kind: "decision",
-    instanceId: request.instanceId,
+    instanceId: rootByContext.get(request.instanceId) ?? request.instanceId,
+    executionInstanceId: request.instanceId,
     cardId: request.cardId,
     contentItemId: request.contentItemId,
     stageId: request.stageId,
@@ -239,7 +245,8 @@ export function buildNeedsYou({ store, instances, cards, releases, pending = [],
     items.push({
       id: `${approval ? "approval" : "review"}:${card.id}`,
       kind: approval ? "approval" : "review",
-      instanceId,
+      instanceId: rootByContext.get(instanceId) ?? instanceId,
+      executionInstanceId: instanceId,
       cardId: card.id,
       contentItemId: label(card, "content-item"),
       stageId,
@@ -251,6 +258,18 @@ export function buildNeedsYou({ store, instances, cards, releases, pending = [],
       createdAt: new Date(Number(card.updatedAt ?? card.createdAt ?? now)).toISOString(),
     });
   }
+  for (const instance of eligible.values()) {
+    if ((rootByContext.get(instance.id) ?? instance.id) !== instance.id) continue;
+    const latest = new Map();
+    for (const call of store.listCalls?.(instance.id) ?? []) latest.set(call.cardId, call);
+    for (const call of latest.values()) {
+      if (call.state !== "held" && !call.reason.startsWith("child-work-stopped")) continue;
+      items.push({ id: `workflow-call:${call.id}`, kind: "workflow-call", instanceId: instance.id, cardId: call.cardId,
+        contentItemId: call.contentItemId, stageId: call.stageId, scope: call.contentItemId ? "item" : "project",
+        problem: `第 ${call.iteration} 轮：${call.reason}`, groupKey: `${instance.id}:call:${call.stageId}`, groupSize: 1,
+        options: [], createdAt: new Date(call.startedAt).toISOString() });
+    }
+  }
   const reviewGroups = new Map();
   for (const item of items) if (item.kind !== "decision") reviewGroups.set(item.groupKey, (reviewGroups.get(item.groupKey) ?? 0) + 1);
   for (const item of items) if (item.kind !== "decision") item.groupSize = reviewGroups.get(item.groupKey);
@@ -258,7 +277,7 @@ export function buildNeedsYou({ store, instances, cards, releases, pending = [],
   for (const item of items) countsByInstance[item.instanceId] = (countsByInstance[item.instanceId] ?? 0) + 1;
   return {
     items,
-    pending: pending.filter((entry) => eligible.has(entry.instanceId)),
+    pending: pending.filter((entry) => eligible.has(entry.instanceId)).map(entry => ({ ...entry, instanceId: rootByContext.get(entry.instanceId) ?? entry.instanceId })),
     countsByInstance,
   };
 }

@@ -1,3 +1,5 @@
+import { stageEnabled } from "./workflow.mjs";
+import { durationMs } from "./workflow-call-contract.mjs";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { normalizeContentItems } from "./content-items.mjs";
@@ -25,6 +27,13 @@ export class NightShiftStore {
         manifest_json TEXT NOT NULL,
         published_at TEXT NOT NULL,
         UNIQUE(workflow_id, version)
+      );
+      CREATE TABLE IF NOT EXISTS workflow_calls (
+        id TEXT PRIMARY KEY, parent_id TEXT NOT NULL REFERENCES instances(id),
+        child_id TEXT NOT NULL UNIQUE, controller_card_id TEXT NOT NULL,
+        stage_id TEXT NOT NULL, item_id TEXT NOT NULL, attempt INTEGER NOT NULL,
+        iteration INTEGER NOT NULL, record_json TEXT NOT NULL,
+        UNIQUE(parent_id, stage_id, item_id, attempt, iteration)
       );
       CREATE TABLE IF NOT EXISTS workflow_drafts (
         workflow_id TEXT PRIMARY KEY,
@@ -523,14 +532,83 @@ export class NightShiftStore {
     const row = this.db.prepare("SELECT * FROM instances WHERE id = ?").get(id);
     if (!row) return null;
     const approvals = this.listApprovals(id);
-    return instanceRow(row, approvals);
+    return { ...instanceRow(row, approvals), ...(this.callForChild(id) ? { invocation: this.callForChild(id) } : {}) };
   }
 
-  listInstances() {
+  listInstances({ includeInternal = false } = {}) {
     return this.db
-      .prepare("SELECT * FROM instances ORDER BY updated_at DESC")
+      .prepare(`SELECT * FROM instances ${includeInternal ? "" : "WHERE id NOT IN (SELECT child_id FROM workflow_calls)"} ORDER BY updated_at DESC`)
       .all()
       .map((row) => instanceRow(row, this.listApprovals(row.id)));
+  }
+
+  listCalls(parentId) {
+    return this.db.prepare("SELECT record_json FROM workflow_calls WHERE parent_id = ? ORDER BY rowid").all(parentId).map(row => JSON.parse(row.record_json));
+  }
+
+  callForChild(childId) {
+    if (typeof childId !== "string" || !childId) return null;
+    const row = this.db.prepare("SELECT record_json FROM workflow_calls WHERE child_id = ?").get(childId);
+    return row ? JSON.parse(row.record_json) : null;
+  }
+
+  executionIds(instanceId) {
+    return [instanceId, ...this.listCalls(instanceId).flatMap(call => this.executionIds(call.childId))];
+  }
+
+  callAncestors(instanceId) {
+    const ancestors = [];
+    let call;
+    while ((call = this.callForChild(instanceId))) {
+      if (ancestors.length >= 8) throw new Error("Workflow call depth exceeded");
+      ancestors.push(call);
+      instanceId = call.parentId;
+    }
+    return ancestors;
+  }
+
+  rootInstanceId(instanceId) {
+    return this.callAncestors(instanceId).at(-1)?.parentId ?? instanceId;
+  }
+
+  saveCall(call) {
+    this.db.prepare(`INSERT INTO workflow_calls(id, parent_id, child_id, controller_card_id, stage_id, item_id, attempt, iteration, record_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json`)
+      .run(call.id, call.parentId, call.childId, call.cardId, call.stageId, call.contentItemId ?? "", call.attempt, call.iteration, JSON.stringify(call));
+    return call;
+  }
+
+  // The child identity and its parent linkage become durable together. A crash
+  // before native card creation is replayed through the normal action ledger.
+  createCall(call, child) {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const existing = this.listCalls(call.parentId).find(entry => entry.id === call.id);
+      if (!existing) {
+        this.saveCall(call);
+        this.createInstance(child);
+        this.appendEvent({ instanceId: call.parentId, eventId: `call:${call.id}`, type: "workflow.call.started", payload: { callId: call.id, childId: call.childId, stageId: call.stageId, iteration: call.iteration, workflowSha256: child.workflowSha256 } });
+      }
+      this.db.exec("COMMIT");
+      return existing ?? call;
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  assertCallAdmission(instanceId, now = new Date()) {
+    const root = this.getInstance(this.rootInstanceId(instanceId));
+    const duration = this.getRelease(root?.workflowSha256)?.manifest.spec.limits?.maxDuration;
+    if (duration && now.getTime() >= Date.parse(root.createdAt) + durationMs(duration)) throw Object.assign(new Error("Project duration limit reached"), { statusCode: 409 });
+    for (const call of this.callAncestors(instanceId)) {
+      const parent = this.getInstance(call.parentId);
+      if (parent?.status !== "active" || !this.getInstanceControl(parent.id).automaticDispatch) throw Object.assign(new Error("Parent Workflow is paused or dispatch is disabled"), { statusCode: 409 });
+      const stage = this.getRelease(parent.workflowSha256)?.manifest.spec.stages.find(stage => stage.id === call.stageId);
+      const runs = call.contentItemId ? this.listContentItemRuns(parent.id).filter(run => run.contentItemId === call.contentItemId) : this.listStageRuns(parent.id);
+      const latest = runs.filter(run => run.stageId === call.stageId).sort((a, b) => b.attempt - a.attempt)[0];
+      if (!stageEnabled(stage, parent.inputs) || latest?.cardId !== call.cardId || (call.contentItemId && this.listSkippedContentItems(parent.id).some(item => item.contentItemId === call.contentItemId))) throw Object.assign(new Error("Workflow call was disabled, skipped or superseded"), { statusCode: 409 });
+      const previous = this.listCalls(call.parentId).filter(entry => entry.cardId === call.cardId && entry.iteration < call.iteration);
+      if (previous.flatMap(entry => this.executionIds(entry.childId)).flatMap(id => this.listExternalOperations(id)).some(op => !["succeeded", "failed"].includes(op.status))) throw Object.assign(new Error("Previous round external outcome is unknown; supplier readback required"), { statusCode: 409 });
+      if (call.state !== "running" || now.getTime() >= call.deadline) throw Object.assign(new Error("Workflow call is stopped or its duration limit expired"), { statusCode: 409 });
+    }
   }
 
   updateInstanceStatus(id, status, now = new Date()) {
@@ -952,6 +1030,31 @@ export class NightShiftStore {
   }
 
   reserveExternalOperation(operation, now = new Date()) {
+    const rootId = this.rootInstanceId(operation.instanceId);
+    const root = this.getInstance(rootId);
+    const limits = this.getRelease(root?.workflowSha256)?.manifest?.spec?.limits;
+    if ((!this.callForChild(operation.instanceId) && !limits) || this.getExternalOperation(operation.idempotencyKey)) return this.reserveOperationRecord(operation, now);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.assertCallAdmission(operation.instanceId, now);
+      if (limits) {
+        if (root.status !== "active" || !this.getInstanceControl(rootId).automaticDispatch) throw Object.assign(new Error("Root project is paused"), { statusCode: 409 });
+        if (limits.maxDuration && now.getTime() - Date.parse(root.createdAt) >= durationMs(limits.maxDuration)) throw Object.assign(new Error("Project duration limit reached"), { statusCode: 409 });
+        const used = this.executionIds(rootId).reduce((sum, id) => sum + this.listExternalOperations(id).length, 0);
+        if (limits.maxOperations !== undefined && used >= limits.maxOperations) throw Object.assign(new Error("Project external-operation limit reached"), { statusCode: 409 });
+      }
+      for (const call of this.callAncestors(operation.instanceId)) {
+        const siblings = this.listCalls(call.parentId).filter(entry => entry.cardId === call.cardId);
+        const count = siblings.flatMap(entry => this.executionIds(entry.childId)).reduce((sum, id) => sum + this.listExternalOperations(id).length, 0);
+        if (count >= call.maxOperations) throw Object.assign(new Error("Workflow call external-operation limit reached; no new reservation allowed"), { statusCode: 409 });
+      }
+      const result = this.reserveOperationRecord(operation, now);
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  reserveOperationRecord(operation, now = new Date()) {
     const timestamp = now.toISOString();
     const existing = this.getExternalOperation(operation.idempotencyKey);
     if (existing) {

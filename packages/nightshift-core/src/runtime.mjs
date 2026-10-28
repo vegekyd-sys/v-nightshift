@@ -1,3 +1,5 @@
+import { validateCallReleases } from "./workflow-call-contract.mjs";
+import { advanceWorkflowCalls } from "./workflow-calls.mjs";
 import {
   compileWorkflow,
   parseWorkflow,
@@ -21,6 +23,7 @@ export class NightShiftRuntime {
   constructor({
     board = "nightshift",
     completionValidator = null,
+    executionRoot = null,
     dispatchMaxStarts = 8,
     maxWorkboardActive = 36,
     terminalInspectionMaxStarts = 3,
@@ -51,6 +54,9 @@ export class NightShiftRuntime {
     this.reportReads = new Set();
     this.now = now;
     this.nextReconcileAt = 0;
+    this.executionRoot = executionRoot;
+    this.callPreflight = null;
+    this.tickQueues = new Map();
     this.store = store;
     this.workboard = workboard;
   }
@@ -58,6 +64,10 @@ export class NightShiftRuntime {
   validate(sourceYaml) {
     const workflow = parseWorkflow(sourceYaml);
     const issues = validateWorkflow(workflow);
+    if (issues.length === 0) {
+      try { validateCallReleases(compileWorkflow(workflow), this.store); }
+      catch (error) { issues.push({ code: "workflow.call.release", path: "spec.stages", message: error.message }); }
+    }
     return { issues, ok: issues.length === 0, workflow };
   }
 
@@ -72,6 +82,7 @@ export class NightShiftRuntime {
   publish(sourceYaml) {
     const workflow = parseWorkflow(sourceYaml);
     const release = compileWorkflow(workflow);
+    validateCallReleases(release, this.store);
     return this.store.saveRelease(release, sourceYaml);
   }
 
@@ -112,9 +123,10 @@ export class NightShiftRuntime {
   // runs, so a project can be read from the native board by exact ID.
   instanceCardIds(instanceId) {
     const ids = new Set();
-    for (const run of [...this.store.listStageRuns(instanceId), ...this.store.listContentItemRuns(instanceId)]) {
+    for (const id of this.store.executionIds(instanceId)) for (const run of [...this.store.listStageRuns(id), ...this.store.listContentItemRuns(id)]) {
       if (typeof run.cardId === "string" && run.cardId) ids.add(run.cardId);
     }
+    for (const id of this.store.executionIds(instanceId)) for (const cardId of this.store.listActionCardIds(id)) ids.add(cardId);
     return [...ids];
   }
 
@@ -136,7 +148,7 @@ export class NightShiftRuntime {
       const stageId = stageLabel.slice("stage:".length);
       const contentItemId = contentItemLabel?.slice("content-item:".length) ?? null;
       const stage = release?.spec?.stages?.find((entry) => entry.id === stageId);
-      if (!stage || !stageEnabled(stage, instance.inputs ?? {})) continue;
+      if (!stage || stage.actor === "workflow" || !stageEnabled(stage, instance.inputs ?? {})) continue;
       const storedRuns = contentItemLabel ? this.store.listContentItemRuns(instanceId) : this.store.listStageRuns(instanceId);
       const storedRun = storedRuns.filter((entry) => entry.cardId === card.id && entry.stageId === stageId).at(-1);
       if (!contentItemId && storedRun && storedRuns.some(entry => entry.stageId === stageId && entry.attempt > storedRun.attempt)) {
@@ -966,8 +978,8 @@ export class NightShiftRuntime {
     const handedOver = [];
     const skipped = [];
     const byCard = new Map();
-    for (const instance of this.store.listInstances()) {
-      if (["archived", "cancelled"].includes(instance.status)) continue;
+    for (const instance of this.store.listInstances({ includeInternal: true })) {
+      if (["archived", "cancelled"].includes(this.store.getInstance(this.store.rootInstanceId(instance.id))?.status) || ["archived", "cancelled"].includes(instance.status)) continue;
       for (const run of [...this.store.listStageRuns(instance.id), ...this.store.listContentItemRuns(instance.id)]) {
         if (run.cardId && ["running", "blocked"].includes(run.status)) byCard.set(run.cardId, instance);
       }
@@ -1101,6 +1113,7 @@ export class NightShiftRuntime {
   }
 
   async retry({ actor, cardId, contentItemId, evidence, instanceId, stageId, decisionNote = null }) {
+    this.store.assertCallAdmission(instanceId, new Date(this.now()));
     const instance = this.store.getInstance(instanceId);
     if (!instance) throw new Error(`Unknown instance ${instanceId}`);
     const release = this.store.getRelease(instance.workflowSha256)?.manifest;
@@ -1170,7 +1183,15 @@ export class NightShiftRuntime {
     return projectConcurrencyLimit(release?.manifest, this.store.getInstanceControl?.(instance.id));
   }
 
-  async tick(instanceId, {
+  tick(instanceId, options = {}) {
+    const root = this.store.rootInstanceId(instanceId);
+    if (options.dispatch && root !== instanceId) return this.tick(root, options);
+    const pending = (this.tickQueues.get(instanceId) ?? Promise.resolve()).catch(() => {}).then(() => this.tickOnce(instanceId, options));
+    this.tickQueues.set(instanceId, pending);
+    return pending.finally(() => { if (this.tickQueues.get(instanceId) === pending) this.tickQueues.delete(instanceId); });
+  }
+
+  async tickOnce(instanceId, {
     cards = null,
     dispatch = false,
     dispatchMaxStarts = this.dispatchMaxStarts,
@@ -1187,6 +1208,8 @@ export class NightShiftRuntime {
     if (!instance) throw new Error(`Unknown instance ${instanceId}`);
     const savedRelease = this.store.getRelease(instance.workflowSha256);
     if (!savedRelease) throw new Error(`Missing release ${instance.workflowSha256}`);
+    let callApplied = [];
+    if (!dryRun) callApplied = await advanceWorkflowCalls(this, instance, savedRelease.manifest, { nowMs, inspectSessions });
     const runs = this.store.listStageRuns(instanceId);
     // A skipped item is out of the project: nothing more is planned for it, and
     // stages that wait on every item (delivery) wait only on the rest.
@@ -1267,9 +1290,15 @@ export class NightShiftRuntime {
           payload: { cardId: card.id, stageId: result.action.stageId, contentItemId: result.action.contentItemId ?? null },
         });
       }
-      if (dispatch && (this.store.getInstanceControl?.(instanceId)?.automaticDispatch ?? true)) {
-        const instanceCards = new Map(currentCards
-          .filter((card) => (card.labels ?? []).includes(`instance:${instanceId}`))
+      // Newly created call controllers materialize children without dispatch.
+      if (applied.some(result => savedRelease.manifest.spec.stages.find(stage => stage.id === result.action.stageId)?.actor === "workflow")) {
+        callApplied.push(...await advanceWorkflowCalls(this, instance, savedRelease.manifest, { nowMs, inspectSessions }));
+      }
+      if (dispatch && instance.status === "active" && (this.store.getInstanceControl?.(instanceId)?.automaticDispatch ?? true)) {
+        const executionIds = new Set(this.store.executionIds(instanceId));
+        const freshCards = executionIds.size > 1 ? await this.workboard.listCards({ cardIds: this.instanceCardIds(instanceId) }) : currentCards;
+        const instanceCards = new Map(freshCards
+          .filter((card) => executionIds.has((card.labels ?? []).find(label => label.startsWith("instance:"))?.slice(9)))
           .map((card) => [card.id, card]));
         for (const result of applied) {
           if (result.action.type === "create_workboard_card" && result.card) {
@@ -1285,7 +1314,9 @@ export class NightShiftRuntime {
         const stageActor = (card) => {
           const stageId = (card.labels ?? []).find((label) => label.startsWith("stage:"))?.slice("stage:".length)
             ?? card.metadata?.automation?.stageId;
-          return savedRelease.manifest.spec.stages.find((entry) => entry.id === stageId)?.actor ?? null;
+          const id = (card.labels ?? []).find(label => label.startsWith("instance:"))?.slice(9);
+          const workflow = this.store.getRelease(this.store.getInstance(id)?.workflowSha256)?.manifest;
+          return workflow?.spec.stages.find((entry) => entry.id === stageId)?.actor ?? null;
         };
         for (const card of instanceCards.values()) {
           if (card.status !== "ready" || stageActor(card) !== "human") continue;
@@ -1300,7 +1331,7 @@ export class NightShiftRuntime {
         const active = [...instanceCards.values()].filter(cardConsumesDispatchSlot);
         const activeAcrossBoard = currentCards.filter(cardConsumesDispatchSlot).length;
         const cardIds = [...instanceCards.values()].filter((card) =>
-          cardIsStartable(card, now) && ["agent", "system"].includes(stageActor(card)) && !active.includes(card) && !cardHasActiveClaim(card, now) && !(card.labels ?? []).includes("nightshift:approval"))
+          cardIsStartable(card, now) && this.callCanDispatch(card, now) && ["agent", "system"].includes(stageActor(card)) && !active.includes(card) && !cardHasActiveClaim(card, now) && !(card.labels ?? []).includes("nightshift:approval"))
           .map((card) => card.id);
         const maxStarts = Math.min(
           this.dispatchMaxStarts,
@@ -1323,9 +1354,16 @@ export class NightShiftRuntime {
       }
     }
     const now = nowMs;
-    const pendingTimes = [...dueTimes, this.nextReconcileAt].filter(at => Number.isFinite(at) && at > 0);
-    return { actions, applied, dispatch: dispatchResult, instance: this.store.getInstance(instanceId),
+    const liveCalls = this.store.listCalls(instanceId).filter(call => call.state === "running");
+    const callWakeups = liveCalls.flatMap(call => [call.deadline, ...(!this.store.listStageRuns(call.childId).length && !this.store.listContentItemRuns(call.childId).length ? [now + 1] : [])]);
+    const pendingTimes = [...dueTimes, ...callWakeups, this.nextReconcileAt].filter(at => Number.isFinite(at) && at > 0);
+    return { actions, applied: [...applied, ...callApplied], dispatch: dispatchResult, instance: this.store.getInstance(instanceId),
       retryAfterMs: pendingTimes.length ? Math.max(1, Math.min(...pendingTimes) - now) : null };
+  }
+
+  callCanDispatch(card, nowMs) {
+    const id = (card.labels ?? []).find(label => label.startsWith("instance:"))?.slice(9);
+    try { this.store.assertCallAdmission(id, new Date(nowMs)); return true; } catch { return false; }
   }
 
   async approve({
@@ -1465,6 +1503,8 @@ export class NightShiftRuntime {
     const release = instance ? this.store.getRelease(instance.workflowSha256)?.manifest : null;
     if (!instance || !release) throw Object.assign(new Error("Card is not linked to a pinned Night Shift project"), { statusCode: 422 });
     const { stage, stageId, contentItemId } = resolveNightShiftCardContext({ card, release });
+    this.store.assertCallAdmission(instance.id, new Date(this.now()));
+    if (stage?.actor === "workflow") return this.retryWorkflowCall({ actor, card, instance, stage, note });
     if (!stage || !["agent", "system"].includes(stage.actor) || card.labels?.includes("nightshift:approval")) {
       throw Object.assign(new Error("Resume applies to executable work, not approval or human-review gates"), { statusCode: 409 });
     }
@@ -1489,6 +1529,29 @@ export class NightShiftRuntime {
       payload: { actor, cardId, stageId, contentItemId, note, allowNewOperation: allowNewOperation === true, ...result } });
     this.store.supersedeDecisionRequests(cardId);
     return { ...base, ...result, alreadyResumed: false };
+  }
+
+  async retryWorkflowCall({ actor, card, instance, stage, note }) {
+    if (instance.status !== "active" || !this.store.getInstanceControl(instance.id).automaticDispatch) throw Object.assign(new Error("Project is paused or dispatch is disabled"), { statusCode: 409 });
+    const history = this.store.listCalls(instance.id).filter(call => call.cardId === card.id);
+    const call = history.at(-1);
+    if (!call && card.status === "blocked") {
+      const runs = [...this.store.listStageRuns(instance.id), ...this.store.listContentItemRuns(instance.id)];
+      const run = runs.find(run => run.cardId === card.id);
+      if (!run) throw new Error("Call control card has no persisted run");
+      this.store[run.contentItemId ? "upsertContentItemRun" : "upsertStageRun"]({ ...run, status: "review" });
+      this.store.appendEvent({ instanceId: instance.id, type: "workflow.call.retry", payload: { cardId: card.id, actor, note } });
+      await this.workboard.moveCard(card.id, "review");
+      return { instanceId: instance.id, cardId: card.id, how: "same", alreadyResumed: false };
+    }
+    if (!call || call.state !== "held") return { instanceId: instance.id, cardId: card.id, how: "same", alreadyResumed: true };
+    if (["iteration-limit", "duration-limit"].includes(call.reason) || this.now() >= call.deadline) throw Object.assign(new Error("Call resource limit cannot be bypassed by retry"), { statusCode: 409 });
+    const unresolved = this.store.executionIds(call.childId).flatMap(id => this.store.listExternalOperations(id)).some(op => !["succeeded", "failed"].includes(op.status));
+    if (unresolved) throw Object.assign(new Error("Supplier readback required before retrying call"), { statusCode: 409 });
+    this.store.saveCall({ ...call, state: "running", reason: "operator-recheck" });
+    this.store.appendEvent({ instanceId: instance.id, type: "workflow.call.retry", payload: { callId: call.id, actor, note } });
+    await this.workboard.moveCard(card.id, "review");
+    return { instanceId: instance.id, cardId: card.id, how: "same", alreadyResumed: false };
   }
 
   // Going on with a stopped card: the same card when its external call can
@@ -1665,6 +1728,8 @@ export class NightShiftRuntime {
   // "redo", and the planner makes fresh cards for them in order; their brief
   // carries the person's note. A paid stage pays again.
   startRevision({ actor, contentItemId, instanceId, fromStageId, stageIds, note = null, reason }) {
+    const workflow = this.store.getRelease(this.store.getInstance(instanceId)?.workflowSha256)?.manifest;
+    if (stageIds.some(id => workflow?.spec.stages.find(stage => stage.id === id)?.actor === "workflow")) throw Object.assign(new Error("Redo across a Workflow-call boundary is not supported; recover the existing child card or use its declared result routing"), { statusCode: 409 });
     const runs = this.store.listContentItemRuns(instanceId).filter((entry) => entry.contentItemId === contentItemId);
     const latest = (id) => runs.filter((entry) => entry.stageId === id).sort((a, b) => (b.attempt ?? 1) - (a.attempt ?? 1))[0] ?? null;
     const busy = stageIds.map(latest).find((entry) => entry && ["ready", "running", "redo"].includes(entry.status));

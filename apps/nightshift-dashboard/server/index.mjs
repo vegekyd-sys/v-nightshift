@@ -1,3 +1,4 @@
+import { publicCallSummary } from "../../../packages/nightshift-core/src/workflow-calls.mjs";
 import { activeCardCount, derivedWarmupMaxCards, warmupAdmission } from "./active-card-count.mjs";
 import { DispatchHoldLedger, dispatchHoldReason } from "./dispatch-hold-ledger.mjs";
 import { buildOverview } from "./overview.mjs";
@@ -147,6 +148,7 @@ const gatewayRestart = new GatewayRestartHold({ store, settleMs: gatewayRestartS
 const runtime = new NightShiftRuntime({
   board,
   completionValidator: validateCompletion,
+  executionRoot: join(dataDir, "instances"),
   dispatchMaxStarts: dispatchMaxStartsPerInstance,
   maxWorkboardActive: schedulerMaxWorkboardActive,
   orphanedSessionMs,
@@ -308,6 +310,7 @@ async function handleApi(request, response, url) {
       cardsUpdatedAt,
       lastSchedulerAt,
       lastSchedulerError,
+      workflowFeatures: { calls: 1, boundedRepeat: 1 },
       notifications: { enabled: notificationsEnabled, lastAt: lastNotificationAt, lastError: lastNotificationError },
       schedulerStartedAt,
       schedulerRunning: Boolean(schedulerPromise),
@@ -1375,6 +1378,12 @@ function observeDispatchHold() {
   });
 }
 
+runtime.callPreflight = async (release, project) => {
+  const result = await preflightProjectSkills(release, project);
+  if (!result.ok) throw new Error(preflightError(result));
+};
+runtime.beforeCallTick = instance => syncContentItemsManifest(instance);
+
 async function startInstance(instance) {
   assertInstanceId(instance.id);
   const instanceDir = resolve(dataDir, "instances", instance.id);
@@ -2078,7 +2087,7 @@ function projectConcurrency(instance) {
 
 function withInstanceLinks(instance) {
   const control = { ...store.getInstanceControl(instance.id), queue: projectQueue.get(instance.id) ?? null, concurrency: projectConcurrency(instance) };
-  return { ...instance, governance: normalizeProjectGovernance(instance), control, links: projectLinks(instance.id) };
+  return { ...instance, calls: publicCallSummary(store, instance.id), governance: normalizeProjectGovernance(instance), control, links: projectLinks(instance.id) };
 }
 
 function countCardsByStatus(cards) {
@@ -2086,7 +2095,9 @@ function countCardsByStatus(cards) {
 }
 
 function withCardLinks(card) {
-  return { ...card, humanAttempt: publicHumanAttempt(store.getHumanAttempt(card.id)), links: cardLinks(card.id) };
+  const id = cardInstanceId(card);
+  const call = id ? publicCallSummary(store, id).filter(call => call.cardId === card.id).at(-1) : null;
+  return { ...card, ...(call ? { metadata: { ...card.metadata, automation: { ...card.metadata?.automation, workflowCall: { iteration: call.iteration, state: call.state, blocked: call.blocked, reason: call.reason } } } } : {}), humanAttempt: publicHumanAttempt(store.getHumanAttempt(card.id)), links: cardLinks(card.id) };
 }
 
 function cardInstanceId(card) {
@@ -2103,7 +2114,7 @@ function visibleCards(cards, instances) {
   );
   const visible = new Set(instances.map((instance) => instance.id));
   return cards.filter((card) => {
-    const instanceId = cardInstanceId(card);
+    const instanceId = store.rootInstanceId(cardInstanceId(card));
     return !instanceId || visible.has(instanceId) || !archived.has(instanceId);
   });
 }

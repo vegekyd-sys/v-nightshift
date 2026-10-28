@@ -9,7 +9,7 @@ import { stageEnabled } from "../../../packages/nightshift-core/src/workflow.mjs
 export const OVERVIEW_SCOPES = ["live", "paused", "delivered", "shelved", "all"];
 
 const CARD_LABEL_PREFIXES = ["instance:", "stage:", "content-item:", "route:", "nightshift:"];
-const AUTOMATION_FIELDS = ["instanceId", "stageId", "contentItemId", "scheduledAt", "contentRoute", "agentRole", "attempt", "workflowSha256"];
+const AUTOMATION_FIELDS = ["instanceId", "stageId", "contentItemId", "scheduledAt", "contentRoute", "agentRole", "attempt", "workflowSha256", "workflowCall"];
 const INPUT_FIELDS = ["targetCount", "deliveryMode", "authorizationScope", "publicationTarget"];
 const FAILURE_FIELDS = ["kind", "source", "retryable", "automaticRetry", "nextRetryAt", "validationPhase"];
 
@@ -88,6 +88,7 @@ function leanProject(instance, operations, skipped = [], workStartedAt = null, s
     // Evaluate against full inputs on the server, using the engine's semantics.
     // The board needs branch facts, never the (possibly secret) input values.
     ...(stages ? { stageConditions: Object.fromEntries(stages.map((stage) => [stage.id, stageEnabled(stage, instance.inputs ?? {})])) } : {}),
+    calls: instance.calls ?? [],
     approvals: instance.approvals ?? [],
     contentItems: (instance.contentItems ?? []).map((item) => pick(item, ["id", "title", "route", "status"])),
     contentItemRuns: (instance.contentItemRuns ?? []).map(leanRun),
