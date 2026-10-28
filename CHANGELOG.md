@@ -1,5 +1,7 @@
 # Changelog
 
+- #28 fix(runtime): 显式终态尝试回执保留真实失败账本，支持业务验证及同卡恢复。
+
 最新的在上面。2026-10-02 之前的记录在 `vegekyd-sys/v-openclaw-platform` 的 CHANGELOG.md。
 
 - #27 feat(workflows): 已发布 Workflow 可通过 call 复用，repeat 按结果有界循环；复用 Runtime/Workboard/审批与账本，持久化轮次、隔离操作身份、共享并发与操作额度，保留旧回执与成功条目；V 沿用 retry/get/monitor，提供声明、示例和验收说明。

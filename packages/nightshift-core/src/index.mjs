@@ -52,6 +52,7 @@ export {
   stageHandoffPath,
 } from "./handoff.mjs";
 export { validateDeclaredCompletion } from "./completion.mjs";
+export { operationResultHash, validateExternalOperationCompletion } from "./external-operation-completion.mjs";
 export { collectToolCalls, validateExecutionEvidence } from "./execution-evidence.mjs";
 export { auditNightShiftGovernance, normalizeProjectGovernance, validateGovernanceManifest } from "./governance.mjs";
 

@@ -333,6 +333,18 @@ export function validateWorkflow(document) {
       }
     }
     if (stage.outputContracts !== undefined) validateOutputContracts(stage, path, issues);
+    if (stage.operationCompletion !== undefined) {
+      const c = stage.operationCompletion;
+      if (!isObject(c) || c.mode !== "terminal-attempt" || !nonEmptyString(c.output) ||
+          Object.keys(c).some(key => !["mode", "output"].includes(key))) {
+        issues.push(issue("stage.operationCompletion.invalid", `${path}.operationCompletion`, "Use {mode: terminal-attempt, output: <declared JSON receipt>}"));
+      } else if (!sideEffects.length || !["agent", "system"].includes(stage.actor) ||
+          spec.completion?.mode !== "strict-v1" || spec.handoff?.version !== 1 ||
+          !stage.outputs?.includes(c.output) || stage.outputContracts?.[c.output]?.type !== "json" ||
+          !stage.completeWhen?.includes(`output.${c.output}.exists`)) {
+        issues.push(issue("stage.operationCompletion.contract", `${path}.operationCompletion`, "Terminal attempts require an agent/system side-effect stage, strict-v1, handoff v1, a declared JSON receipt and output.<receipt>.exists completion rule"));
+      }
+    }
     if (isObject(stage.retry)) {
       if (!Number.isInteger(stage.retry.maxAttempts) || stage.retry.maxAttempts < 1) {
         issues.push(

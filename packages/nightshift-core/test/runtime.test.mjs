@@ -2499,7 +2499,7 @@ const recoveries = (store, id) => store.listEvents(id).filter((event) => event.t
 
 // Synthetic account-like project: purchase has already succeeded. Only login
 // failed; no provider, account data or production state is used here.
-async function stoppedProject(operationStatus = "failed", { effects = ["paid-production"], taskId = null, observe = true, operationKey = null } = {}) {
+async function stoppedProject(operationStatus = "failed", { effects = ["paid-production"], taskId = null, observe = true, operationKey = null, terminalAttempt = false } = {}) {
   const store = new NightShiftStore();
   const workboard = new FakeWorkboard();
   const needsYou = new NeedsYouTracker({ store });
@@ -2510,6 +2510,7 @@ kind: Workflow
 metadata: {id: project-recovery-test, version: 0.1.0, name: Project recovery}
 spec:
   ownerAgentRole: operator
+${terminalAttempt ? "  completion: {mode: strict-v1}\n  handoff: {version: 1}" : ""}
   concurrency: {perInstance: 2}
 ---
 ${["purchase", "login", "decorate", "writeback"].map((id, i, ids) => `
@@ -2524,6 +2525,7 @@ completeWhen: [output.receipt.exists]
 timeout: 10m
 retry: {maxAttempts: 1, idempotencyKey: "project-recovery:${id}"}
 ${id === "login" ? `sideEffects: ${JSON.stringify(effects)}\napproval: {before: paid-production, scope: project}` : ""}
+${id === "login" && terminalAttempt ? "operationCompletion: {mode: terminal-attempt, output: receipt}\noutputContracts: {receipt: {type: json}}" : ""}
 \`\`\`
 `).join("\n")}`;
   assert.equal(runtime.validate(source).ok, true, JSON.stringify(runtime.validate(source).issues));
@@ -2544,7 +2546,7 @@ ${id === "login" ? `sideEffects: ${JSON.stringify(effects)}\napproval: {before: 
   store.reserveExternalOperation({ idempotencyKey: "paid-purchase", instanceId: id, stageId: "purchase", ownerCardId: "project-purchase", requestHash: "d".repeat(64) });
   store.checkpointExternalOperation("paid-purchase", { status: "succeeded", externalTaskId: "purchase-receipt", result: { purchased: true } });
   store.reserveExternalOperation({ idempotencyKey: oldKey, instanceId: id, stageId: "login", ownerCardId: card.id, requestHash: "a".repeat(64) });
-  if (operationStatus !== "reserved") store.checkpointExternalOperation(oldKey, { status: operationStatus, externalTaskId: taskId, result: { reason: "unsupported optional parameter", successAmount: 0 } });
+  if (operationStatus !== "reserved") store.checkpointExternalOperation(oldKey, { status: operationStatus, externalTaskId: taskId, result: { reason: "unsupported optional parameter", successAmount: 0, ...(terminalAttempt ? {terminal:true,evidence:"supplier-readback.json"} : {}) } });
   const request = observe ? needsYou.observe({ card, instance, stage, stageId: "login", status: "blocked", failure, operation: store.getExternalOperation(oldKey) }) : null;
   return { id, store, workboard, runtime, release, request, oldKey };
 }
@@ -3141,4 +3143,21 @@ test("nightshiftctl does not expose the PR-only resume command", async () => {
       assert.doesNotMatch(error.stderr, /fetch failed/);
       return true;
     });
+});
+
+for (const entry of ["V", "decision"]) test(`terminal attempt ${entry} recovers the same failed receipt without a new operation`, async () => {
+  const {id, runtime,store,workboard,oldKey,request}=await stoppedProject("failed",{terminalAttempt:true,observe:entry==="decision"});
+  const before=store.getExternalOperation(oldKey);const purchase=store.getExternalOperation("paid-purchase");
+  if(entry==="V") {
+    const r=await runtime.resume({actor:"V",cardId:"project-login"});assert.equal(r.how,"same");
+    assert.equal((await runtime.resume({actor:"V",cardId:"project-login"})).alreadyResumed,true);
+  } else {
+    assert(!request.options[0].freshOperation);assert.match(request.options[0].description,/不会再付钱/);
+    await runtime.decide({decisionId:request.id,optionId:"continue",actor:"operator"});
+  }
+  assert.equal(workboard.cards.filter(c=>c.labels.includes("stage:login")).length,1);
+  assert.equal(workboard.cards.find(c=>c.id==="project-login").status,"ready");
+  assert.deepEqual(store.getExternalOperation(oldKey),before);assert.deepEqual(store.getExternalOperation("paid-purchase"),purchase);
+  assert.equal(store.listStageRuns(id).filter(r=>r.stageId==="login").length,1);
+  store.close();
 });
