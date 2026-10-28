@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { infrastructureFailureSummary } from "./failure-policy.mjs";
+import { isKnownTerminalAttempt } from "./external-operation-completion.mjs";
 
 // 需要你: everything only a person can move. The engine owns this queue; the
 // board, the Feishu notice and nightshiftctl all read it. See
@@ -9,7 +10,7 @@ const DAY_MS = 86_400_000;
 const BASELINE_KEY = "needs-you-v1.baseline";
 // Bumped whenever the words a request shows are produced differently, so open
 // requests are rewritten under the current rules instead of keeping old text.
-export const DESCRIBE_VERSION = 5;
+export const DESCRIBE_VERSION = 6;
 const OPERATION_UNDER_WAY = new Set(["reserved", "executing"]);
 const MOVED_ON = new Set(["ready", "running", "done", "review", "scheduled", "todo", "backlog"]);
 
@@ -40,7 +41,7 @@ export function stopOptionsFor(scope, { stage = null, operation = null, asked = 
     options.push(Object.freeze({ id: "retry", label: "用这次的结果", effect: "retry", description: "接着用已经做好的结果交付，不会再付钱；可以附一句话给 agent" }));
     options.push(Object.freeze({ id: "redo", label: "重新生成", effect: "redo", description: "重新做一次，会再付一次钱；可以写这次要怎么改" }));
   } else {
-    const fresh = scope === "item" ? continuation(ledger) === "fresh" : ledger?.state === "failed";
+    const fresh = scope === "item" ? continuation(ledger) === "fresh" : ledger?.state === "failed" && !ledger.resultOnly;
     const ambiguous = scope === "project" && ["unsubmitted", "unknown"].includes(ledger?.state);
     options.push(Object.freeze({
       id: "continue",
@@ -65,7 +66,7 @@ export function stopOptionsFor(scope, { stage = null, operation = null, asked = 
 // call or one in an unknown state blocks again every time (wsfood-es-28 on V,
 // 2026-10-08). Those go on as a fresh attempt under a new revision.
 export function continuation(ledger) {
-  return ledger && ["unsubmitted", "failed", "unknown"].includes(ledger.state) ? "fresh" : "same";
+  return ledger && !ledger.resultOnly && ["unsubmitted", "failed", "unknown"].includes(ledger.state) ? "fresh" : "same";
 }
 
 // Requests opened before skip existed still offer it when they concern one item.
@@ -351,7 +352,8 @@ export function ledgerOf(stage, operation) {
   if (!operation) return { state: "none", paidOnly };
   const taskId = operation.externalTaskId ?? null;
   if (operation.status === "succeeded") return { state: "succeeded", taskId, paidOnly };
-  if (operation.status === "failed") return { state: "failed", taskId, reason: resultReason(operation.result), paidOnly };
+  if (operation.status === "failed") return { state: "failed", taskId, reason: resultReason(operation.result), paidOnly,
+    ...(isKnownTerminalAttempt(stage, operation) ? { resultOnly: true } : {}) };
   if (operation.status === "executing" && taskId) return { state: "executing", taskId, paidOnly };
   if (operation.status === "unknown") return { state: "unknown", taskId, paidOnly };
   return { state: "unsubmitted", taskId: null, paidOnly };

@@ -1521,7 +1521,7 @@ export class NightShiftRuntime {
     const operation = findNightShiftExternalOperation({ card, operations: this.store.listExternalOperations(instance.id) });
     const ledger = ledgerOf(stage, operation);
     if (["unsubmitted", "unknown"].includes(ledger?.state)) throw Object.assign(new Error("External outcome is ambiguous; supplier readback is required before resuming"), { statusCode: 409 });
-    if (ledger?.state === "failed" && allowNewOperation !== true) throw Object.assign(new Error("A new external operation may incur a charge; V must explicitly accept it within the authorized scope (--allow-new-operation)"), { statusCode: 409 });
+    if (ledger?.state === "failed" && !ledger.resultOnly && allowNewOperation !== true) throw Object.assign(new Error("A new external operation may incur a charge; V must explicitly accept it within the authorized scope (--allow-new-operation)"), { statusCode: 409 });
     const result = await this.goOn({ actor, cardId, instanceId: instance.id, stageId, contentItemId, note,
       freshProjectOperation: allowNewOperation === true });
     this.store.appendEvent({ instanceId: instance.id, type: "stage.resume.requested",
@@ -1567,7 +1567,7 @@ export class NightShiftRuntime {
       if (["unsubmitted", "unknown"].includes(ledger?.state)) {
         throw Object.assign(new Error("External operation outcome is ambiguous; supplier readback is required before continuing"), { statusCode: 409 });
       }
-      if (ledger?.state === "failed") {
+      if (ledger?.state === "failed" && !ledger.resultOnly) {
         if (!freshProjectOperation) throw Object.assign(new Error("This decision now requires a new external operation that may incur a charge; refresh the request and confirm that choice"), { statusCode: 409 });
         const redo = await this.redoProjectStoppedStage({ actor, cardId, instanceId, stageId, note });
         return { how: "fresh", paid: stage.sideEffects.includes("paid-production"), revision: redo.revision };

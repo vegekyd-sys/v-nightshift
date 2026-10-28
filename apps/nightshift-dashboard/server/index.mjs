@@ -59,6 +59,7 @@ import {
   resolveNightShiftOperationKeys,
   stageHandoffPath,
   validateDeclaredCompletion,
+  validateExternalOperationCompletion,
   validateExecutionEvidence,
   validateProjectRequest,
   contentItemsManifestIssues,
@@ -310,7 +311,7 @@ async function handleApi(request, response, url) {
       cardsUpdatedAt,
       lastSchedulerAt,
       lastSchedulerError,
-      workflowFeatures: { calls: 1, boundedRepeat: 1 },
+      workflowFeatures: { calls: 1, boundedRepeat: 1, terminalAttempts: 1 },
       notifications: { enabled: notificationsEnabled, lastAt: lastNotificationAt, lastError: lastNotificationError },
       schedulerStartedAt,
       schedulerRunning: Boolean(schedulerPromise),
@@ -1605,6 +1606,8 @@ async function deliverablesFromItemHandoffs(instanceId, contentItemId) {
 async function validateCompletion({ card, contentItemId, instance, release, reuseExecutionEvidence = false, stageId, submittedAttempt, terminalSession }) {
   const stage = release?.spec?.stages?.find((entry) => entry.id === stageId);
   const evidence = {};
+  let handoff = null;
+  const completionArtifacts = new Map();
   const human = humanCompletionEvidence({ store, card, instance, stageId, contentItemId, submittedAttempt });
   if (human) evidence.humanAttempt = human;
   if (stage?.actor === "agent" && !human) {
@@ -1644,25 +1647,31 @@ async function validateCompletion({ card, contentItemId, instance, release, reus
         candidateIdempotencyKeys: operationKeys.candidateIdempotencyKeys,
         operations: store.listExternalOperations(instance.id),
       });
-      if (!operation || operation.ownerCardId !== card.id || operation.status !== "succeeded") {
-        throw new Error("External side effect has no succeeded Night Shift operation checkpoint");
-      }
-      evidence.externalOperation = {
-        externalTaskId: operation.externalTaskId,
-        idempotencyKey: operation.idempotencyKey,
-        requestHash: operation.requestHash,
-        status: operation.status,
-      };
+      evidence.externalOperation = await validateExternalOperationCompletion({ card, operation, stage,
+        loadReceipt: async (name) => {
+          const raw = await loadStageHandoff({ contentItemId, instance, release, stageId, required: true });
+          const manifest = normalizeStageHandoff(raw, { contentItemId, instanceId: instance.id, release, stageId });
+          handoff = manifest;
+          const entry = manifest.outputs.find(output => output.name === name);
+          if (!entry) throw new Error("Declared terminal attempt receipt is missing from the handoff");
+          const handoffDir = dirname(stageHandoffPath({ instanceDir: instance.inputs?.nightshift?.instanceDir ?? resolve(dataDir, "instances", instance.id), contentItemId, release, stageId }));
+          const loaded = await loadInstanceArtifact({ artifact: entry.artifact, contentItemId, instance, handoffDir, hash: Boolean(human) });
+          if (!loaded.exists || !loaded.json) throw new Error("Terminal attempt receipt must be a local JSON artifact");
+          completionArtifacts.set(entry.artifact, loaded);
+          return loaded.json;
+        },
+      });
     } catch (error) {
       error.completionPhase ??= "side_effect";
       throw error;
     }
   }
-  let handoff = null;
   if (release?.spec?.handoff?.version === 1) {
     try {
-      const manifest = await loadStageHandoff({ contentItemId, instance, release, stageId, required: true });
-      handoff = normalizeStageHandoff(manifest, { contentItemId, instanceId: instance.id, release, stageId });
+      if (!handoff) {
+        const manifest = await loadStageHandoff({ contentItemId, instance, release, stageId, required: true });
+        handoff = normalizeStageHandoff(manifest, { contentItemId, instanceId: instance.id, release, stageId });
+      }
     } catch (error) {
       error.completionPhase ??= "handoff";
       throw error;
@@ -1677,7 +1686,7 @@ async function validateCompletion({ card, contentItemId, instance, release, reus
         checkUrl: checkCompletionUrl,
         instanceCreatedAt: instance.createdAt,
         loadArtifact: async (artifact) => {
-          const loaded = await loadInstanceArtifact({ artifact, contentItemId, instance, hash: Boolean(human), handoffDir });
+          const loaded = completionArtifacts.get(artifact) ?? await loadInstanceArtifact({ artifact, contentItemId, instance, hash: Boolean(human), handoffDir });
           if (human) (evidence.artifacts ??= []).push({ artifact, sha256: loaded.sha256 });
           return loaded;
         },
