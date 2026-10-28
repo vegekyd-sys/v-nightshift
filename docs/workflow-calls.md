@@ -24,6 +24,8 @@ spec:
 
 验证得到业务不通过时，可正常完成验证卡，输出事实，例如 `{accepted:false,retryable:true,evidence:...}`。技术故障、缺失产物仍是执行失败，恢复同轮；不要用技术报错表示业务结论。只有被调用 Workflow 完成且导出可读，控制器才消费结果。
 
+外部操作本身失败时，默认付费完成门槛仍要求 succeeded。需要交付明确失败尝试的阶段，显式使用 [terminal-attempt 契约](terminal-attempts.md)，保留 failed 及回读证据；未经该声明不能靠新轮次绕过完成校验。尝试终态不等于财务已结算，也不等于资源不可用。
+
 ## 调用声明
 
 ```yaml
