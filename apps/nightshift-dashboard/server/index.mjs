@@ -311,7 +311,7 @@ async function handleApi(request, response, url) {
       cardsUpdatedAt,
       lastSchedulerAt,
       lastSchedulerError,
-      workflowFeatures: { calls: 1, boundedRepeat: 1, terminalAttempts: 1, operationRecovery: 1, descendantDecisions: 1 },
+      workflowFeatures: { calls: 1, boundedRepeat: 1, terminalAttempts: 1, operationRecovery: 1, descendantDecisions: 1, retryWindows: 1 },
       notifications: { enabled: notificationsEnabled, lastAt: lastNotificationAt, lastError: lastNotificationError },
       schedulerStartedAt,
       schedulerRunning: Boolean(schedulerPromise),

@@ -30,13 +30,14 @@ export async function atomicJson(file, value) {
 
 // Outputs are explicit JSON exports from the completed called release, never
 // free-text messages or files from a previous iteration.
-export async function readCallOutputs({ store, instance, release }) {
+export async function readCallOutputs({ store, instance, release, validateExport = null }) {
   const root = instance.inputs?.nightshift?.instanceDir;
   if (!root) throw new Error("Called Workflow needs an artifact directory");
   const exports = {};
   for (const [name, source] of Object.entries(release.spec.outputs)) {
     const latest = store.listStageRuns(instance.id).filter(run => run.stageId === source.stage).sort((a, b) => b.attempt - a.attempt)[0];
     if (latest?.status !== "done") throw new Error(`Export stage ${source.stage} is not complete`);
+    if (validateExport) await validateExport({ stageId: source.stage, cardId: latest.cardId });
     const handoff = normalizeStageHandoff(JSON.parse(await boundedRead(join(root, "handoffs", `${source.stage}.json`))), { instanceId: instance.id, release, stageId: source.stage });
     const artifact = handoff.outputs.find(entry => entry.name === source.output)?.artifact;
     if (!artifact) throw new Error(`Missing export ${name}`);
@@ -99,6 +100,9 @@ export async function advanceWorkflowCalls(runtime, parent, release, { nowMs, in
     // root tick dispatches, so calls cannot multiply global/project capacity.
     if (runtime.beforeCallTick) await runtime.beforeCallTick(child);
     const result = await runtime.tick(child.id, { dispatch: false, inspectSessions, now: nowMs });
+    // Child reconciliation can accept a retry and renew this path's window.
+    // Do not overwrite that durable reset with this tick's older call object.
+    call = store.getCall?.(call.id) ?? call;
     applied.push(...result.applied);
     if (result.instance.status !== "done") {
       const blocked = store.executionIds(child.id).some(id => [...store.listStageRuns(id), ...store.listContentItemRuns(id)].some(entry => entry.status === "blocked"));
@@ -111,7 +115,18 @@ export async function advanceWorkflowCalls(runtime, parent, release, { nowMs, in
     if (unresolved) hold(store, call, "external-outcome-unknown: supplier readback required");
     else {
       if (!call.outputs) {
-        try { call.outputs = await readCallOutputs({ store, instance: child, release: childRelease }); }
+        try {
+          call.outputs = await readCallOutputs({ store, instance: child, release: childRelease,
+            validateExport: call.recheckExports && runtime.completionValidator ? async ({ stageId, cardId }) => {
+              const [card] = await workboard.listCards({ cardIds: [cardId] });
+              if (!card || card.status !== "done") throw new Error("Export card is not complete");
+              // An explicit artifact repair must pass the same execution,
+              // handoff and output contract as the original completion. The
+              // old validated-event cache cannot bless changed bytes.
+              await runtime.completionValidator({ card, contentItemId: null, instance: child, release: childRelease, stageId });
+            } : null });
+          call.recheckExports = false;
+        }
         catch (error) {
           hold(store, call, `output-contract: ${error instanceof SyntaxError ? "invalid JSON; inspect child artifacts" : error.message}`);
           await projectController(runtime, run, "blocked", call.reason);
@@ -165,13 +180,14 @@ async function startIteration(runtime, parent, stage, run, history, nowMs) {
   inputs.nightshift = { instanceDir, projectInputsPath: join(instanceDir, "project-inputs.json"), contentItemsManifestPath: join(instanceDir, "content-items.json") };
   const child = validateProjectRequest(store.getRelease(stage.call.workflow).manifest, { id: childId, name: `${stage.title} · ${iteration}`, workflowSha256: stage.call.workflow, inputs, agentBindings: parent.agentBindings });
   if (runtime.callPreflight) await runtime.callPreflight(store.getRelease(stage.call.workflow).manifest, child);
-  const first = history[0];
+  const previous = history.at(-1);
   const root = store.getInstance(store.rootInstanceId(parent.id));
   const rootDuration = store.getRelease(root.workflowSha256).manifest.spec.limits?.maxDuration;
   const rootDeadline = rootDuration ? Date.parse(root.createdAt) + durationMs(rootDuration) : Infinity;
   const ancestorDeadline = Math.min(Infinity, ...store.callAncestors(parent.id).map(call => call.deadline));
   const created = store.createCall({ id, parentId: parent.id, childId, cardId: run.cardId, stageId: stage.id, contentItemId: run.contentItemId ?? null, attempt: run.attempt, iteration,
-    startedAt: nowMs, deadline: Math.min(first?.deadline ?? nowMs + Math.min(durationMs(stage.timeout), durationMs(stage.repeat?.maxDuration ?? stage.timeout)), rootDeadline, ancestorDeadline),
+    startedAt: nowMs, deadline: Math.min(previous?.deadline ?? nowMs + Math.min(durationMs(stage.timeout), durationMs(stage.repeat?.maxDuration ?? stage.timeout)), rootDeadline, ancestorDeadline),
+    ...(previous?.retryWindowId ? { retryWindowId: previous.retryWindowId, attemptWindowStartedAt: previous.attemptWindowStartedAt } : {}),
     maxOperations: stage.repeat?.maxOperations ?? stage.call.maxOperations ?? 0, state: "running", reason: iteration === 1 ? "initial" : "repeat-condition", outputs: null }, child);
   const persisted = store.getInstance(created.childId);
   await atomicJson(persisted.inputs.nightshift.projectInputsPath, { version: 1, instanceId: childId, inputs: redactSensitiveInputs(persisted.inputs) });
@@ -192,6 +208,7 @@ export function publicCallSummary(store, instanceId) {
   return store.executionIds(instanceId).flatMap(id => store.listCalls(id)).map(call => ({
     id: call.id, parentId: call.parentId, childId: call.childId, cardId: call.cardId, stageId: call.stageId, contentItemId: call.contentItemId,
     iteration: call.iteration, state: call.state, blocked: call.state === "held" || call.reason.startsWith("child-work-stopped"), reason: call.reason, deadline: call.deadline,
+    attemptWindowStartedAt: call.attemptWindowStartedAt ?? call.startedAt, retryWindowId: call.retryWindowId ?? null,
     totalOperations: store.listCalls(call.parentId).filter(entry => entry.cardId === call.cardId).flatMap(entry => store.executionIds(entry.childId)).reduce((sum, id) => sum + store.listExternalOperations(id).length, 0),
     operations: store.executionIds(call.childId).reduce((sum, id) => sum + store.listExternalOperations(id).length, 0),
     baseMaxOperations: call.maxOperations,

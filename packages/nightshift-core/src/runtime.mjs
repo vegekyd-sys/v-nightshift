@@ -1113,7 +1113,6 @@ export class NightShiftRuntime {
   }
 
   async retry({ actor, cardId, contentItemId, evidence, instanceId, stageId, decisionNote = null }) {
-    this.store.assertCallAdmission(instanceId, new Date(this.now()));
     const instance = this.store.getInstance(instanceId);
     if (!instance) throw new Error(`Unknown instance ${instanceId}`);
     const release = this.store.getRelease(instance.workflowSha256)?.manifest;
@@ -1140,6 +1139,8 @@ export class NightShiftRuntime {
       throw new Error("This project stage card has been superseded by a newer revision");
     }
     const operation = findNightShiftExternalOperation({ card, operations: this.store.listExternalOperations(instanceId) });
+    this.prepareRetryWindow({ actor, card, instance, stage, run, note: decisionNote ?? evidence });
+    this.store.assertCallAdmission(instanceId, new Date(this.now()));
     await this.workboard.updateCard(cardId, {
       // Retrying a result/readable task keeps its original identity even if
       // inputs or historical key formats differ. Only a revision gets a new key.
@@ -1503,7 +1504,6 @@ export class NightShiftRuntime {
     const release = instance ? this.store.getRelease(instance.workflowSha256)?.manifest : null;
     if (!instance || !release) throw Object.assign(new Error("Card is not linked to a pinned Night Shift project"), { statusCode: 422 });
     const { stage, stageId, contentItemId } = resolveNightShiftCardContext({ card, release });
-    this.store.assertCallAdmission(instance.id, new Date(this.now()));
     if (stage?.actor === "workflow") return this.retryWorkflowCall({ actor, card, instance, stage, note });
     if (!stage || !["agent", "system"].includes(stage.actor) || card.labels?.includes("nightshift:approval")) {
       throw Object.assign(new Error("Resume applies to executable work, not approval or human-review gates"), { statusCode: 409 });
@@ -1515,6 +1515,13 @@ export class NightShiftRuntime {
     const base = { instanceId: instance.id, stageId, contentItemId, sourceCardId: cardId, affectedCardIds: [cardId] };
     if (latest.attempt > source.attempt) return { ...base, how: "fresh", alreadyResumed: true, cardId: latest.cardId };
     if (!["active", "paused"].includes(instance.status)) throw Object.assign(new Error("Only active or paused projects can resume work"), { statusCode: 409 });
+    const elapsedCall = this.store.callAncestors(instance.id).some(call => call.reason === "duration-limit" || this.now() >= call.deadline) || this.now() >= (this.store.executionDeadline?.(instance.id) ?? Infinity);
+    if (["ready", "scheduled"].includes(card.status) && elapsedCall && card.execution?.status !== "running") {
+      if (requiredApproval(stage, instance, new Date(this.now()), contentItemId)) throw Object.assign(new Error("The stage's execution authorization is missing or expired"), { statusCode: 409 });
+      this.prepareRetryWindow({ actor, card, instance, stage, run: source, note });
+      this.store.assertCallAdmission(instance.id, new Date(this.now()));
+      return { ...base, how: "same", alreadyResumed: false, status: card.status };
+    }
     if (["ready", "running", "scheduled", "done"].includes(card.status)) return { ...base, how: "same", alreadyResumed: true, status: card.status };
     if (card.status !== "blocked" || card.execution?.status === "running") throw Object.assign(new Error("Resume requires a stopped executable card"), { statusCode: 409 });
     if (requiredApproval(stage, instance, new Date(), contentItemId)) throw Object.assign(new Error("The stage's execution authorization is missing or expired"), { statusCode: 409 });
@@ -1529,6 +1536,22 @@ export class NightShiftRuntime {
       payload: { actor, cardId, stageId, contentItemId, note, allowNewOperation: allowNewOperation === true, ...result } });
     this.store.supersedeDecisionRequests(cardId);
     return { ...base, ...result, alreadyResumed: false };
+  }
+
+  prepareRetryWindow({ actor, card, instance, stage, run, note, fresh = false, callId = null }) {
+    if (!this.store.resetRetryWindow) return null; // ordinary legacy test adapters
+    if (!callId && !this.store.callForChild(instance.id) && !this.store.getRelease(instance.workflowSha256)?.manifest.spec.limits?.maxDuration) return null; // no technical window/allocation to reset
+    if (!stageEnabled(stage, instance.inputs) || (run?.contentItemId && this.isContentItemSkipped(instance.id, run.contentItemId))) throw Object.assign(new Error("Stage is disabled or item was skipped"), { statusCode: 409 });
+    const itemId = run?.contentItemId ?? null;
+    const runs = itemId ? this.store.listContentItemRuns(instance.id) : this.store.listStageRuns(instance.id);
+    const relevant = runs.filter(entry => entry.stageId === stage.id && (entry.contentItemId ?? null) === itemId).sort((a, b) => b.attempt - a.attempt);
+    if (!run || relevant[0]?.cardId !== card.id) throw Object.assign(new Error("Retry card was superseded"), { statusCode: 409 });
+    const operations = this.store.listExternalOperations(instance.id);
+    const predecessor = fresh ? run : relevant.find(entry => entry.attempt < run.attempt);
+    const failed = predecessor && operations.find(entry => entry.ownerCardId === predecessor.cardId && entry.status === "failed");
+    return this.store.resetRetryWindow({ instanceId: instance.id, cardId: card.id, stageId: stage.id, contentItemId: itemId,
+      nativeAttempt: String(cardAttempt(card)), targetAttempt: run.attempt + (fresh ? 1 : 0),
+      failedOperationKey: failed?.idempotencyKey ?? null, callId, actor, note }, new Date(this.now()));
   }
 
   async authorizeOperationRecovery({ cardId, failedOperationKey, requestHash, actor, reason, authorization, evidence }) {
@@ -1560,11 +1583,20 @@ export class NightShiftRuntime {
       await this.workboard.moveCard(card.id, "review");
       return { instanceId: instance.id, cardId: card.id, how: "same", alreadyResumed: false };
     }
-    if (!call || call.state !== "held") return { instanceId: instance.id, cardId: card.id, how: "same", alreadyResumed: true };
-    if (["iteration-limit", "duration-limit"].includes(call.reason) || this.now() >= call.deadline) throw Object.assign(new Error("Call resource limit cannot be bypassed by retry"), { statusCode: 409 });
+    if (!call || (call.state !== "held" && !(call.state === "running" && this.now() >= call.deadline))) return { instanceId: instance.id, cardId: card.id, how: "same", alreadyResumed: true };
+    if (call.reason === "iteration-limit") throw Object.assign(new Error("Call iteration limit cannot be bypassed by retry"), { statusCode: 409 });
+    if (call.reason === "duration-limit" || this.now() >= call.deadline) {
+      const run = [...this.store.listStageRuns(instance.id), ...this.store.listContentItemRuns(instance.id)].find(run => run.cardId === card.id);
+      this.prepareRetryWindow({ actor, card, instance, stage, run, note, callId: call.id });
+      // Only an accepted explicit retry re-reads this child's exports. Preserve
+      // the renewed window instead of saving the pre-reset call snapshot.
+      this.store.saveCall({ ...this.store.getCall(call.id), outputs: null, recheckExports: true });
+      await this.workboard.moveCard(card.id, "review");
+      return { instanceId: instance.id, cardId: card.id, how: "same", alreadyResumed: false };
+    }
     const unresolved = this.store.executionIds(call.childId).flatMap(id => this.store.listExternalOperations(id)).some(op => !["succeeded", "failed"].includes(op.status));
     if (unresolved) throw Object.assign(new Error("Supplier readback required before retrying call"), { statusCode: 409 });
-    this.store.saveCall({ ...call, state: "running", reason: "operator-recheck" });
+    this.store.saveCall({ ...call, state: "running", reason: "operator-recheck", outputs: null, recheckExports: true });
     this.store.appendEvent({ instanceId: instance.id, type: "workflow.call.retry", payload: { callId: call.id, actor, note } });
     await this.workboard.moveCard(card.id, "review");
     return { instanceId: instance.id, cardId: card.id, how: "same", alreadyResumed: false };
@@ -1705,6 +1737,7 @@ export class NightShiftRuntime {
         throw new Error(`${id} has an external operation; an explicit downstream recovery plan is required`);
       }
     }
+    this.prepareRetryWindow({ actor, card, instance, stage, run: latest(stageId), note, fresh: true });
     return this.store.reviseProjectStages({ instanceId, cardId, stageId, stageIds, actor, note });
   }
 
@@ -1735,6 +1768,8 @@ export class NightShiftRuntime {
     const ran = new Set(this.store.listContentItemRuns(instanceId)
       .filter((entry) => entry.contentItemId === contentItemId).map((entry) => entry.stageId));
     const stageIds = [stageId, ...stagesAfter(stages, stageId, instance).filter((id) => ran.has(id))];
+    const run = this.store.listContentItemRuns(instanceId).filter(run => run.contentItemId === contentItemId && run.stageId === stageId && run.cardId === card.id).at(-1);
+    this.prepareRetryWindow({ actor, card, instance, stage, run, note, fresh: true });
     const redo = this.startRevision({ actor, contentItemId, instanceId, fromStageId: stageId, stageIds, note, reason: "stop" });
     if (!redo.redone) throw Object.assign(new Error(redo.why), { statusCode: 409 });
     return redo;
