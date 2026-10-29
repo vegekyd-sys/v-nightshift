@@ -5,6 +5,12 @@ import { durationMs } from "./workflow-call-contract.mjs";
 export const RECOVERY_EVENT = "external-operation.recovery-authorized";
 const reject = message => { throw Object.assign(new Error(message), { statusCode: 409 }); };
 const sameItem = (a, b) => (a ?? null) === (b ?? null);
+// An identical supplier readback may advance updatedAt; that is not a changed
+// failure. Bind the actual identity/outcome/evidence, not bookkeeping clocks.
+function failedSnapshotHash(operation) {
+  const { createdAt, updatedAt, ...facts } = operation;
+  return operationResultHash(facts);
+}
 
 // Limits are additive constraints, not separate budgets. A nested Workflow's
 // own declared limit must not disappear just because it is called by a parent.
@@ -29,7 +35,7 @@ export function operationLimitScopes(store, instanceId, now = new Date()) {
 export function recoveryBindingMatches(store, grant, operation) {
   if (grant.ownerCardId !== operation.ownerCardId || grant.instanceId !== operation.instanceId || grant.stageId !== operation.stageId || !sameItem(grant.contentItemId, operation.contentItemId) || grant.requestHash !== operation.requestHash || grant.idempotencyKey !== operation.idempotencyKey) return false;
   const failed = store.getExternalOperation(grant.failedOperationKey);
-  return failed?.status === "failed" && operationResultHash(failed) === grant.failedSnapshotSha256 &&
+  return failed?.status === "failed" && failedSnapshotHash(failed) === grant.failedSnapshotSha256 &&
     store.getInstance(grant.instanceId)?.workflowSha256 === grant.workflowSha256 && store.rootInstanceId(grant.instanceId) === grant.rootId;
 }
 
@@ -83,7 +89,7 @@ export function authorizeOperationRecovery(store, request, now = new Date()) {
   if (scopes.filter(scope => !scope.root).some(scope => scope.operations.some(op => !["succeeded", "failed"].includes(op.status)))) reject("Related external outcome is unknown or executing; supplier readback required");
   if (!exhausted.length) reject("No exhausted child/call operation limit; normal reservation needs no allowance");
   if (exhausted.some(scope => scope.maxOperations === 0)) reject("Zero-operation scope cannot be enabled by recovery");
-  const grant = { id, ...operation, rootId, workflowSha256: instance.workflowSha256, failedOperationKey, failedSnapshotSha256: operationResultHash(failed), additionalOperations: 1, scopeIds: exhausted.map(scope => scope.id), actor, reason, authorization, evidence, createdAt: now.toISOString() };
+  const grant = { id, ...operation, rootId, workflowSha256: instance.workflowSha256, failedOperationKey, failedSnapshotSha256: failedSnapshotHash(failed), additionalOperations: 1, scopeIds: exhausted.map(scope => scope.id), actor, reason, authorization, evidence, createdAt: now.toISOString() };
   store.appendEvent({ eventId: id, instanceId: rootId, type: RECOVERY_EVENT, payload: grant, now });
   return { ...grant, reused: false };
 }

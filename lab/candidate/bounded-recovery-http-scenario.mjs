@@ -52,6 +52,9 @@ export async function runHttpScenario({ baseUrl, workboard, id = "NS-RECOVERY-10
   const grants = await Promise.all([api(`/cards/${retry}/operations/authorize-recovery`, request), api(`/cards/${retry}/operations/authorize-recovery`, request)]);
   assert.equal(grants[0].id, grants[1].id);
   assert.equal(grants[0].additionalOperations, 1);
+  // Re-reading the same failed outcome must not invalidate the permit just
+  // because the ledger's bookkeeping timestamp advances.
+  await api(`/cards/${first}/operations/checkpoint`, { status: "failed" });
   assert.equal((await response(`/cards/${retry}/operations/reserve`, { requestHash: "c".repeat(64) })).status, 409);
   const reservations = await Promise.all([api(`/cards/${retry}/operations/reserve`, { requestHash: request.requestHash }), api(`/cards/${retry}/operations/reserve`, { requestHash: request.requestHash })]);
   assert.equal(reservations[0].idempotencyKey, reservations[1].idempotencyKey);

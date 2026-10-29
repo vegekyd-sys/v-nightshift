@@ -79,6 +79,7 @@ test("known failed recovery gets exactly one card/hash-bound allowance, preservi
   assert.equal(f.store.authorizeOperationRecovery(f.request).id, grant.id);
   assert.throws(() => f.store.authorizeOperationRecovery({ ...f.request, requestHash: "c".repeat(64) }), /different|bound/i);
   assert.throws(() => f.store.reserveExternalOperation({ ...f.operation, requestHash: "c".repeat(64) }), /hash|operation limit/i);
+  f.store.checkpointExternalOperation(f.failed.idempotencyKey, { status: "failed" }, new Date(Date.now() + 1));
   f.reopen();
   const op = f.store.reserveExternalOperation(f.operation);
   assert.equal(f.store.reserveExternalOperation(f.operation).reused, true);
