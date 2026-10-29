@@ -98,6 +98,10 @@ test("known failed recovery gets exactly one card/hash-bound allowance, preservi
 test("recovery cannot enlarge root budget, zero-operation calls, or unknown outcomes", async t => {
   const full = await failedRecoveryFixture(t, { parentSpec: { limits: { maxOperations: 1 } } });
   assert.throws(() => full.store.authorizeOperationRecovery(full.request), /Root|Project/i);
+  full.store.resetRetryWindow({ instanceId: full.call.childId, cardId: "retry-card", stageId: "verify", targetAttempt: 2,
+    nativeAttempt: "fixture", failedOperationKey: full.failed.idempotencyKey, actor: "V", note: "retry within original scope" });
+  assert.throws(() => full.store.reserveExternalOperation(full.operation), /Project external-operation limit/);
+  assert.equal(full.store.listOperationRecoveries("ROOT").length, 0, "automatic retry slot cannot expand the root allowance");
   const unknown = await failedRecoveryFixture(t);
   unknown.store.checkpointExternalOperation(unknown.failed.idempotencyKey, { status: "unknown" });
   assert.throws(() => unknown.store.authorizeOperationRecovery(unknown.request), /failed|unknown/i);
@@ -206,126 +210,152 @@ async function fixture(t, { repeat = true, items = false, maxOperations = 2, chi
   return api;
 }
 
-test("expired call has an explicit bounded time recovery without recreating cards or resetting counters", async t => {
-  const f = await fixture(t, { repeat: false, parentSpec: { limits: { maxDuration: "8h", maxOperations: 20 } } });
+test("ordinary retry renews an expired attempt and its operation slot, not the project budget", async t => {
+  const f = await fixture(t, { repeat: false, maxOperations: 1,
+    childStages: [system("verify", { sideEffects: ["external-call"], retry: { maxAttempts: 1, idempotencyKey: "static" } })],
+    childSpec: { limits: { maxOperations: 1, maxDuration: "10m" } }, parentSpec: { limits: { maxOperations: 3, maxDuration: "8h" } } });
   await f.tick();
-  const call = f.store.listCalls("ROOT")[0];
-  f.advance(11 * 60000);
-  await f.tick();
+  const call = f.store.listCalls("ROOT")[0], old = f.store.listStageRuns(call.childId)[0];
+  const op = f.reserve(call);
+  f.store.checkpointExternalOperation(op.idempotencyKey, { status: "failed", result: { code: 45006, terminal: true } });
+  const original = f.store.getExternalOperation(op.idempotencyKey);
+  await f.board.moveCard(old.cardId, "blocked");
+  f.store.upsertStageRun({ ...old, status: "blocked" });
+  f.advance(11 * 60000); await f.tick();
   assert.equal(f.store.listCalls("ROOT")[0].reason, "duration-limit");
-  const request = { callId: call.id, expectedDeadline: call.deadline, deadline: call.deadline + 10 * 60000, actor: "V", reason: "repair after investigated failure", authorization: "existing bounded scope", evidence: "known outcome readback" };
-  const grant = f.store.authorizeCallTimeRecovery(request, new Date(call.deadline + 60000));
-  assert.equal(grant.originalDeadline, call.deadline);
-  assert.equal(grant.deadline, request.deadline);
+  await f.runtime.resume({ actor: "V", cardId: old.cardId, allowNewOperation: true, note: "correct request within existing scope" });
+  const renewed = f.store.listCalls("ROOT")[0];
+  assert.equal(renewed.deadline, call.deadline + 11 * 60000);
+  assert.equal(renewed.childId, call.childId);
+  await f.tick();
+  const retry = f.store.listStageRuns(call.childId).find(run => run.attempt === 2);
+  const request = { instanceId: call.childId, stageId: "verify", ownerCardId: retry.cardId, idempotencyKey: "corrected", requestHash: "b".repeat(64) };
+  assert.equal(f.store.reserveExternalOperation(request, new Date(renewed.deadline - 1)).reused, false);
+  assert.equal(f.store.reserveExternalOperation(request).reused, true);
+  assert.equal(f.store.listExternalOperations(call.childId).length, 2);
+  assert.deepEqual(f.store.getExternalOperation(op.idempotencyKey), original);
+  f.advance(60000); await f.runtime.resume({ actor: "V", cardId: old.cardId, allowNewOperation: true });
+  assert.equal(f.store.listCalls("ROOT")[0].deadline, renewed.deadline, "duplicate/stale retry never extends time");
   f.reopen();
-  assert.equal(f.store.authorizeCallTimeRecovery(request).id, grant.id);
-  assert.equal(f.store.listCalls("ROOT")[0].childId, call.childId);
-  await f.finish(call, { passed: true });
-  await f.tick(); await f.tick();
-  assert.equal(f.store.listCalls("ROOT")[0].state, "succeeded");
-  assert.equal(f.store.listStageRuns("ROOT").filter(run => run.stageId === "deliver").length, 1);
-  f.store.authorizeCallTimeRecovery(request);
-  assert.equal(f.store.listCalls("ROOT")[0].state, "succeeded", "replay never revives completed work");
+  assert.equal(f.store.listCalls("ROOT")[0].deadline, renewed.deadline);
+  assert.equal(f.store.getRelease(f.parent.workflowSha256).manifest.spec.limits.maxOperations, 3);
 });
 
-async function expiredTimeFixture(t, options = {}) {
+async function stoppedRetryFixture(t, options = {}) {
   const f = await fixture(t, { repeat: false, parentSpec: { limits: { maxDuration: "8h", maxOperations: 20 } }, ...options });
   await f.tick();
-  const call = f.store.listCalls("ROOT")[0];
-  const now = new Date(call.deadline + 60000);
-  f.advance(now.getTime() - call.startedAt); await f.tick();
-  const request = { callId: call.id, expectedDeadline: call.deadline, deadline: call.deadline + 10 * 60000, actor: "V", reason: "repair", authorization: "unchanged scope", evidence: "known outcome" };
-  return { ...f, get store() { return f.store; }, call, now, request };
+  const call = f.store.listCalls("ROOT")[0], run = f.store.listStageRuns(call.childId)[0];
+  await f.board.moveCard(run.cardId, "blocked");
+  f.store.upsertStageRun({ ...run, status: "blocked" });
+  f.advance(11 * 60000); await f.tick();
+  return { ...f, get store() { return f.store; }, get runtime() { return f.runtime; }, call, run };
 }
 
-test("time recovery rejects stale, rolling, unbounded, missing authority or unrelated holds", async t => {
-  const f = await expiredTimeFixture(t);
-  for (const patch of [
-    { expectedDeadline: f.call.deadline - 1 }, { deadline: f.now.getTime() },
-    { deadline: f.call.deadline + 11 * 60000 }, { deadline: Infinity }, { authorization: "" }, { evidence: "" },
-  ]) assert.throws(() => f.store.authorizeCallTimeRecovery({ ...f.request, ...patch }, f.now));
-  f.store.saveCall({ ...f.call, state: "held", reason: "no-matching-continuation" });
-  assert.throws(() => f.store.authorizeCallTimeRecovery(f.request, f.now), /duration-limit/);
-  f.store.saveCall({ ...f.call, state: "held", reason: "iteration-limit" });
-  assert.throws(() => f.store.authorizeCallTimeRecovery(f.request, f.now), /duration-limit/);
+test("every new stopped native attempt gets a window; duplicate retry and SQLite replay do not", async t => {
+  const f = await stoppedRetryFixture(t);
+  const card = f.board.cards.find(card => card.id === f.run.cardId);
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    card.runId = `native-${attempt}`;
+    await f.runtime.resume({ actor: "V", cardId: card.id });
+    const current = f.store.listCalls("ROOT")[0];
+    assert.equal(current.deadline, f.call.deadline + (11 * attempt) * 60000);
+    f.advance(60000);
+    await f.runtime.resume({ actor: "V", cardId: card.id });
+    assert.equal(f.store.listCalls("ROOT")[0].deadline, current.deadline);
+    f.reopen();
+    assert.equal(f.store.listCalls("ROOT")[0].deadline, current.deadline);
+    f.advance(10 * 60000);
+    await f.board.moveCard(card.id, "blocked");
+    f.store.upsertStageRun({ ...f.run, status: "blocked" });
+    await f.tick();
+  }
+  assert.equal(f.store.listCalls("ROOT").length, 1);
+  assert.equal(f.store.listStageRuns(f.call.childId).length, 1);
+  assert.equal(f.store.listRetryWindows("ROOT").length, 3);
 });
 
-test("time recovery preserves root and child hard deadlines, pause, dispatch and supersession gates", async t => {
-  const rootBound = await expiredTimeFixture(t, { parentSpec: { limits: { maxDuration: "15m", maxOperations: 20 } } });
-  assert.throws(() => rootBound.store.authorizeCallTimeRecovery(rootBound.request, rootBound.now), /duration limits/);
-  assert.throws(() => rootBound.store.authorizeCallTimeRecovery(rootBound.request, new Date(rootBound.call.startedAt + 16 * 60000)), /Project duration/);
-  const childBound = await expiredTimeFixture(t, { childSpec: { limits: { maxDuration: "15m" } } });
-  assert.throws(() => childBound.store.authorizeCallTimeRecovery(childBound.request, childBound.now), /duration limits/);
-  const f = await expiredTimeFixture(t);
-  for (const id of ["ROOT", f.call.childId]) {
-    f.store.updateInstanceStatus(id, "paused");
-    assert.throws(() => f.store.authorizeCallTimeRecovery(f.request, f.now), /paused/);
-    f.store.updateInstanceStatus(id, "active");
-    f.store.setInstanceControl(id, { automaticDispatch: false });
-    assert.throws(() => f.store.authorizeCallTimeRecovery(f.request, f.now), /dispatch/);
-    f.store.setInstanceControl(id, { automaticDispatch: true });
-  }
-  const run = f.store.listStageRuns("ROOT")[0];
-  f.store.upsertStageRun({ ...run, attempt: run.attempt + 1, cardId: "replacement", status: "ready" });
-  assert.throws(() => f.store.authorizeCallTimeRecovery(f.request, f.now), /superseded/);
-});
-
-test("time recovery cannot bypass related ambiguous operations but leaves independent work untouched", async t => {
-  const f = await expiredTimeFixture(t);
-  // Fixture store-only insertion precedes admission: not a production API bypass.
-  const op = { instanceId: f.call.childId, stageId: "verify", ownerCardId: "old-card", requestHash: "a".repeat(64), idempotencyKey: "known-failure" };
-  f.store.reserveOperationRecord(op);
-  for (const status of ["reserved", "executing", "unknown", "failed"]) {
-    f.store.checkpointExternalOperation(op.idempotencyKey, { status });
-    assert.throws(() => f.store.authorizeCallTimeRecovery(f.request, f.now), /readback/);
-  }
-  f.store.checkpointExternalOperation(op.idempotencyKey, { status: "failed", result: { terminal: true, code: "known" } });
-  f.store.reserveOperationRecord({ ...op, instanceId: "ROOT", idempotencyKey: "independent" });
-  const original = f.store.getExternalOperation(op.idempotencyKey);
-  const grants = [f.store.authorizeCallTimeRecovery(f.request, f.now), f.store.authorizeCallTimeRecovery(f.request, f.now)];
-  assert.equal(grants[0].id, grants[1].id);
-  assert.deepEqual(f.store.getExternalOperation(op.idempotencyKey), original);
-  assert.equal(f.store.getExternalOperation("independent").status, "reserved");
-  assert.equal(f.store.getRelease(f.parent.workflowSha256).manifest.spec.limits.maxOperations, 20);
+test("retry of a known in-flight task renews time but preserves its original key/task", async t => {
+  const f = await stoppedRetryFixture(t);
+  const operation = { instanceId: f.call.childId, stageId: "verify", ownerCardId: f.run.cardId, idempotencyKey: "original-task-key", requestHash: "a".repeat(64) };
+  f.store.reserveOperationRecord(operation);
+  f.store.checkpointExternalOperation(operation.idempotencyKey, { status: "executing", externalTaskId: "original-task" });
+  const original = f.store.getExternalOperation(operation.idempotencyKey);
+  await f.runtime.resume({ actor: "V", cardId: f.run.cardId });
+  assert.equal(f.store.listCalls("ROOT")[0].deadline, f.call.deadline + 11 * 60000);
+  assert.deepEqual(f.store.getExternalOperation(operation.idempotencyKey), original);
+  assert.equal(f.store.reserveExternalOperation(operation).reused, true);
   assert.equal(f.store.listExternalOperations(f.call.childId).length, 1);
-  assert.throws(() => f.store.authorizeCallTimeRecovery({ ...f.request, deadline: f.request.deadline - 1 }, f.now), /different/);
-  const held = { ...f.store.getCall(f.call.id), state: "held", reason: "duration-limit" };
-  f.store.saveCall(held);
-  f.store.authorizeCallTimeRecovery(f.request, new Date(f.request.deadline + 1));
-  assert.equal(f.store.getCall(f.call.id).state, "held", "expired permit replay is a read, not a new extension");
+  assert.equal(f.store.listOperationRecoveries("ROOT").length, 0);
 });
 
-test("later loop rounds inherit recovered deadline, never gain another permit or reset iteration", async t => {
-  const f = await expiredTimeFixture(t, { repeat: true });
-  f.store.authorizeCallTimeRecovery(f.request, f.now);
-  await f.finish(f.call, { passed: false, again: true, resource: "reused" });
+test("ambiguous task, pause, supersession and root expiry cannot be cleared by retry", async t => {
+  const f = await stoppedRetryFixture(t);
+  const operation = { instanceId: f.call.childId, stageId: "verify", ownerCardId: f.run.cardId, idempotencyKey: "ambiguous-task", requestHash: "a".repeat(64) };
+  f.store.reserveOperationRecord(operation);
+  for (const status of ["reserved", "unknown", "executing"]) {
+    f.store.checkpointExternalOperation(operation.idempotencyKey, { status });
+    await assert.rejects(f.runtime.resume({ actor: "V", cardId: f.run.cardId }), /ambiguous|readback/);
+    assert.equal(f.store.listCalls("ROOT")[0].deadline, f.call.deadline);
+  }
+  assert.equal(f.store.listRetryWindows("ROOT").length, 0);
+  const g = await stoppedRetryFixture(t);
+  for (const id of ["ROOT", g.call.childId]) {
+    g.store.updateInstanceStatus(id, "paused");
+    await assert.rejects(g.runtime.resume({ actor: "V", cardId: g.run.cardId }), /paused/);
+    g.store.updateInstanceStatus(id, "active");
+  }
+  const rootRun = g.store.listStageRuns("ROOT")[0];
+  g.store.upsertStageRun({ ...rootRun, attempt: 2, cardId: "superseding-controller", status: "ready" });
+  await assert.rejects(g.runtime.resume({ actor: "V", cardId: g.run.cardId }), /superseded/);
+  const expired = await stoppedRetryFixture(t, { parentSpec: { limits: { maxDuration: "15m" } } });
+  await expired.runtime.resume({ actor: "V", cardId: expired.run.cardId });
+  assert.equal(expired.store.listCalls("ROOT")[0].deadline, expired.store.executionDeadline("ROOT"));
+  expired.advance(5 * 60000);
+  await expired.board.moveCard(expired.run.cardId, "blocked");
+  await assert.rejects(expired.runtime.resume({ actor: "V", cardId: expired.run.cardId }), /Project duration/);
+});
+
+test("controller retry resets duration only, never iteration or business holds", async t => {
+  const f = await stoppedRetryFixture(t);
+  await f.runtime.resume({ actor: "V", cardId: f.call.cardId });
+  assert.equal(f.store.listCalls("ROOT")[0].deadline, f.call.deadline + 11 * 60000);
+  assert.equal(f.store.listCalls("ROOT")[0].childId, f.call.childId);
+  assert.equal(f.board.cards.find(card => card.id === f.run.cardId).status, "blocked", "controller retry does not silently reopen child work");
+  f.store.saveCall({ ...f.store.listCalls("ROOT")[0], state: "held", reason: "iteration-limit" });
+  await assert.rejects(f.runtime.resume({ actor: "V", cardId: f.call.cardId }), /iteration/);
+  const g = await stoppedRetryFixture(t);
+  g.store.saveCall({ ...g.call, state: "held", reason: "no-matching-continuation" });
+  await assert.rejects(g.runtime.resume({ actor: "V", cardId: g.run.cardId }), /hold/);
+});
+
+test("an expired call can be retried through its existing queued child, without manufacturing a blocked card", async t => {
+  const f = await fixture(t, { repeat: false, parentSpec: { limits: { maxDuration: "8h" } } });
   await f.tick();
-  const next = f.store.listCalls("ROOT").find(call => call.iteration === 2);
-  assert.equal(next.deadline, f.request.deadline);
-  f.advance(10 * 60000); await f.tick();
-  assert.throws(() => f.store.authorizeCallTimeRecovery({ ...f.request, callId: next.id, expectedDeadline: next.deadline, deadline: next.deadline + 60000 }, new Date(next.deadline + 1)), /different/);
-  assert.equal(f.store.listCalls("ROOT").length, 2);
+  const call = f.store.listCalls("ROOT")[0], run = f.store.listStageRuns(call.childId)[0];
+  f.advance(11 * 60000); await f.tick();
+  assert.equal(f.board.cards.find(card => card.id === run.cardId).status, "ready");
+  const result = await f.runtime.resume({ actor: "V", cardId: run.cardId });
+  assert.equal(result.alreadyResumed, false);
+  const deadline = f.store.listCalls("ROOT")[0].deadline;
+  assert.equal(deadline, call.deadline + 11 * 60000);
+  f.advance(60000);
+  assert.equal((await f.runtime.resume({ actor: "V", cardId: run.cardId })).alreadyResumed, true);
+  assert.equal(f.store.listCalls("ROOT")[0].deadline, deadline);
 });
 
-test("nested time recovery cannot outlive or reactivate its ancestor", async t => {
-  const f = await fixture(t);
-  const middle = f.runtime.publish(flow("time-middle", [system("invoke", { actor: "workflow", call: { workflow: f.child.workflowSha256, inputs: {} } })], { outputs: { result: { stage: "invoke", output: "result" } } }));
-  const outer = f.runtime.publish(flow("time-outer", [system("invoke", { actor: "workflow", timeout: "15m", call: { workflow: middle.workflowSha256, inputs: {} } })], { limits: { maxDuration: "8h" } }));
-  f.runtime.startInstance({ id: "NEST", workflowSha256: outer.workflowSha256, inputs: { nightshift: { instanceDir: join(f.dir, "nested") } } });
-  await f.runtime.tick("NEST", { inspectSessions: false });
-  const ancestor = f.store.listCalls("NEST")[0];
-  const leaf = f.store.listCalls(ancestor.childId)[0];
-  f.advance(11 * 60000);
-  await f.runtime.tick("NEST", { inspectSessions: false });
-  const request = { callId: leaf.id, expectedDeadline: leaf.deadline, deadline: leaf.deadline + 10 * 60000, actor: "V", reason: "repair", evidence: "readback", authorization: "same scope" };
-  const now = new Date(leaf.deadline + 60000);
-  assert.throws(() => f.store.authorizeCallTimeRecovery(request, now), /ancestor duration/);
-  assert.throws(() => f.store.authorizeCallTimeRecovery({ ...request, deadline: ancestor.deadline }, new Date(ancestor.deadline)), /expired|stopped/);
-  f.store.updateInstanceStatus("NEST", "paused");
-  assert.throws(() => f.store.authorizeCallTimeRecovery({ ...request, deadline: leaf.deadline + 2 * 60000 }, now), /paused/);
-  f.store.updateInstanceStatus("NEST", "active");
-  f.store.authorizeCallTimeRecovery({ ...request, deadline: leaf.deadline + 2 * 60000 }, now);
-  assert.equal(f.store.getCall(ancestor.id).deadline, ancestor.deadline);
+test("parent reconciliation does not overwrite a window renewed during child recovery", async t => {
+  const f = await fixture(t, { repeat: false });
+  await f.tick();
+  const call = f.store.listCalls("ROOT")[0], run = f.store.listStageRuns(call.childId)[0];
+  await f.board.moveCard(run.cardId, "blocked");
+  f.store.upsertStageRun({ ...run, status: "blocked" });
+  f.advance(60000);
+  f.runtime.beforeCallTick = async () => {
+    f.runtime.beforeCallTick = null;
+    await f.runtime.resume({ actor: "V", cardId: run.cardId });
+  };
+  await f.tick();
+  assert.equal(f.store.listCalls("ROOT")[0].deadline, call.deadline + 60000);
 });
 
 test("call once, success exit and downstream handoff reuse the original workflow", async t => {
@@ -387,7 +417,7 @@ test("unknown outcomes block fresh iterations and cannot be bypassed by retry", 
   assert.equal(f.store.listStageRuns("ROOT").some(run => run.stageId === "deliver"), false);
 });
 
-test("iteration and elapsed limits are persistent and retry cannot reset them", async t => {
+test("iteration limit is persistent and retry cannot reset it", async t => {
   const f = await fixture(t);
   await f.tick();
   let call = f.store.listCalls("ROOT").at(-1);
@@ -397,7 +427,7 @@ test("iteration and elapsed limits are persistent and retry cannot reset them", 
   await f.finish(call, { again: true });
   await f.tick();
   assert.equal(f.store.listCalls("ROOT").at(-1).reason, "iteration-limit");
-  await assert.rejects(f.runtime.resume({ actor: "V", cardId: call.cardId }), /limit/);
+  await assert.rejects(f.runtime.resume({ actor: "V", cardId: call.cardId }), /iteration limit/);
   f.reopen(); await f.tick();
   assert.equal(f.store.listCalls("ROOT").length, 2);
 });
@@ -412,7 +442,7 @@ test("duration limit prevents dispatch and new reservation, but not safe receipt
   assert.equal(f.store.listCalls("ROOT")[0].reason, "duration-limit");
   assert.equal(f.board.starts.length, 0);
   assert.equal(f.reserve(call).reused, true);
-  await assert.rejects(f.runtime.resume({ actor: "V", cardId: call.cardId }), /limit/);
+  await assert.rejects(f.runtime.resume({ actor: "V", cardId: call.cardId }), /ambiguous|readback/);
   assert.equal(f.store.getExternalOperation(op.idempotencyKey).status, "reserved");
 });
 

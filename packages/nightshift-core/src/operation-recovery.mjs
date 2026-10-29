@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { operationResultHash } from "./external-operation-completion.mjs";
-import { durationMs } from "./workflow-call-contract.mjs";
 
 export const RECOVERY_EVENT = "external-operation.recovery-authorized";
 const reject = message => { throw Object.assign(new Error(message), { statusCode: 409 }); };
@@ -22,7 +21,7 @@ export function operationLimitScopes(store, instanceId, now = new Date()) {
   for (const id of [instanceId, ...ancestors.map(call => call.parentId)]) {
     const instance = store.getInstance(id);
     const limits = store.getRelease(instance?.workflowSha256)?.manifest.spec.limits;
-    if (limits?.maxDuration && now.getTime() >= Date.parse(instance.createdAt) + durationMs(limits.maxDuration)) reject("Project duration limit reached");
+    if (limits?.maxDuration && now.getTime() >= store.executionDeadline(instance.id)) reject("Project duration limit reached");
     if (limits?.maxOperations !== undefined) scopes.push({ id: `instance:${id}`, root: id === rootId, maxOperations: limits.maxOperations, operations: operations(store.executionIds(id)) });
   }
   for (const call of ancestors) scopes.push({

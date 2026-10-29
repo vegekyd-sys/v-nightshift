@@ -311,7 +311,7 @@ async function handleApi(request, response, url) {
       cardsUpdatedAt,
       lastSchedulerAt,
       lastSchedulerError,
-      workflowFeatures: { calls: 1, boundedRepeat: 1, terminalAttempts: 1, operationRecovery: 1, descendantDecisions: 1, callTimeRecovery: 1 },
+      workflowFeatures: { calls: 1, boundedRepeat: 1, terminalAttempts: 1, operationRecovery: 1, descendantDecisions: 1, retryWindows: 1 },
       notifications: { enabled: notificationsEnabled, lastAt: lastNotificationAt, lastError: lastNotificationError },
       schedulerStartedAt,
       schedulerRunning: Boolean(schedulerPromise),
@@ -808,18 +808,6 @@ async function handleApi(request, response, url) {
       200,
       result,
     );
-    return;
-  }
-  const callTimeRecoveryMatch = url.pathname.match(/^\/api\/calls\/([^/]+)\/authorize-time-recovery$/);
-  if (request.method === "POST" && callTimeRecoveryMatch) {
-    const body = await bodyJson(request);
-    const result = await serializedOperation(() => runtime.authorizeCallTimeRecovery({
-      callId: decodeURIComponent(callTimeRecoveryMatch[1]), actor: operatorIdentity(request, body),
-      expectedDeadline: body.expectedDeadline, deadline: body.deadline,
-      reason: body.reason, authorization: body.authorization, evidence: body.evidence,
-    }));
-    changeScheduler.enqueue("call.time-recovery");
-    json(response, 200, result);
     return;
   }
   const recoveryMatch = url.pathname.match(/^\/api\/cards\/([^/]+)\/operations\/authorize-recovery$/);

@@ -10,23 +10,6 @@ const execFileAsync = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "../../..");
 
-test("calls authorize-time-recovery passes explicit absolute deadlines, not a rolling timeout", async t => {
-  let observed;
-  const server = createServer(async (req, res) => {
-    let body = ""; for await (const chunk of req) body += chunk;
-    observed = { url: req.url, body: JSON.parse(body) };
-    res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ id: "time-permit" }));
-  });
-  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise(resolve => server.close(resolve)));
-  const expected = "2030-01-01T01:00:00Z", until = "2030-01-01T01:30:00Z";
-  await execFileAsync(process.execPath, ["scripts/nightshiftctl.mjs", "calls", "authorize-time-recovery", "call-id", "--expected-deadline", expected, "--until", until, "--reason", "repair", "--authorization", "existing scope", "--evidence", "readback", "--actor", "V"], { cwd: root, env: { ...process.env, NIGHTSHIFT_URL: `http://127.0.0.1:${server.address().port}` } });
-  assert.equal(observed.url, "/api/calls/call-id/authorize-time-recovery");
-  assert.equal(observed.body.expectedDeadline, Date.parse(expected));
-  assert.equal(observed.body.deadline, Date.parse(until));
-  assert.equal(observed.body.actor, "V");
-});
-
 test("operations authorize-recovery sends a bounded explicit request to the official card endpoint", async t => {
   let observed;
   const server = createServer(async (req, res) => {

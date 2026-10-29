@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { normalizeContentItems } from "./content-items.mjs";
 import { currentOptions } from "./needs-you.mjs";
 import { RECOVERY_EVENT, authorizeOperationRecovery, assertOperationAllowance, operationLimitScopes } from "./operation-recovery.mjs";
-import { authorizeCallTimeRecovery } from "./call-time-recovery.mjs";
+import { RETRY_WINDOW_EVENT, resetRetryWindow } from "./retry-window.mjs";
 
 export class NightShiftStore {
   constructor(path = ":memory:") {
@@ -588,12 +588,29 @@ export class NightShiftStore {
     return row ? JSON.parse(row.record_json) : null;
   }
 
-  authorizeCallTimeRecovery(request, now = new Date()) {
+  listRetryWindows(rootId) {
+    return this.db.prepare("SELECT payload_json FROM audit_events WHERE instance_id = ? AND type = ? ORDER BY sequence DESC")
+      .all(rootId, RETRY_WINDOW_EVENT).map(row => JSON.parse(row.payload_json));
+  }
+
+  executionDeadline(instanceId) {
+    const instance = this.getInstance(instanceId);
+    const limit = this.getRelease(instance?.workflowSha256)?.manifest.spec.limits?.maxDuration;
+    if (!limit) return Infinity;
+    const rootId = this.rootInstanceId(instanceId);
+    if (instanceId !== rootId) {
+      const reset = this.listRetryWindows(rootId).find(event => event.instanceDeadlines[instanceId] !== undefined);
+      if (reset) return reset.instanceDeadlines[instanceId];
+    }
+    return Date.parse(instance.createdAt) + durationMs(limit);
+  }
+
+  resetRetryWindow(request, now = new Date()) {
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const grant = authorizeCallTimeRecovery(this, request, now);
+      const window = resetRetryWindow(this, request, now);
       this.db.exec("COMMIT");
-      return grant;
+      return window;
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
 
@@ -1063,7 +1080,18 @@ export class NightShiftStore {
         const used = this.executionIds(rootId).reduce((sum, id) => sum + this.listExternalOperations(id).length, 0);
         if (limits.maxOperations !== undefined && used >= limits.maxOperations) throw Object.assign(new Error("Project external-operation limit reached"), { statusCode: 409 });
       }
-      assertOperationAllowance(this, operation, operationLimitScopes(this, operation.instanceId, now));
+      const scopes = operationLimitScopes(this, operation.instanceId, now);
+      if (scopes.some(scope => !scope.root && scope.operations.length >= scope.maxOperations)) {
+        const runs = operation.contentItemId ? this.listContentItemRuns(operation.instanceId) : this.listStageRuns(operation.instanceId);
+        const latest = runs.filter(run => run.stageId === operation.stageId && (run.contentItemId ?? null) === (operation.contentItemId ?? null)).sort((a, b) => b.attempt - a.attempt)[0];
+        const window = this.listRetryWindows(rootId).find(entry => entry.instanceId === operation.instanceId && entry.stageId === operation.stageId && (entry.contentItemId ?? null) === (operation.contentItemId ?? null) && entry.targetAttempt === latest?.attempt && entry.failedOperationKey);
+        if (window && latest?.cardId === operation.ownerCardId && !this.listOperationRecoveries(rootId).some(grant => grant.failedOperationKey === window.failedOperationKey)) {
+          authorizeOperationRecovery(this, { ...operation, failedOperationKey: window.failedOperationKey, actor: window.actor,
+            reason: window.note || "Retry the failed attempt", authorization: `Existing execution scope; retry ${window.id}`,
+            evidence: `Recorded terminal failure ${window.failedOperationKey}` }, now);
+        }
+      }
+      assertOperationAllowance(this, operation, scopes);
       const result = this.reserveOperationRecord(operation, now);
       this.db.exec("COMMIT");
       return result;

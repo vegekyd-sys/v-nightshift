@@ -99,6 +99,9 @@ export async function advanceWorkflowCalls(runtime, parent, release, { nowMs, in
     // root tick dispatches, so calls cannot multiply global/project capacity.
     if (runtime.beforeCallTick) await runtime.beforeCallTick(child);
     const result = await runtime.tick(child.id, { dispatch: false, inspectSessions, now: nowMs });
+    // Child reconciliation can accept a retry and renew this path's window.
+    // Do not overwrite that durable reset with this tick's older call object.
+    call = store.getCall?.(call.id) ?? call;
     applied.push(...result.applied);
     if (result.instance.status !== "done") {
       const blocked = store.executionIds(child.id).some(id => [...store.listStageRuns(id), ...store.listContentItemRuns(id)].some(entry => entry.status === "blocked"));
@@ -172,7 +175,7 @@ async function startIteration(runtime, parent, stage, run, history, nowMs) {
   const ancestorDeadline = Math.min(Infinity, ...store.callAncestors(parent.id).map(call => call.deadline));
   const created = store.createCall({ id, parentId: parent.id, childId, cardId: run.cardId, stageId: stage.id, contentItemId: run.contentItemId ?? null, attempt: run.attempt, iteration,
     startedAt: nowMs, deadline: Math.min(previous?.deadline ?? nowMs + Math.min(durationMs(stage.timeout), durationMs(stage.repeat?.maxDuration ?? stage.timeout)), rootDeadline, ancestorDeadline),
-    ...(previous?.timeRecoveryId ? { timeRecoveryId: previous.timeRecoveryId, originalDeadline: previous.originalDeadline } : {}),
+    ...(previous?.retryWindowId ? { retryWindowId: previous.retryWindowId, attemptWindowStartedAt: previous.attemptWindowStartedAt } : {}),
     maxOperations: stage.repeat?.maxOperations ?? stage.call.maxOperations ?? 0, state: "running", reason: iteration === 1 ? "initial" : "repeat-condition", outputs: null }, child);
   const persisted = store.getInstance(created.childId);
   await atomicJson(persisted.inputs.nightshift.projectInputsPath, { version: 1, instanceId: childId, inputs: redactSensitiveInputs(persisted.inputs) });
@@ -193,7 +196,7 @@ export function publicCallSummary(store, instanceId) {
   return store.executionIds(instanceId).flatMap(id => store.listCalls(id)).map(call => ({
     id: call.id, parentId: call.parentId, childId: call.childId, cardId: call.cardId, stageId: call.stageId, contentItemId: call.contentItemId,
     iteration: call.iteration, state: call.state, blocked: call.state === "held" || call.reason.startsWith("child-work-stopped"), reason: call.reason, deadline: call.deadline,
-    originalDeadline: call.originalDeadline ?? call.deadline, timeRecoveryId: call.timeRecoveryId ?? null,
+    attemptWindowStartedAt: call.attemptWindowStartedAt ?? call.startedAt, retryWindowId: call.retryWindowId ?? null,
     totalOperations: store.listCalls(call.parentId).filter(entry => entry.cardId === call.cardId).flatMap(entry => store.executionIds(entry.childId)).reduce((sum, id) => sum + store.listExternalOperations(id).length, 0),
     operations: store.executionIds(call.childId).reduce((sum, id) => sum + store.listExternalOperations(id).length, 0),
     baseMaxOperations: call.maxOperations,
