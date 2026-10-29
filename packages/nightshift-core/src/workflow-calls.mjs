@@ -30,13 +30,14 @@ export async function atomicJson(file, value) {
 
 // Outputs are explicit JSON exports from the completed called release, never
 // free-text messages or files from a previous iteration.
-export async function readCallOutputs({ store, instance, release }) {
+export async function readCallOutputs({ store, instance, release, validateExport = null }) {
   const root = instance.inputs?.nightshift?.instanceDir;
   if (!root) throw new Error("Called Workflow needs an artifact directory");
   const exports = {};
   for (const [name, source] of Object.entries(release.spec.outputs)) {
     const latest = store.listStageRuns(instance.id).filter(run => run.stageId === source.stage).sort((a, b) => b.attempt - a.attempt)[0];
     if (latest?.status !== "done") throw new Error(`Export stage ${source.stage} is not complete`);
+    if (validateExport) await validateExport({ stageId: source.stage, cardId: latest.cardId });
     const handoff = normalizeStageHandoff(JSON.parse(await boundedRead(join(root, "handoffs", `${source.stage}.json`))), { instanceId: instance.id, release, stageId: source.stage });
     const artifact = handoff.outputs.find(entry => entry.name === source.output)?.artifact;
     if (!artifact) throw new Error(`Missing export ${name}`);
@@ -114,7 +115,18 @@ export async function advanceWorkflowCalls(runtime, parent, release, { nowMs, in
     if (unresolved) hold(store, call, "external-outcome-unknown: supplier readback required");
     else {
       if (!call.outputs) {
-        try { call.outputs = await readCallOutputs({ store, instance: child, release: childRelease }); }
+        try {
+          call.outputs = await readCallOutputs({ store, instance: child, release: childRelease,
+            validateExport: call.recheckExports && runtime.completionValidator ? async ({ stageId, cardId }) => {
+              const [card] = await workboard.listCards({ cardIds: [cardId] });
+              if (!card || card.status !== "done") throw new Error("Export card is not complete");
+              // An explicit artifact repair must pass the same execution,
+              // handoff and output contract as the original completion. The
+              // old validated-event cache cannot bless changed bytes.
+              await runtime.completionValidator({ card, contentItemId: null, instance: child, release: childRelease, stageId });
+            } : null });
+          call.recheckExports = false;
+        }
         catch (error) {
           hold(store, call, `output-contract: ${error instanceof SyntaxError ? "invalid JSON; inspect child artifacts" : error.message}`);
           await projectController(runtime, run, "blocked", call.reason);

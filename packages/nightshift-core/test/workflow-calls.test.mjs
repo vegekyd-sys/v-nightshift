@@ -31,6 +31,46 @@ import { schedulerCardIds, instanceCardIds } from "../src/scheduler-pass.mjs";
 import { gatewayIdempotencyLabel } from "../src/workboard-gateway-adapter.mjs";
 import { handoffManifestExample } from "../src/handoff.mjs";
 import { publicCallSummary } from "../src/workflow-calls.mjs";
+import { validateDeclaredCompletion } from "../src/completion.mjs";
+
+test("explicit export repairs revalidate completion instead of trusting its old validated event", async t => {
+  const f = await fixture(t, { childSpec: { completion: { mode: "strict-v1" } },
+    childStages: [system("verify", { completeWhen: ["output.result.ready"], outputContracts: { result: { type: "json", equals: { ready: true } } } })] });
+  let validations = 0;
+  f.runtime.completionValidator = async ({ instance, release, stageId }) => {
+    if (instance.id === "ROOT") return {};
+    validations++;
+    const root = instance.inputs.nightshift.instanceDir;
+    return validateDeclaredCompletion({ instanceCreatedAt: instance.createdAt,
+      stage: release.spec.stages.find(stage => stage.id === stageId),
+      manifest: JSON.parse(await readFile(join(root, "handoffs", `${stageId}.json`), "utf8")),
+      loadArtifact: async artifact => ({ exists: true, json: JSON.parse(await readFile(join(root, artifact), "utf8")) }) });
+  };
+  await f.tick();
+  const call = f.store.listCalls("ROOT")[0];
+  await f.finish(call, { ready: true, passed: false, again: false });
+  await f.tick();
+  assert.equal(f.store.getCall(call.id).state, "held");
+  assert.equal(validations, 1);
+  // This changed file would now match until, but no longer meets its own
+  // output contract. A persisted stage.completion.validated event is stale.
+  await f.finish(call, { ready: "false", passed: true, again: false });
+  await f.runtime.resume({ actor: "V", cardId: call.cardId });
+  await f.tick();
+  assert.equal(f.store.getCall(call.id).state, "held");
+  assert.match(f.store.getCall(call.id).reason, /output-contract/);
+  assert.equal(validations, 2);
+  await f.finish(call, { ready: true, passed: true, again: false });
+  await f.runtime.resume({ actor: "V", cardId: call.cardId });
+  await f.tick();
+  assert.equal(f.store.getCall(call.id).state, "succeeded");
+  assert.equal(validations, 3);
+  await f.runtime.resume({ actor: "V", cardId: call.cardId });
+  await f.tick();
+  assert.equal(validations, 3, "succeeded controllers retain the accepted snapshot");
+  assert.equal(f.store.listCalls("ROOT").length, 1);
+  assert.equal(f.store.listExternalOperations(call.childId).length, 0);
+});
 
 export class CallBoard {
   cards = [];
@@ -597,6 +637,68 @@ test("technical retry stays in the same round and stopped child is visible to V"
   assert.equal(f.store.listStageRuns(call.childId)[0].cardId, run.cardId);
   assert.equal(actionKey(f.child.manifest, f.store.getInstance(call.childId), f.child.manifest.spec.stages[0], "run"), originalKey);
   assert.equal(taskAttention({ status: "review", workflowCall: { iteration: 1, state: "running", blocked: false } }).kind, "running");
+});
+
+test("explicit controller retry rechecks corrected exports without reopening a succeeded call", async t => {
+  const f = await fixture(t);
+  await f.tick();
+  const call = f.store.listCalls("ROOT")[0];
+  await f.finish(call, { passed: false, again: false });
+  await f.tick();
+  assert.equal(f.store.getCall(call.id).state, "held");
+  await f.finish(call, { passed: true, again: false });
+  assert.equal((await f.runtime.resume({ actor: "V", cardId: call.cardId })).alreadyResumed, false);
+  assert.equal((await f.runtime.resume({ actor: "V", cardId: call.cardId })).alreadyResumed, true);
+  await f.tick();
+  assert.equal(f.store.getCall(call.id).state, "succeeded");
+  await f.finish(call, { passed: false, again: true });
+  assert.equal((await f.runtime.resume({ actor: "V", cardId: call.cardId })).alreadyResumed, true);
+  await f.tick();
+  assert.equal(f.store.getCall(call.id).outputs.result.passed, true);
+  assert.equal(f.store.listCalls("ROOT").length, 1);
+  assert.equal(f.store.listExternalOperations(call.childId).length, 0);
+});
+
+test("controller export recheck remains held on invalid JSON or unreadable artifacts", async t => {
+  for (const unreadable of [false, true]) {
+    await t.test(unreadable ? "missing artifact" : "invalid JSON", async t => {
+      const f = await fixture(t);
+      await f.tick();
+      const call = f.store.listCalls("ROOT")[0];
+      await f.finish(call, { passed: false, again: false });
+      await f.tick();
+      const artifact = join(f.store.getInstance(call.childId).inputs.nightshift.instanceDir, "verify.json");
+      if (unreadable) await rm(artifact);
+      else await writeFile(artifact, "not JSON");
+      await f.runtime.resume({ actor: "V", cardId: call.cardId });
+      await f.tick();
+      assert.match(f.store.getCall(call.id).reason, /^output-contract:/);
+      assert.equal(f.store.getCall(call.id).state, "held");
+      await f.finish(call, { passed: true, again: false });
+      await f.runtime.resume({ actor: "V", cardId: call.cardId });
+      await f.tick();
+      assert.equal(f.store.getCall(call.id).state, "succeeded");
+      assert.equal(f.store.listCalls("ROOT").length, 1);
+      assert.equal(f.store.listExternalOperations(call.childId).length, 0);
+    });
+  }
+});
+
+test("explicit duration retry discards a persisted stale output snapshot", async t => {
+  const f = await fixture(t, { parentSpec: { limits: { maxDuration: "8h" } } });
+  await f.tick();
+  const call = f.store.listCalls("ROOT")[0];
+  await f.finish(call, { passed: true, again: false });
+  f.store.saveCall({ ...call, outputs: { result: { passed: false, again: false } } });
+  f.advance(11 * 60000);
+  await f.tick();
+  assert.equal(f.store.getCall(call.id).reason, "duration-limit");
+  await f.runtime.resume({ actor: "V", cardId: call.cardId });
+  await f.tick();
+  assert.equal(f.store.getCall(call.id).state, "succeeded");
+  assert.equal(f.store.getCall(call.id).childId, call.childId);
+  assert.equal(f.store.listCalls("ROOT").length, 1);
+  assert.equal(f.store.listExternalOperations(call.childId).length, 0);
 });
 
 test("export identity mismatch or missing handoff cannot release downstream", async t => {

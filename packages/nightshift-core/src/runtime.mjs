@@ -1588,12 +1588,15 @@ export class NightShiftRuntime {
     if (call.reason === "duration-limit" || this.now() >= call.deadline) {
       const run = [...this.store.listStageRuns(instance.id), ...this.store.listContentItemRuns(instance.id)].find(run => run.cardId === card.id);
       this.prepareRetryWindow({ actor, card, instance, stage, run, note, callId: call.id });
+      // Only an accepted explicit retry re-reads this child's exports. Preserve
+      // the renewed window instead of saving the pre-reset call snapshot.
+      this.store.saveCall({ ...this.store.getCall(call.id), outputs: null, recheckExports: true });
       await this.workboard.moveCard(card.id, "review");
       return { instanceId: instance.id, cardId: card.id, how: "same", alreadyResumed: false };
     }
     const unresolved = this.store.executionIds(call.childId).flatMap(id => this.store.listExternalOperations(id)).some(op => !["succeeded", "failed"].includes(op.status));
     if (unresolved) throw Object.assign(new Error("Supplier readback required before retrying call"), { statusCode: 409 });
-    this.store.saveCall({ ...call, state: "running", reason: "operator-recheck" });
+    this.store.saveCall({ ...call, state: "running", reason: "operator-recheck", outputs: null, recheckExports: true });
     this.store.appendEvent({ instanceId: instance.id, type: "workflow.call.retry", payload: { callId: call.id, actor, note } });
     await this.workboard.moveCard(card.id, "review");
     return { instanceId: instance.id, cardId: card.id, how: "same", alreadyResumed: false };

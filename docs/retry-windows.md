@@ -33,8 +33,14 @@ retry / continue 已明确接受一个已知失败阶段的新尝试时，首次
 
 ## 审计、兼容及验收
 
+子流程已完成、控制卡因输出停住时，显式 retry 会重新读取原子执行的导出，不再永久使用旧结果缓存。重新读取必须再次通过原导出阶段的执行证据、操作回执、handoff 与完成契约，不能用历史 `stage.completion.validated` 事件批准修改后的文件。缺失、损坏或不满足契约的产物仍停住；不会创建新子执行、清除失败或提交外部操作。已经成功退出的调用保留已消费的结果快照，不因重复 retry 或原文件后来改变而重放下游。
+
+布尔业务结论可用现有 `outputContracts.equals` 明确要求 `true`。裸 `completeWhen` 保持历史存在性／真值语义（旧流程也会检查时间字符串），不全局改写旧声明或发布 SHA。动态资源引用仍需由业务阶段实际回读、核归属并向下游传递；机械校验通过不代表外部资源或账号已验收。
+
 `stage.retry.window-reset` 审计事件记录原卡、native attempt、目标阶段尝试、原/新 deadline、重置代次和操作来源；使用现有 audit 表，无 schema 变更。调用摘要提供 `attemptWindowStartedAt / retryWindowId / deadline`。新卡首次 reserve 的卡绑定额度继续使用 `external-operation.recovery-authorized` 审计事实；它由正常 retry 路径自动生成，并不代表新增用户预算授权。
 
 候选 `lab/candidate/retry-window-http-scenario.mjs` 用私有 Gateway、真实 Workboard 和正式 HTTP API，验证真实超时→普通 retry→自动恢复尝试额度→成功出口；不调用时间或操作授权接口。原生远期卡阻止 Agent 启动，供应商回执全部合成，零外呼。单元回归覆盖 blocked 及排队卡、重复请求、SQLite 重开、多次重试、原任务接续、预算/暂停/未知结果和正常旧流程兼容。
+
+`lab/candidate/retry-export-http-scenario.mjs` 追加验证原导出修复、旧校验事件不放过错误新产物、原子执行复用和成功快照不重开。该场景同样明确零 Agent／供应商调用，不能替代真实 Agent→业务验证→交付的 VLab 实机验收。
 
 测试通过不表示生产已部署或真实业务已完成。PR #30 原先的独立时间授权设计已撤除，不存在 `calls authorize-time-recovery` 或其 API。
