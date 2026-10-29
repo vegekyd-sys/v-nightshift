@@ -4,7 +4,7 @@ import { childDecisionTasks, decisionDrawerContext } from "./attention.js";
 
 test("root inbox and deep-linked child drawer retain the exact decision, without including unrelated projects", () => {
   const item = { kind: "decision", id: "decision-1", instanceId: "ROOT", executionInstanceId: "CHILD", cardId: "child-card", stageId: "create", problem: "Correct supplier request" };
-  const queue = { items: [item, { ...item, id: "other", cardId: "other-card", instanceId: "OTHER" }] };
+  const queue = { items: [item, { ...item, id: "other", cardId: "other-card", instanceId: "OTHER" }, { ...item, kind: "review", id: "review", cardId: "review-card" }] };
   const tasks = childDecisionTasks([{ id: "ROOT", name: "root" }], [], queue);
   assert.equal(tasks.length, 1);
   assert.equal(tasks[0].card.id, "child-card");

@@ -78,7 +78,7 @@ export function decisionDrawerContext(context, card, needsYou) {
 
 export function childDecisionTasks(projects, cards, needsYou) {
   const roots = new Map(projects.map(project => [project.id, project]));
-  return (needsYou?.items ?? []).filter(item => item.executionInstanceId && item.executionInstanceId !== item.instanceId && roots.has(item.instanceId)).map(item => ({
+  return (needsYou?.items ?? []).filter(item => item.kind === "decision" && item.executionInstanceId && item.executionInstanceId !== item.instanceId && roots.has(item.instanceId)).map(item => ({
     projectId: item.instanceId, projectName: roots.get(item.instanceId).name,
     contentItemId: item.contentItemId, stageId: item.stageId,
     card: cards.find(card => card.id === item.cardId) ?? { id: item.cardId, title: item.problem, status: "blocked", labels: [`instance:${item.executionInstanceId}`, `stage:${item.stageId}`] },
