@@ -1,5 +1,6 @@
 # Changelog
 
+- #29 fix(recovery): 已知失败可显式授予绑定恢复卡/请求的一次性追加许可，保留失败计数与根上限；补齐子执行 limits，并修复根项目子决定汇总、通知深链和抽屉操作入口。
 - #28 fix(runtime): 显式终态尝试回执保留真实失败账本，支持业务验证及同卡恢复。
 
 最新的在上面。2026-10-02 之前的记录在 `vegekyd-sys/v-openclaw-platform` 的 CHANGELOG.md。
