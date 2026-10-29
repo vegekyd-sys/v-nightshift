@@ -68,6 +68,24 @@ export function needsYouQueue(needsYou, gatewayRestart = null) {
   };
 }
 
+// Child execution cards are deliberately absent from the root's stage grid.
+// Their open decisions still belong in its inbox, and a deep-linked drawer
+// must retain the decision instead of falling back to the generic retry UI.
+export function decisionDrawerContext(context, card, needsYou) {
+  const request = needsYou?.items?.find(item => item.cardId === card?.id && item.kind === "decision");
+  return request ? { ...context, attention: { kind: "needs-you", reason: request.problem, request } } : context;
+}
+
+export function childDecisionTasks(projects, cards, needsYou) {
+  const roots = new Map(projects.map(project => [project.id, project]));
+  return (needsYou?.items ?? []).filter(item => item.executionInstanceId && item.executionInstanceId !== item.instanceId && roots.has(item.instanceId)).map(item => ({
+    projectId: item.instanceId, projectName: roots.get(item.instanceId).name,
+    contentItemId: item.contentItemId, stageId: item.stageId,
+    card: cards.find(card => card.id === item.cardId) ?? { id: item.cardId, title: item.problem, status: "blocked", labels: [`instance:${item.executionInstanceId}`, `stage:${item.stageId}`] },
+    attention: { kind: "needs-you", reason: item.problem, request: item },
+  }));
+}
+
 function queuedAttention(task, operation, queue) {
   const cardId = task.card?.id ?? task.cardId;
   const status = task.card?.status ?? task.status;

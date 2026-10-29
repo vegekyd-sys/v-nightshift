@@ -54,8 +54,8 @@ try {
  const deadline=Date.now()+180000;
  while(true){assert(gateway.exitCode===null && server.exitCode===null,startupError());try{const r=await fetch(`http://127.0.0.1:${serverPort}/api/health`);if(r.ok)break;}catch{}if(Date.now()>deadline)throw Error(startupError());await new Promise(r=>setTimeout(r,500));}
  while(true){try{await workboard.connect();break;}catch(e){if(Date.now()>deadline)throw Error(startupError()+"\n"+e.message);await new Promise(r=>setTimeout(r,500));}}
- const {terminalAttemptHttpScenario}=await import("./terminal-attempt-http-scenario.mjs");
- console.log(JSON.stringify(await terminalAttemptHttpScenario({baseUrl:`http://127.0.0.1:${serverPort}`,workboard})));
+ const scenario=await import(process.env.NIGHTSHIFT_HTTP_SCENARIO ?? "./terminal-attempt-http-scenario.mjs");
+ console.log(JSON.stringify(await (scenario.runHttpScenario ?? scenario.terminalAttemptHttpScenario)({baseUrl:`http://127.0.0.1:${serverPort}`,workboard})));
 } finally {
  try {await workboard.call("workboard.boards.archive",{id:workboard.board});} catch {}
  workboard.close();

@@ -1,5 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { childDecisionTasks, decisionDrawerContext } from "./attention.js";
+
+test("root inbox and deep-linked child drawer retain the exact decision, without including unrelated projects", () => {
+  const item = { kind: "decision", id: "decision-1", instanceId: "ROOT", executionInstanceId: "CHILD", cardId: "child-card", stageId: "create", problem: "Correct supplier request" };
+  const queue = { items: [item, { ...item, id: "other", cardId: "other-card", instanceId: "OTHER" }] };
+  const tasks = childDecisionTasks([{ id: "ROOT", name: "root" }], [], queue);
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0].card.id, "child-card");
+  assert(tasks[0].card.labels.includes("instance:CHILD"));
+  assert.equal(decisionDrawerContext(null, tasks[0].card, queue).attention.request.id, "decision-1");
+  assert.equal(decisionDrawerContext(null, tasks[0].card, { items: [] }), null, "decided requests are not resurrected");
+});
 import { canReviewCard, cardAttention, countByKind, expectedTasks, inScope, preferTask, projectProgress, projectScope, scopeAuthorizes, stageExpected, supersededCards, taskAttention } from "./attention.js";
 
 const NOW = Date.parse("2026-09-28T10:00:00Z");

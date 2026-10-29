@@ -109,10 +109,11 @@ export class NightShiftNotificationCoordinator {
       const decisionIds = items.filter((item) => item.kind === "decision").map((item) => item.id);
       // Without a target nothing is sent, but the requests still count as seen.
       if (target) {
-        const projectUrl = dashboardUrl(this.baseUrl, { project: instance.id, view: "workflows" });
+        const projectUrl = dashboardUrl(this.baseUrl, { project: instance.id, view: "workflows", ...(items.length === 1 ? { card: items[0].cardId } : {}) });
         const digest = createHash("sha256").update(items.map((item) => item.id).sort().join("\n")).digest("hex").slice(0, 16);
         const stages = releaseBySha.get(instance.workflowSha256)?.manifest?.spec?.stages ?? [];
         const groups = needsYouGroups({ items, stages, store: this.store });
+        for (const group of groups) group.url = dashboardUrl(this.baseUrl, { project: instance.id, view: "workflows", card: group.cardId });
         queued.push(this.store.enqueueNotification({
           allowedOpenIds: [instance.collaboration?.createdByOpenId].filter(Boolean),
           fallbackText: `需要你决定：${instance.name}\n${groups.map((group) => `${group.heading}：${group.problem}`).join("\n")}\n${projectUrl}`,
@@ -223,6 +224,7 @@ export function needsYouGroups({ items, stages = [], store = null }) {
       const request = store?.getDecisionRequest(first.id) ?? first;
       return {
         kind: "decision",
+        cardId: first.cardId,
         heading: `${stageTitle}停下了：${count} 张卡${count > 1 ? "，同一件事" : ""}`,
         problem: request.problem,
         cause: request.cause || "",
@@ -234,6 +236,7 @@ export function needsYouGroups({ items, stages = [], store = null }) {
     const waiting = first.kind === "workflow-call" ? "需要处理" : first.kind === "approval" ? "等你确认" : "等你审核";
     return {
       kind: first.kind,
+      cardId: first.cardId,
       heading: `${stageTitle}${waiting}：${count} 张卡`,
       problem: members.map((member) => member.problem).slice(0, 3).join("；") + (count > 3 ? " 等" : ""),
       cause: "",
@@ -271,6 +274,7 @@ export function needsYouPresentation({ instance, groups, projectUrl, now = new D
   const at = now.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Shanghai" });
   blocks.push({ type: "context", text: `项目 ${instance.id} · ${at} · 同一原因的卡会合并在这一条里` });
   blocks.push({ type: "buttons", buttons: [{ label: "去看板处理", style: "primary", url: projectUrl }] });
+  if (groups.length > 1) blocks.push({ type: "buttons", buttons: groups.filter(group => group.url).map(group => ({ label: group.heading, url: group.url })) });
   return { title: `需要你处理 · ${instance.name}`, tone: "warning", blocks };
 }
 

@@ -2,6 +2,8 @@
 
 本能力由 PR 引入，只有部署含此能力的 release 后才能用于创建项目。它不是任意 DAG 回边、普通 retry，也不包含自动补购策略。
 
+已知失败后同轮恢复仍受次数限额约束；显式一次性许可、父子限额及决定入口见 [有界恢复许可](operation-recovery.md)。普通 retry 不增加额度。
+
 ## 模型与兼容
 
 普通 Workflow 不变。一个 `actor: workflow` 阶段调用另一个已发布的 **SHA-256** release；内部仍是现有 Runtime、Workboard、审批、handoff 和外部操作账本。调用上下文归属原项目，不是新的顶层业务项目。子流程可再次调用已发布流程，最多八层；不能自引用、使用 latest 或在运行时偷偷升级。
