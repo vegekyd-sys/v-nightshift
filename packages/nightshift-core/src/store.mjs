@@ -598,10 +598,8 @@ export class NightShiftStore {
     const limit = this.getRelease(instance?.workflowSha256)?.manifest.spec.limits?.maxDuration;
     if (!limit) return Infinity;
     const rootId = this.rootInstanceId(instanceId);
-    if (instanceId !== rootId) {
-      const reset = this.listRetryWindows(rootId).find(event => event.instanceDeadlines[instanceId] !== undefined);
-      if (reset) return reset.instanceDeadlines[instanceId];
-    }
+    const reset = this.listRetryWindows(rootId).find(event => event.instanceDeadlines[instanceId] !== undefined);
+    if (reset) return reset.instanceDeadlines[instanceId];
     return Date.parse(instance.createdAt) + durationMs(limit);
   }
 
@@ -632,8 +630,7 @@ export class NightShiftStore {
 
   assertCallAdmission(instanceId, now = new Date()) {
     const root = this.getInstance(this.rootInstanceId(instanceId));
-    const duration = this.getRelease(root?.workflowSha256)?.manifest.spec.limits?.maxDuration;
-    if (duration && now.getTime() >= Date.parse(root.createdAt) + durationMs(duration)) throw Object.assign(new Error("Project duration limit reached"), { statusCode: 409 });
+    if (now.getTime() >= this.executionDeadline(root.id)) throw Object.assign(new Error("Project duration limit reached"), { statusCode: 409 });
     for (const call of this.callAncestors(instanceId)) {
       const parent = this.getInstance(call.parentId);
       if (parent?.status !== "active" || !this.getInstanceControl(parent.id).automaticDispatch) throw Object.assign(new Error("Parent Workflow is paused or dispatch is disabled"), { statusCode: 409 });
@@ -1076,7 +1073,7 @@ export class NightShiftStore {
       this.assertCallAdmission(operation.instanceId, now);
       if (limits) {
         if (root.status !== "active" || !this.getInstanceControl(rootId).automaticDispatch) throw Object.assign(new Error("Root project is paused"), { statusCode: 409 });
-        if (limits.maxDuration && now.getTime() - Date.parse(root.createdAt) >= durationMs(limits.maxDuration)) throw Object.assign(new Error("Project duration limit reached"), { statusCode: 409 });
+        if (now.getTime() >= this.executionDeadline(rootId)) throw Object.assign(new Error("Project duration limit reached"), { statusCode: 409 });
         const used = this.executionIds(rootId).reduce((sum, id) => sum + this.listExternalOperations(id).length, 0);
         if (limits.maxOperations !== undefined && used >= limits.maxOperations) throw Object.assign(new Error("Project external-operation limit reached"), { statusCode: 409 });
       }

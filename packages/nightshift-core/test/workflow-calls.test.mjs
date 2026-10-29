@@ -328,7 +328,7 @@ test("retry of a known in-flight task renews time but preserves its original key
   assert.equal(f.store.listOperationRecoveries("ROOT").length, 0);
 });
 
-test("ambiguous task, pause, supersession and root expiry cannot be cleared by retry", async t => {
+test("ambiguous task, pause and supersession cannot be cleared by retry", async t => {
   const f = await stoppedRetryFixture(t);
   const operation = { instanceId: f.call.childId, stageId: "verify", ownerCardId: f.run.cardId, idempotencyKey: "ambiguous-task", requestHash: "a".repeat(64) };
   f.store.reserveOperationRecord(operation);
@@ -347,12 +347,60 @@ test("ambiguous task, pause, supersession and root expiry cannot be cleared by r
   const rootRun = g.store.listStageRuns("ROOT")[0];
   g.store.upsertStageRun({ ...rootRun, attempt: 2, cardId: "superseding-controller", status: "ready" });
   await assert.rejects(g.runtime.resume({ actor: "V", cardId: g.run.cardId }), /superseded/);
-  const expired = await stoppedRetryFixture(t, { parentSpec: { limits: { maxDuration: "15m" } } });
-  await expired.runtime.resume({ actor: "V", cardId: expired.run.cardId });
-  assert.equal(expired.store.listCalls("ROOT")[0].deadline, expired.store.executionDeadline("ROOT"));
-  expired.advance(5 * 60000);
-  await expired.board.moveCard(expired.run.cardId, "blocked");
-  await assert.rejects(expired.runtime.resume({ actor: "V", cardId: expired.run.cardId }), /Project duration/);
+});
+
+test("normal retry renews an expired root attempt clock without clearing the cumulative operation cap", async t => {
+  const f = await stoppedRetryFixture(t, { parentSpec: { limits: { maxDuration: "15m", maxOperations: 1 } } });
+  const createdAt = f.store.getInstance("ROOT").createdAt;
+  const operation = { instanceId: f.call.childId, stageId: "verify", ownerCardId: f.run.cardId,
+    idempotencyKey: "historical-root-budget", requestHash: "c".repeat(64) };
+  f.store.reserveOperationRecord(operation);
+  f.store.checkpointExternalOperation(operation.idempotencyKey, { status: "succeeded", externalTaskId: "owned-original" });
+  const old = f.store.getExternalOperation(operation.idempotencyKey);
+  f.advance(5 * 60000);
+  const originalDeadline = f.store.executionDeadline("ROOT");
+  await f.runtime.resume({ actor: "V", cardId: f.run.cardId });
+  const reset = f.store.listRetryWindows("ROOT")[0];
+  assert.equal(reset.instanceDeadlines.ROOT, Date.parse(reset.createdAt) + 15 * 60000);
+  assert.ok(reset.instanceDeadlines.ROOT > originalDeadline);
+  assert.equal(f.store.executionDeadline("ROOT"), reset.instanceDeadlines.ROOT);
+  assert.equal(f.store.getInstance("ROOT").createdAt, createdAt);
+  assert.equal(f.store.getCall(f.call.id).childId, f.call.childId);
+  assert.equal(f.store.getCall(f.call.id).deadline, Date.parse(reset.createdAt) + 10 * 60000);
+  assert.deepEqual(f.store.getExternalOperation(operation.idempotencyKey), old);
+  await assert.rejects(async () => f.store.reserveExternalOperation({ ...operation, idempotencyKey: "must-still-count-old", requestHash: "d".repeat(64) }), /Project external-operation limit/);
+  f.advance(60000);
+  await f.runtime.resume({ actor: "V", cardId: f.run.cardId });
+  assert.equal(f.store.executionDeadline("ROOT"), reset.instanceDeadlines.ROOT);
+  f.reopen();
+  assert.equal(f.store.executionDeadline("ROOT"), reset.instanceDeadlines.ROOT);
+  assert.equal(f.store.listExternalOperations(f.call.childId).length, 1);
+});
+
+test("an ordinary queued root stage renews its own technical clock without another permission API", async t => {
+  const store = new NightShiftStore(), board = new CallBoard();
+  t.after(() => store.close());
+  let now = Date.now();
+  const runtime = new NightShiftRuntime({ store, workboard: board, now: () => now });
+  const release = runtime.publish(flow("ordinary-root", [system("prepare")], { limits: { maxDuration: "15m", maxOperations: 2 } }));
+  runtime.startInstance({ id: "ROOT", name: "root", workflowSha256: release.workflowSha256, inputs: {} });
+  await runtime.tick("ROOT", { inspectSessions: false, now });
+  const run = store.listStageRuns("ROOT")[0];
+  now += 16 * 60000;
+  const ambiguous = { instanceId: "ROOT", stageId: "prepare", ownerCardId: run.cardId, idempotencyKey: "unknown-root", requestHash: "b".repeat(64) };
+  store.reserveOperationRecord(ambiguous);
+  store.checkpointExternalOperation(ambiguous.idempotencyKey, { status: "unknown" });
+  await assert.rejects(runtime.resume({ actor: "V", cardId: run.cardId }), /ambiguous|readback/);
+  assert.equal(store.listRetryWindows("ROOT").length, 0);
+  store.checkpointExternalOperation(ambiguous.idempotencyKey, { status: "succeeded", externalTaskId: "original" });
+  await runtime.resume({ actor: "V", cardId: run.cardId });
+  const deadline = store.executionDeadline("ROOT");
+  assert.equal(deadline, now + 15 * 60000);
+  assert.equal(board.cards.find(card => card.id === run.cardId).status, "ready");
+  now += 60000;
+  assert.equal((await runtime.resume({ actor: "V", cardId: run.cardId })).alreadyResumed, true);
+  assert.equal(store.executionDeadline("ROOT"), deadline);
+  assert.equal(store.listExternalOperations("ROOT").length, 1);
 });
 
 test("controller retry resets duration only, never iteration or business holds", async t => {

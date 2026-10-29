@@ -15,8 +15,9 @@ export function resetRetryWindow(store, request, now) {
   const calls = [...(ownCall ? [ownCall] : []), ...store.callAncestors(instanceId)];
   const root = store.getInstance(rootId);
   const rootLimit = store.getRelease(root.workflowSha256).manifest.spec.limits?.maxDuration;
-  const rootDeadline = rootLimit ? Date.parse(root.createdAt) + durationMs(rootLimit) : Infinity;
-  if (now.getTime() >= rootDeadline) reject("Project duration limit reached");
+  // maxDuration is a technical execution window, not a budget authorization expiry.
+  // A real accepted retry renews the root clock too; do not clear its ledger/caps.
+  const rootDeadline = rootLimit ? now.getTime() + durationMs(rootLimit) : Infinity;
   if (calls.length) {
     const ids = [...new Set([instanceId, rootId, ...calls.flatMap(call => [call.parentId, call.childId])])];
     for (const id of ids) {
@@ -38,11 +39,15 @@ export function resetRetryWindow(store, request, now) {
       .flatMap(entry => store.executionIds(entry.childId))))];
     if (related.flatMap(id => store.listExternalOperations(id)).some(op => !["succeeded", "failed"].includes(op.status) && !(op.status === "executing" && op.ownerCardId === cardId && op.externalTaskId))) reject("External outcome is ambiguous; supplier readback is required before retry");
   }
+  if (!calls.length && store.listExternalOperations(instanceId).some(op => op.ownerCardId === cardId &&
+      !["succeeded", "failed"].includes(op.status) && !(op.status === "executing" && op.externalTaskId))) {
+    reject("External outcome is ambiguous; supplier readback is required before retry");
+  }
   const previous = store.listRetryWindows(rootId).find(event => event.cardId === cardId && event.nativeAttempt === nativeAttempt && event.targetAttempt === targetAttempt);
-  if (previous && (!calls.length || now.getTime() < Math.min(...calls.map(call => call.deadline)))) return { ...previous, reused: true };
+  if (previous && now.getTime() < store.executionDeadline(rootId) && (!calls.length || now.getTime() < Math.min(...calls.map(call => call.deadline)))) return { ...previous, reused: true };
   const generation = (previous?.generation ?? 0) + 1;
   const id = `retry-window:${createHash("sha256").update(JSON.stringify([instanceId, cardId, nativeAttempt, targetAttempt, generation])).digest("hex")}`;
-  const instanceDeadlines = {};
+  const instanceDeadlines = rootLimit ? { [rootId]: rootDeadline } : {};
   for (const executionId of [...new Set(calls.flatMap(call => [call.parentId, call.childId]))].filter(id => id !== rootId)) {
     const instance = store.getInstance(executionId);
     const limit = store.getRelease(instance.workflowSha256).manifest.spec.limits?.maxDuration;

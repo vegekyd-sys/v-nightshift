@@ -1515,7 +1515,7 @@ export class NightShiftRuntime {
     const base = { instanceId: instance.id, stageId, contentItemId, sourceCardId: cardId, affectedCardIds: [cardId] };
     if (latest.attempt > source.attempt) return { ...base, how: "fresh", alreadyResumed: true, cardId: latest.cardId };
     if (!["active", "paused"].includes(instance.status)) throw Object.assign(new Error("Only active or paused projects can resume work"), { statusCode: 409 });
-    const elapsedCall = this.store.callAncestors(instance.id).some(call => call.reason === "duration-limit" || this.now() >= call.deadline);
+    const elapsedCall = this.store.callAncestors(instance.id).some(call => call.reason === "duration-limit" || this.now() >= call.deadline) || this.now() >= (this.store.executionDeadline?.(instance.id) ?? Infinity);
     if (["ready", "scheduled"].includes(card.status) && elapsedCall && card.execution?.status !== "running") {
       if (requiredApproval(stage, instance, new Date(this.now()), contentItemId)) throw Object.assign(new Error("The stage's execution authorization is missing or expired"), { statusCode: 409 });
       this.prepareRetryWindow({ actor, card, instance, stage, run: source, note });
@@ -1540,7 +1540,7 @@ export class NightShiftRuntime {
 
   prepareRetryWindow({ actor, card, instance, stage, run, note, fresh = false, callId = null }) {
     if (!this.store.resetRetryWindow) return null; // ordinary legacy test adapters
-    if (!callId && !this.store.callForChild(instance.id)) return null; // no call-local window/allocation to reset
+    if (!callId && !this.store.callForChild(instance.id) && !this.store.getRelease(instance.workflowSha256)?.manifest.spec.limits?.maxDuration) return null; // no technical window/allocation to reset
     if (!stageEnabled(stage, instance.inputs) || (run?.contentItemId && this.isContentItemSkipped(instance.id, run.contentItemId))) throw Object.assign(new Error("Stage is disabled or item was skipped"), { statusCode: 409 });
     const itemId = run?.contentItemId ?? null;
     const runs = itemId ? this.store.listContentItemRuns(instance.id) : this.store.listStageRuns(instance.id);
