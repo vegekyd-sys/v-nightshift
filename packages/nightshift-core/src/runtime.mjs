@@ -1531,6 +1531,10 @@ export class NightShiftRuntime {
     return { ...base, ...result, alreadyResumed: false };
   }
 
+  authorizeCallTimeRecovery(request) {
+    return this.store.authorizeCallTimeRecovery(request, new Date(this.now()));
+  }
+
   async authorizeOperationRecovery({ cardId, failedOperationKey, requestHash, actor, reason, authorization, evidence }) {
     const card = (await this.workboard.listCards({ cardIds: [cardId] })).find(entry => entry.id === cardId);
     if (!card) throw Object.assign(new Error("Workboard card not found"), { statusCode: 404 });

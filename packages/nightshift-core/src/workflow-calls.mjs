@@ -165,13 +165,14 @@ async function startIteration(runtime, parent, stage, run, history, nowMs) {
   inputs.nightshift = { instanceDir, projectInputsPath: join(instanceDir, "project-inputs.json"), contentItemsManifestPath: join(instanceDir, "content-items.json") };
   const child = validateProjectRequest(store.getRelease(stage.call.workflow).manifest, { id: childId, name: `${stage.title} · ${iteration}`, workflowSha256: stage.call.workflow, inputs, agentBindings: parent.agentBindings });
   if (runtime.callPreflight) await runtime.callPreflight(store.getRelease(stage.call.workflow).manifest, child);
-  const first = history[0];
+  const previous = history.at(-1);
   const root = store.getInstance(store.rootInstanceId(parent.id));
   const rootDuration = store.getRelease(root.workflowSha256).manifest.spec.limits?.maxDuration;
   const rootDeadline = rootDuration ? Date.parse(root.createdAt) + durationMs(rootDuration) : Infinity;
   const ancestorDeadline = Math.min(Infinity, ...store.callAncestors(parent.id).map(call => call.deadline));
   const created = store.createCall({ id, parentId: parent.id, childId, cardId: run.cardId, stageId: stage.id, contentItemId: run.contentItemId ?? null, attempt: run.attempt, iteration,
-    startedAt: nowMs, deadline: Math.min(first?.deadline ?? nowMs + Math.min(durationMs(stage.timeout), durationMs(stage.repeat?.maxDuration ?? stage.timeout)), rootDeadline, ancestorDeadline),
+    startedAt: nowMs, deadline: Math.min(previous?.deadline ?? nowMs + Math.min(durationMs(stage.timeout), durationMs(stage.repeat?.maxDuration ?? stage.timeout)), rootDeadline, ancestorDeadline),
+    ...(previous?.timeRecoveryId ? { timeRecoveryId: previous.timeRecoveryId, originalDeadline: previous.originalDeadline } : {}),
     maxOperations: stage.repeat?.maxOperations ?? stage.call.maxOperations ?? 0, state: "running", reason: iteration === 1 ? "initial" : "repeat-condition", outputs: null }, child);
   const persisted = store.getInstance(created.childId);
   await atomicJson(persisted.inputs.nightshift.projectInputsPath, { version: 1, instanceId: childId, inputs: redactSensitiveInputs(persisted.inputs) });
@@ -192,6 +193,7 @@ export function publicCallSummary(store, instanceId) {
   return store.executionIds(instanceId).flatMap(id => store.listCalls(id)).map(call => ({
     id: call.id, parentId: call.parentId, childId: call.childId, cardId: call.cardId, stageId: call.stageId, contentItemId: call.contentItemId,
     iteration: call.iteration, state: call.state, blocked: call.state === "held" || call.reason.startsWith("child-work-stopped"), reason: call.reason, deadline: call.deadline,
+    originalDeadline: call.originalDeadline ?? call.deadline, timeRecoveryId: call.timeRecoveryId ?? null,
     totalOperations: store.listCalls(call.parentId).filter(entry => entry.cardId === call.cardId).flatMap(entry => store.executionIds(entry.childId)).reduce((sum, id) => sum + store.listExternalOperations(id).length, 0),
     operations: store.executionIds(call.childId).reduce((sum, id) => sum + store.listExternalOperations(id).length, 0),
     baseMaxOperations: call.maxOperations,

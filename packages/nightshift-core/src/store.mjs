@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { normalizeContentItems } from "./content-items.mjs";
 import { currentOptions } from "./needs-you.mjs";
 import { RECOVERY_EVENT, authorizeOperationRecovery, assertOperationAllowance, operationLimitScopes } from "./operation-recovery.mjs";
+import { authorizeCallTimeRecovery } from "./call-time-recovery.mjs";
 
 export class NightShiftStore {
   constructor(path = ":memory:") {
@@ -580,6 +581,20 @@ export class NightShiftStore {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json`)
       .run(call.id, call.parentId, call.childId, call.cardId, call.stageId, call.contentItemId ?? "", call.attempt, call.iteration, JSON.stringify(call));
     return call;
+  }
+
+  getCall(id) {
+    const row = this.db.prepare("SELECT record_json FROM workflow_calls WHERE id = ?").get(id);
+    return row ? JSON.parse(row.record_json) : null;
+  }
+
+  authorizeCallTimeRecovery(request, now = new Date()) {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const grant = authorizeCallTimeRecovery(this, request, now);
+      this.db.exec("COMMIT");
+      return grant;
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
 
   // The child identity and its parent linkage become durable together. A crash

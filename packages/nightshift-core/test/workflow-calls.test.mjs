@@ -206,6 +206,128 @@ async function fixture(t, { repeat = true, items = false, maxOperations = 2, chi
   return api;
 }
 
+test("expired call has an explicit bounded time recovery without recreating cards or resetting counters", async t => {
+  const f = await fixture(t, { repeat: false, parentSpec: { limits: { maxDuration: "8h", maxOperations: 20 } } });
+  await f.tick();
+  const call = f.store.listCalls("ROOT")[0];
+  f.advance(11 * 60000);
+  await f.tick();
+  assert.equal(f.store.listCalls("ROOT")[0].reason, "duration-limit");
+  const request = { callId: call.id, expectedDeadline: call.deadline, deadline: call.deadline + 10 * 60000, actor: "V", reason: "repair after investigated failure", authorization: "existing bounded scope", evidence: "known outcome readback" };
+  const grant = f.store.authorizeCallTimeRecovery(request, new Date(call.deadline + 60000));
+  assert.equal(grant.originalDeadline, call.deadline);
+  assert.equal(grant.deadline, request.deadline);
+  f.reopen();
+  assert.equal(f.store.authorizeCallTimeRecovery(request).id, grant.id);
+  assert.equal(f.store.listCalls("ROOT")[0].childId, call.childId);
+  await f.finish(call, { passed: true });
+  await f.tick(); await f.tick();
+  assert.equal(f.store.listCalls("ROOT")[0].state, "succeeded");
+  assert.equal(f.store.listStageRuns("ROOT").filter(run => run.stageId === "deliver").length, 1);
+  f.store.authorizeCallTimeRecovery(request);
+  assert.equal(f.store.listCalls("ROOT")[0].state, "succeeded", "replay never revives completed work");
+});
+
+async function expiredTimeFixture(t, options = {}) {
+  const f = await fixture(t, { repeat: false, parentSpec: { limits: { maxDuration: "8h", maxOperations: 20 } }, ...options });
+  await f.tick();
+  const call = f.store.listCalls("ROOT")[0];
+  const now = new Date(call.deadline + 60000);
+  f.advance(now.getTime() - call.startedAt); await f.tick();
+  const request = { callId: call.id, expectedDeadline: call.deadline, deadline: call.deadline + 10 * 60000, actor: "V", reason: "repair", authorization: "unchanged scope", evidence: "known outcome" };
+  return { ...f, get store() { return f.store; }, call, now, request };
+}
+
+test("time recovery rejects stale, rolling, unbounded, missing authority or unrelated holds", async t => {
+  const f = await expiredTimeFixture(t);
+  for (const patch of [
+    { expectedDeadline: f.call.deadline - 1 }, { deadline: f.now.getTime() },
+    { deadline: f.call.deadline + 11 * 60000 }, { deadline: Infinity }, { authorization: "" }, { evidence: "" },
+  ]) assert.throws(() => f.store.authorizeCallTimeRecovery({ ...f.request, ...patch }, f.now));
+  f.store.saveCall({ ...f.call, state: "held", reason: "no-matching-continuation" });
+  assert.throws(() => f.store.authorizeCallTimeRecovery(f.request, f.now), /duration-limit/);
+  f.store.saveCall({ ...f.call, state: "held", reason: "iteration-limit" });
+  assert.throws(() => f.store.authorizeCallTimeRecovery(f.request, f.now), /duration-limit/);
+});
+
+test("time recovery preserves root and child hard deadlines, pause, dispatch and supersession gates", async t => {
+  const rootBound = await expiredTimeFixture(t, { parentSpec: { limits: { maxDuration: "15m", maxOperations: 20 } } });
+  assert.throws(() => rootBound.store.authorizeCallTimeRecovery(rootBound.request, rootBound.now), /duration limits/);
+  assert.throws(() => rootBound.store.authorizeCallTimeRecovery(rootBound.request, new Date(rootBound.call.startedAt + 16 * 60000)), /Project duration/);
+  const childBound = await expiredTimeFixture(t, { childSpec: { limits: { maxDuration: "15m" } } });
+  assert.throws(() => childBound.store.authorizeCallTimeRecovery(childBound.request, childBound.now), /duration limits/);
+  const f = await expiredTimeFixture(t);
+  for (const id of ["ROOT", f.call.childId]) {
+    f.store.updateInstanceStatus(id, "paused");
+    assert.throws(() => f.store.authorizeCallTimeRecovery(f.request, f.now), /paused/);
+    f.store.updateInstanceStatus(id, "active");
+    f.store.setInstanceControl(id, { automaticDispatch: false });
+    assert.throws(() => f.store.authorizeCallTimeRecovery(f.request, f.now), /dispatch/);
+    f.store.setInstanceControl(id, { automaticDispatch: true });
+  }
+  const run = f.store.listStageRuns("ROOT")[0];
+  f.store.upsertStageRun({ ...run, attempt: run.attempt + 1, cardId: "replacement", status: "ready" });
+  assert.throws(() => f.store.authorizeCallTimeRecovery(f.request, f.now), /superseded/);
+});
+
+test("time recovery cannot bypass related ambiguous operations but leaves independent work untouched", async t => {
+  const f = await expiredTimeFixture(t);
+  // Fixture store-only insertion precedes admission: not a production API bypass.
+  const op = { instanceId: f.call.childId, stageId: "verify", ownerCardId: "old-card", requestHash: "a".repeat(64), idempotencyKey: "known-failure" };
+  f.store.reserveOperationRecord(op);
+  for (const status of ["reserved", "executing", "unknown", "failed"]) {
+    f.store.checkpointExternalOperation(op.idempotencyKey, { status });
+    assert.throws(() => f.store.authorizeCallTimeRecovery(f.request, f.now), /readback/);
+  }
+  f.store.checkpointExternalOperation(op.idempotencyKey, { status: "failed", result: { terminal: true, code: "known" } });
+  f.store.reserveOperationRecord({ ...op, instanceId: "ROOT", idempotencyKey: "independent" });
+  const original = f.store.getExternalOperation(op.idempotencyKey);
+  const grants = [f.store.authorizeCallTimeRecovery(f.request, f.now), f.store.authorizeCallTimeRecovery(f.request, f.now)];
+  assert.equal(grants[0].id, grants[1].id);
+  assert.deepEqual(f.store.getExternalOperation(op.idempotencyKey), original);
+  assert.equal(f.store.getExternalOperation("independent").status, "reserved");
+  assert.equal(f.store.getRelease(f.parent.workflowSha256).manifest.spec.limits.maxOperations, 20);
+  assert.equal(f.store.listExternalOperations(f.call.childId).length, 1);
+  assert.throws(() => f.store.authorizeCallTimeRecovery({ ...f.request, deadline: f.request.deadline - 1 }, f.now), /different/);
+  const held = { ...f.store.getCall(f.call.id), state: "held", reason: "duration-limit" };
+  f.store.saveCall(held);
+  f.store.authorizeCallTimeRecovery(f.request, new Date(f.request.deadline + 1));
+  assert.equal(f.store.getCall(f.call.id).state, "held", "expired permit replay is a read, not a new extension");
+});
+
+test("later loop rounds inherit recovered deadline, never gain another permit or reset iteration", async t => {
+  const f = await expiredTimeFixture(t, { repeat: true });
+  f.store.authorizeCallTimeRecovery(f.request, f.now);
+  await f.finish(f.call, { passed: false, again: true, resource: "reused" });
+  await f.tick();
+  const next = f.store.listCalls("ROOT").find(call => call.iteration === 2);
+  assert.equal(next.deadline, f.request.deadline);
+  f.advance(10 * 60000); await f.tick();
+  assert.throws(() => f.store.authorizeCallTimeRecovery({ ...f.request, callId: next.id, expectedDeadline: next.deadline, deadline: next.deadline + 60000 }, new Date(next.deadline + 1)), /different/);
+  assert.equal(f.store.listCalls("ROOT").length, 2);
+});
+
+test("nested time recovery cannot outlive or reactivate its ancestor", async t => {
+  const f = await fixture(t);
+  const middle = f.runtime.publish(flow("time-middle", [system("invoke", { actor: "workflow", call: { workflow: f.child.workflowSha256, inputs: {} } })], { outputs: { result: { stage: "invoke", output: "result" } } }));
+  const outer = f.runtime.publish(flow("time-outer", [system("invoke", { actor: "workflow", timeout: "15m", call: { workflow: middle.workflowSha256, inputs: {} } })], { limits: { maxDuration: "8h" } }));
+  f.runtime.startInstance({ id: "NEST", workflowSha256: outer.workflowSha256, inputs: { nightshift: { instanceDir: join(f.dir, "nested") } } });
+  await f.runtime.tick("NEST", { inspectSessions: false });
+  const ancestor = f.store.listCalls("NEST")[0];
+  const leaf = f.store.listCalls(ancestor.childId)[0];
+  f.advance(11 * 60000);
+  await f.runtime.tick("NEST", { inspectSessions: false });
+  const request = { callId: leaf.id, expectedDeadline: leaf.deadline, deadline: leaf.deadline + 10 * 60000, actor: "V", reason: "repair", evidence: "readback", authorization: "same scope" };
+  const now = new Date(leaf.deadline + 60000);
+  assert.throws(() => f.store.authorizeCallTimeRecovery(request, now), /ancestor duration/);
+  assert.throws(() => f.store.authorizeCallTimeRecovery({ ...request, deadline: ancestor.deadline }, new Date(ancestor.deadline)), /expired|stopped/);
+  f.store.updateInstanceStatus("NEST", "paused");
+  assert.throws(() => f.store.authorizeCallTimeRecovery({ ...request, deadline: leaf.deadline + 2 * 60000 }, now), /paused/);
+  f.store.updateInstanceStatus("NEST", "active");
+  f.store.authorizeCallTimeRecovery({ ...request, deadline: leaf.deadline + 2 * 60000 }, now);
+  assert.equal(f.store.getCall(ancestor.id).deadline, ancestor.deadline);
+});
+
 test("call once, success exit and downstream handoff reuse the original workflow", async t => {
   const f = await fixture(t, { repeat: false });
   await f.tick();

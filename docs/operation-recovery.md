@@ -30,6 +30,8 @@ nightshiftctl operations authorize-recovery <新恢复卡ID> \
 - **次数不是金额预算。** `authorization` 记录依据，不把文本或额度许可当作新的货币授权，也未新增金额硬预算能力。调用者仍须核算实际费用、剩余额度及资源准入。
 - 普通重试/「继续」不隐式申请许可，也不自动采购、建机或重新认证。
 
+调用已经超时时，本操作许可仍然拒绝。支持 `callTimeRecovery` 的版本可先按 [有界时间恢复](call-time-recovery.md) 单独取得时间许可；它不增加操作次数或解除其他 hold，再核对本页条件后才可申请操作许可。
+
 许可保存在现有 append-only 审计事件 `external-operation.recovery-authorized` 中，不做 SQLite 结构迁移，不写已发布 Workflow、业务项目输入或旧账本。
 
 ## 决定入口
