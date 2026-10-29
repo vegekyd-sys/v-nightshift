@@ -193,7 +193,10 @@ export function publicCallSummary(store, instanceId) {
     id: call.id, parentId: call.parentId, childId: call.childId, cardId: call.cardId, stageId: call.stageId, contentItemId: call.contentItemId,
     iteration: call.iteration, state: call.state, blocked: call.state === "held" || call.reason.startsWith("child-work-stopped"), reason: call.reason, deadline: call.deadline,
     totalOperations: store.listCalls(call.parentId).filter(entry => entry.cardId === call.cardId).flatMap(entry => store.executionIds(entry.childId)).reduce((sum, id) => sum + store.listExternalOperations(id).length, 0),
-    operations: store.executionIds(call.childId).reduce((sum, id) => sum + store.listExternalOperations(id).length, 0), maxOperations: call.maxOperations,
+    operations: store.executionIds(call.childId).reduce((sum, id) => sum + store.listExternalOperations(id).length, 0),
+    baseMaxOperations: call.maxOperations,
+    recoveryOperations: store.listOperationRecoveries(store.rootInstanceId(instanceId)).filter(grant => grant.scopeIds.includes(`call:${call.parentId}:${call.cardId}`)).length,
+    maxOperations: call.maxOperations + store.listOperationRecoveries(store.rootInstanceId(instanceId)).filter(grant => grant.scopeIds.includes(`call:${call.parentId}:${call.cardId}`)).length,
     cardIds: [...new Set(store.executionIds(call.childId).flatMap(id => [...store.listStageRuns(id), ...store.listContentItemRuns(id)].map(run => run.cardId).filter(Boolean).concat(store.listActionCardIds(id))))],
   }));
 }

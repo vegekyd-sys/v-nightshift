@@ -10,6 +10,23 @@ const execFileAsync = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "../../..");
 
+test("operations authorize-recovery sends a bounded explicit request to the official card endpoint", async t => {
+  let observed;
+  const server = createServer(async (req, res) => {
+    let body = ""; for await (const chunk of req) body += chunk;
+    observed = { url: req.url, method: req.method, body: JSON.parse(body) };
+    res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ id: "one-permit", additionalOperations: 1 }));
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const { stdout } = await execFileAsync(process.execPath, ["scripts/nightshiftctl.mjs", "operations", "authorize-recovery", "retry-card", "--failed-operation", "failed-key", "--request-hash", "b".repeat(64), "--reason", "fix shape", "--authorization", "existing budget approval", "--evidence", "supplier response", "--actor", "V"], { cwd: root, env: { ...process.env, NIGHTSHIFT_URL: `http://127.0.0.1:${server.address().port}` } });
+  assert.equal(JSON.parse(stdout).additionalOperations, 1);
+  assert.equal(observed.url, "/api/cards/retry-card/operations/authorize-recovery");
+  assert.equal(observed.body.failedOperationKey, "failed-key");
+  assert.equal(observed.body.actor, "V");
+  assert.equal(observed.body.authorization, "existing budget approval");
+});
+
 // nightshiftctl is an HTTP client of the Night Shift service. Operators and
 // agents parse its output, so stderr must stay empty on success. It used to
 // load the SQLite store through the package index and print Node's

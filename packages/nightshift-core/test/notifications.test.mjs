@@ -1,5 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { needsYouGroups, needsYouPresentation } from "../src/notifications.mjs";
+
+test("grouped child decision notifications retain exact task links and the original project context", () => {
+  const items = [{ id: "decision", kind: "decision", cardId: "child-card", stageId: "create", groupKey: "one", problem: "fix request", options: [] }];
+  const groups = needsYouGroups({ items });
+  assert.equal(groups[0].cardId, "child-card");
+  groups[0].url = "https://nightshift.example/?project=ROOT&view=workflows&card=child-card";
+  const presentation = needsYouPresentation({ instance: { id: "ROOT", name: "root" }, groups: [...groups, { ...groups[0], heading: "second", url: "https://nightshift.example/?project=ROOT&card=second" }], projectUrl: "https://nightshift.example/?project=ROOT" });
+  assert(presentation.blocks.flatMap(block => block.buttons ?? []).some(button => button.url.includes("card=child-card")));
+});
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {

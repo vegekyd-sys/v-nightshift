@@ -56,6 +56,112 @@ export class CallBoard {
   async resetCardFailures() {}
   async releaseCard(id, status) { return this.moveCard(id, status); }
 }
+
+async function failedRecoveryFixture(t, options = {}) {
+  const f = await fixture(t, { repeat: false, maxOperations: 1, childSpec: { limits: { maxOperations: 1 } }, parentSpec: { limits: { maxOperations: 4 } }, ...options });
+  await f.tick();
+  const call = f.store.listCalls("ROOT")[0];
+  const failed = f.reserve(call);
+  f.store.checkpointExternalOperation(failed.idempotencyKey, { status: "failed", result: { terminal: true, evidence: "synthetic-provider-response", code: 45006 } });
+  const old = f.store.listStageRuns(call.childId)[0];
+  await f.board.moveCard(old.cardId, "blocked");
+  f.store.upsertStageRun({ ...old, attempt: 2, cardId: "retry-card", status: "ready" });
+  const operation = { idempotencyKey: "retry-key", instanceId: call.childId, stageId: old.stageId, ownerCardId: "retry-card", requestHash: "b".repeat(64) };
+  const request = { ...operation, failedOperationKey: failed.idempotencyKey, actor: "V", reason: "correct request shape", authorization: "synthetic approval, unchanged project budget", evidence: "synthetic-provider-response" };
+  return { ...f, get store() { return f.store; }, call, failed, operation, request };
+}
+
+test("known failed recovery gets exactly one card/hash-bound allowance, preserving counts and immutable releases", async t => {
+  const f = await failedRecoveryFixture(t);
+  assert.throws(() => f.store.reserveExternalOperation(f.operation), /operation limit/i);
+  const grant = f.store.authorizeOperationRecovery(f.request);
+  assert.equal(grant.additionalOperations, 1);
+  assert.equal(f.store.authorizeOperationRecovery(f.request).id, grant.id);
+  assert.throws(() => f.store.authorizeOperationRecovery({ ...f.request, requestHash: "c".repeat(64) }), /different|bound/i);
+  assert.throws(() => f.store.reserveExternalOperation({ ...f.operation, requestHash: "c".repeat(64) }), /hash|operation limit/i);
+  f.store.checkpointExternalOperation(f.failed.idempotencyKey, { status: "failed" }, new Date(Date.now() + 1));
+  f.reopen();
+  const op = f.store.reserveExternalOperation(f.operation);
+  assert.equal(f.store.reserveExternalOperation(f.operation).reused, true);
+  assert.equal(f.store.listExternalOperations(f.call.childId).length, 2);
+  assert.equal(f.store.getExternalOperation(f.failed.idempotencyKey).status, "failed");
+  assert.throws(() => f.store.reserveExternalOperation({ ...f.operation, idempotencyKey: "third", ownerCardId: "other-card" }), /operation limit/i);
+  assert.equal(f.store.getRelease(f.child.workflowSha256).manifest.spec.limits.maxOperations, 1);
+  const summary = publicCallSummary(f.store, "ROOT")[0];
+  assert.equal(summary.totalOperations, 2);
+  assert.equal(summary.baseMaxOperations, 1);
+  assert.equal(summary.recoveryOperations, 1);
+  assert.equal(summary.maxOperations, 2);
+  assert.equal(op.ownerCardId, "retry-card");
+});
+
+test("recovery cannot enlarge root budget, zero-operation calls, or unknown outcomes", async t => {
+  const full = await failedRecoveryFixture(t, { parentSpec: { limits: { maxOperations: 1 } } });
+  assert.throws(() => full.store.authorizeOperationRecovery(full.request), /Root|Project/i);
+  const unknown = await failedRecoveryFixture(t);
+  unknown.store.checkpointExternalOperation(unknown.failed.idempotencyKey, { status: "unknown" });
+  assert.throws(() => unknown.store.authorizeOperationRecovery(unknown.request), /failed|unknown/i);
+  const normal = await failedRecoveryFixture(t);
+  assert.throws(() => normal.store.authorizeOperationRecovery({ ...normal.request, ownerCardId: normal.failed.ownerCardId }), /new|latest|attempt/i);
+  assert.throws(() => normal.store.authorizeOperationRecovery({ ...normal.request, authorization: "" }), /authorization/i);
+  normal.store.updateInstanceStatus("ROOT", "paused");
+  assert.throws(() => normal.store.authorizeOperationRecovery(normal.request), /paused/i);
+});
+
+test("root decision listing includes nested child requests without changing their execution ownership", async t => {
+  const f = await fixture(t);
+  await f.tick();
+  const call = f.store.listCalls("ROOT")[0];
+  const run = f.store.listStageRuns(call.childId)[0];
+  const request = f.store.openDecisionRequest({ instanceId: call.childId, cardId: run.cardId, stageId: run.stageId, attempt: 1, source: "failure", problem: "test", scope: "project", options: [], groupKey: "test" });
+  assert.equal(f.store.listDecisionRequests({ instanceId: "ROOT" })[0]?.id, request.id);
+  assert.equal(f.store.listDecisionRequests({ instanceId: "ROOT" })[0].instanceId, call.childId);
+  assert.equal(f.store.listDecisionRequests({ instanceId: "ROOT", includeDescendants: false }).length, 0);
+  assert.equal(f.store.listDecisionRequests({ instanceId: "unrelated" }).length, 0);
+  f.store.decideRequest(request.id, { actor: "V", optionId: "continue" });
+  assert.equal(f.store.listDecisionRequests({ instanceId: "ROOT" }).length, 0);
+  assert.equal(f.store.listDecisionRequests({ instanceId: "ROOT", status: "decided" }).length, 1);
+});
+
+test("recovery cannot enable zero scopes, accept changed evidence or lift paused/superseded calls", async t => {
+  const f = await failedRecoveryFixture(t);
+  const zero = { ...f.call, maxOperations: 0 };
+  f.store.saveCall(zero);
+  assert.throws(() => f.store.authorizeOperationRecovery(f.request), /Zero-operation/);
+  f.store.saveCall(f.call);
+  f.store.authorizeOperationRecovery(f.request);
+  f.store.checkpointExternalOperation(f.failed.idempotencyKey, { status: "failed", result: { terminal: true, evidence: "changed evidence" } });
+  assert.throws(() => f.store.reserveExternalOperation(f.operation), /operation limit/);
+  const g = await failedRecoveryFixture(t);
+  g.store.authorizeOperationRecovery(g.request);
+  g.store.updateInstanceStatus("ROOT", "paused");
+  assert.throws(() => g.store.reserveExternalOperation(g.operation), /paused/);
+  g.store.updateInstanceStatus("ROOT", "active");
+  assert.throws(() => g.store.reserveExternalOperation(g.operation, new Date(Date.now() + 2 * 60 * 60 * 1000)), /duration|expired/);
+  const run = g.store.listStageRuns("ROOT")[0];
+  g.store.upsertStageRun({ ...run, attempt: 2, cardId: "superseding-controller", status: "ready" });
+  assert.throws(() => g.store.reserveExternalOperation(g.operation), /superseded/);
+});
+
+test("nested instance limits are enforced even when the parent call has spare capacity", async t => {
+  const f = await failedRecoveryFixture(t, { maxOperations: 4 });
+  assert.throws(() => f.store.reserveExternalOperation(f.operation), /operation limit/);
+  const grant = f.store.authorizeOperationRecovery(f.request);
+  assert.deepEqual(grant.scopeIds, [`instance:${f.call.childId}`]);
+  assert(f.store.reserveExternalOperation(f.operation));
+});
+
+test("independent root work may remain in flight, but pausing the recovering child still blocks its permit", async t => {
+  const f = await failedRecoveryFixture(t);
+  const other = f.store.reserveExternalOperation({ instanceId: "ROOT", stageId: "other", ownerCardId: "other-card", idempotencyKey: "other-in-flight", requestHash: "d".repeat(64) });
+  f.store.checkpointExternalOperation(other.idempotencyKey, { status: "executing", externalTaskId: "independent-task" });
+  f.store.authorizeOperationRecovery(f.request);
+  f.store.updateInstanceStatus(f.call.childId, "paused");
+  assert.throws(() => f.store.reserveExternalOperation(f.operation), /paused/);
+  f.store.updateInstanceStatus(f.call.childId, "active");
+  assert(f.store.reserveExternalOperation(f.operation));
+  assert.equal(f.store.getExternalOperation(other.idempotencyKey).status, "executing");
+});
 async function fixture(t, { repeat = true, items = false, maxOperations = 2, childStages = [system("verify")], childInputs = {}, childSpec = {}, parentSpec = {} } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "ns-calls-"));
   const board = new CallBoard();

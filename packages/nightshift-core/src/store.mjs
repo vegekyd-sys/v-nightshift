@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { normalizeContentItems } from "./content-items.mjs";
 import { currentOptions } from "./needs-you.mjs";
+import { RECOVERY_EVENT, authorizeOperationRecovery, assertOperationAllowance, operationLimitScopes } from "./operation-recovery.mjs";
 
 export class NightShiftStore {
   constructor(path = ":memory:") {
@@ -321,11 +322,14 @@ export class NightShiftStore {
     return row ? decisionRequestRow(row) : null;
   }
 
-  listDecisionRequests({ instanceId = null, status = "open" } = {}) {
+  listDecisionRequests({ instanceId = null, status = "open", includeDescendants = true } = {}) {
     const clauses = [];
     const values = [];
     if (status) { clauses.push("status = ?"); values.push(status); }
-    if (instanceId) { clauses.push("instance_id = ?"); values.push(instanceId); }
+    if (instanceId) {
+      const ids = includeDescendants ? this.executionIds(instanceId) : [instanceId];
+      clauses.push(`instance_id IN (${ids.map(() => "?").join(",")})`); values.push(...ids);
+    }
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
     return this.db.prepare(`SELECT * FROM decision_requests ${where} ORDER BY created_at`).all(...values).map(decisionRequestRow);
   }
@@ -1036,6 +1040,7 @@ export class NightShiftStore {
     if ((!this.callForChild(operation.instanceId) && !limits) || this.getExternalOperation(operation.idempotencyKey)) return this.reserveOperationRecord(operation, now);
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      if (this.callForChild(operation.instanceId) && (this.getInstance(operation.instanceId)?.status !== "active" || !this.getInstanceControl(operation.instanceId).automaticDispatch)) throw Object.assign(new Error("Called Workflow is paused or dispatch is disabled"), { statusCode: 409 });
       this.assertCallAdmission(operation.instanceId, now);
       if (limits) {
         if (root.status !== "active" || !this.getInstanceControl(rootId).automaticDispatch) throw Object.assign(new Error("Root project is paused"), { statusCode: 409 });
@@ -1043,14 +1048,23 @@ export class NightShiftStore {
         const used = this.executionIds(rootId).reduce((sum, id) => sum + this.listExternalOperations(id).length, 0);
         if (limits.maxOperations !== undefined && used >= limits.maxOperations) throw Object.assign(new Error("Project external-operation limit reached"), { statusCode: 409 });
       }
-      for (const call of this.callAncestors(operation.instanceId)) {
-        const siblings = this.listCalls(call.parentId).filter(entry => entry.cardId === call.cardId);
-        const count = siblings.flatMap(entry => this.executionIds(entry.childId)).reduce((sum, id) => sum + this.listExternalOperations(id).length, 0);
-        if (count >= call.maxOperations) throw Object.assign(new Error("Workflow call external-operation limit reached; no new reservation allowed"), { statusCode: 409 });
-      }
+      assertOperationAllowance(this, operation, operationLimitScopes(this, operation.instanceId, now));
       const result = this.reserveOperationRecord(operation, now);
       this.db.exec("COMMIT");
       return result;
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  listOperationRecoveries(rootId) {
+    return this.db.prepare("SELECT payload_json FROM audit_events WHERE instance_id = ? AND type = ? ORDER BY sequence").all(rootId, RECOVERY_EVENT).map(row => JSON.parse(row.payload_json));
+  }
+
+  authorizeOperationRecovery(request, now = new Date()) {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const grant = authorizeOperationRecovery(this, request, now);
+      this.db.exec("COMMIT");
+      return grant;
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
 

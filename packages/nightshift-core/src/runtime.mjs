@@ -11,7 +11,7 @@ import { actionKey, buildAgentBrief, nativeActionKey, planNextActions, projectCo
 import { classifyRunOutcome, classifyTerminalFailure, infrastructureFailureSummary, runEndedNormally, scheduleAutomaticRetry } from "./failure-policy.mjs";
 import { normalizeProjectCollaboration } from "./project.mjs";
 import { cardAttempt, continuation, ledgerOf, readStopReport } from "./needs-you.mjs";
-import { findNightShiftExternalOperation, resolveNightShiftCardContext } from "./card-context.mjs";
+import { findNightShiftExternalOperation, resolveNightShiftCardContext, resolveNightShiftOperationKeys } from "./card-context.mjs";
 
 // A blocked card with an empty Session is read as never started only after this
 // long, so a transcript still being written is not mistaken for one.
@@ -616,7 +616,7 @@ export class NightShiftRuntime {
     }
     if (option.effect === "skip") {
       const targets = applyToGroup
-        ? this.store.listDecisionRequests({ instanceId: request.instanceId, status: "open" }).filter((entry) => entry.groupKey === request.groupKey)
+        ? this.store.listDecisionRequests({ instanceId: request.instanceId, status: "open", includeDescendants: false }).filter((entry) => entry.groupKey === request.groupKey)
         : [request];
       const affectedCardIds = [];
       for (const target of targets) {
@@ -644,7 +644,7 @@ export class NightShiftRuntime {
     if (option.effect === "continue") {
       // One answer, "继续": the engine picks how (see goOn).
       const targets = applyToGroup
-        ? this.store.listDecisionRequests({ instanceId: request.instanceId, status: "open" })
+        ? this.store.listDecisionRequests({ instanceId: request.instanceId, status: "open", includeDescendants: false })
           .filter((entry) => entry.groupKey === request.groupKey && (entry.id === request.id || entry.options.some((choice) => choice.effect === "continue")))
         : [request];
       const affectedCardIds = [];
@@ -693,7 +693,7 @@ export class NightShiftRuntime {
     // A group shares a root cause, not always a ledger state: a stop whose
     // paid call cannot be retried does not offer retry and is left out.
     const targets = applyToGroup
-      ? this.store.listDecisionRequests({ instanceId: request.instanceId, status: "open" })
+      ? this.store.listDecisionRequests({ instanceId: request.instanceId, status: "open", includeDescendants: false })
         .filter((entry) => entry.groupKey === request.groupKey && (entry.id === request.id || entry.options.some((choice) => choice.effect === "retry")))
       : [request];
     const affectedCardIds = [];
@@ -1529,6 +1529,22 @@ export class NightShiftRuntime {
       payload: { actor, cardId, stageId, contentItemId, note, allowNewOperation: allowNewOperation === true, ...result } });
     this.store.supersedeDecisionRequests(cardId);
     return { ...base, ...result, alreadyResumed: false };
+  }
+
+  async authorizeOperationRecovery({ cardId, failedOperationKey, requestHash, actor, reason, authorization, evidence }) {
+    const card = (await this.workboard.listCards({ cardIds: [cardId] })).find(entry => entry.id === cardId);
+    if (!card) throw Object.assign(new Error("Workboard card not found"), { statusCode: 404 });
+    if (!["ready", "blocked", "scheduled"].includes(card.status) || card.execution?.status === "running") throw Object.assign(new Error("Stop the recovery card before authorizing another external operation"), { statusCode: 409 });
+    const coordinates = resolveNightShiftCardContext({ card });
+    const instance = this.store.getInstance(coordinates.instanceId);
+    const release = instance ? this.store.getRelease(instance.workflowSha256)?.manifest : null;
+    const context = resolveNightShiftCardContext({ card, release });
+    if (!instance || !release || !["agent", "system"].includes(context.stage?.actor) || !context.sideEffects.length || card.labels?.includes("nightshift:approval")) throw Object.assign(new Error("Recovery requires an executable stage with declared side effects"), { statusCode: 422 });
+    if (requiredApproval(context.stage, instance, new Date(this.now()), context.contentItemId)) throw Object.assign(new Error("Stage execution authorization is missing or expired"), { statusCode: 409 });
+    const contentItem = context.contentItemId ? this.contentItemsWithRevisions(instance.id).find(item => item.id === context.contentItemId) : null;
+    const projectRun = context.contentItemId ? null : this.store.listStageRuns(instance.id).find(run => run.cardId === card.id);
+    const keys = resolveNightShiftOperationKeys({ card, release, instance, contentItem, projectRun });
+    return this.store.authorizeOperationRecovery({ instanceId: instance.id, stageId: context.stageId, contentItemId: context.contentItemId, ownerCardId: card.id, idempotencyKey: keys.preferredIdempotencyKey, failedOperationKey, requestHash, actor, reason, authorization, evidence }, new Date(this.now()));
   }
 
   async retryWorkflowCall({ actor, card, instance, stage, note }) {

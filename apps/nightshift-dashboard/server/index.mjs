@@ -311,7 +311,7 @@ async function handleApi(request, response, url) {
       cardsUpdatedAt,
       lastSchedulerAt,
       lastSchedulerError,
-      workflowFeatures: { calls: 1, boundedRepeat: 1, terminalAttempts: 1 },
+      workflowFeatures: { calls: 1, boundedRepeat: 1, terminalAttempts: 1, operationRecovery: 1, descendantDecisions: 1 },
       notifications: { enabled: notificationsEnabled, lastAt: lastNotificationAt, lastError: lastNotificationError },
       schedulerStartedAt,
       schedulerRunning: Boolean(schedulerPromise),
@@ -810,6 +810,17 @@ async function handleApi(request, response, url) {
     );
     return;
   }
+  const recoveryMatch = url.pathname.match(/^\/api\/cards\/([^/]+)\/operations\/authorize-recovery$/);
+  if (request.method === "POST" && recoveryMatch) {
+    const body = await bodyJson(request);
+    const result = await serializedOperation(() => runtime.authorizeOperationRecovery({
+      cardId: decodeURIComponent(recoveryMatch[1]), actor: operatorIdentity(request, body),
+      failedOperationKey: body.failedOperationKey, requestHash: body.requestHash,
+      reason: body.reason, authorization: body.authorization, evidence: body.evidence,
+    }));
+    json(response, 200, result);
+    return;
+  }
   const operationMatch = url.pathname.match(/^\/api\/cards\/([^/]+)\/operations\/(reserve|checkpoint)$/);
   if (request.method === "POST" && operationMatch) {
     const cardId = decodeURIComponent(operationMatch[1]);
@@ -1079,7 +1090,8 @@ async function handleApi(request, response, url) {
       decisions: store.listDecisionRequests({
         instanceId: url.searchParams.get("instanceId") || null,
         status: url.searchParams.get("status") ?? "open",
-      }),
+        includeDescendants: url.searchParams.get("includeDescendants") !== "false",
+      }).map(decision => ({ ...decision, executionInstanceId: decision.instanceId, rootInstanceId: store.rootInstanceId(decision.instanceId) })),
     });
     return;
   }

@@ -1,4 +1,5 @@
 import { ExecutionControls } from "./ExecutionControls.jsx";
+import { ProjectExecutionDetails } from "./ProjectExecutionDetails.jsx";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import YAML from "yaml";
 import {
@@ -17,7 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { api } from "./api.js";
-import { cardAttention, countByKind, inScope, isToday, needsYouQueue, preferTask, projectProgress, projectRuns, projectScope, scopeAuthorizes, skippedItems, stageExpected, supersededCards, taskAttention, visibleStages } from "./attention.js";
+import { childDecisionTasks, decisionDrawerContext, cardAttention, countByKind, inScope, isToday, needsYouQueue, preferTask, projectProgress, projectRuns, projectScope, scopeAuthorizes, skippedItems, stageExpected, supersededCards, taskAttention, visibleStages } from "./attention.js";
 import { Drawer, Icons, Sidebar } from "./components.jsx";
 import { projectTiming } from "./timing.js";
 
@@ -275,7 +276,7 @@ function LiveBoard({ onScopeChange, data, query, setQuery, selected, setSelected
         </div>;
       })}
       {selected && <div className="factory-drawer-scrim" onClick={() => setSelected(null)} />}
-      <Drawer card={selected} context={drawerContextFromEntry(entries.find((entry) => entry.card.id === selected?.id))} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onClose={() => setSelected(null)} onDecide={decide} onRetry={retry} onResolve={resolve} />
+      <Drawer card={selected} context={decisionDrawerContext(drawerContextFromEntry(entries.find((entry) => entry.card.id === selected?.id)), selected, data?.needsYou)} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onClose={() => setSelected(null)} onDecide={decide} onRetry={retry} onResolve={resolve} />
     </section>
   </div>;
 }
@@ -466,7 +467,7 @@ function WorkflowStudio({ onScopeChange, data, refresh, initialProjectId, initia
     ...countByKind(allTasks),
     doneToday: allTasks.filter((task) => task.attention.kind === "done" && isToday(task.card?.updatedAt ?? task.updatedAt)).length,
   }), [allTasks]);
-  const needsYou = useMemo(() => allTasks.filter((task) => task.attention.kind === "needs-you"), [allTasks]);
+  const needsYou = useMemo(() => [...allTasks.filter((task) => task.attention.kind === "needs-you"), ...childDecisionTasks(visibleProjects, data?.cards ?? [], data?.needsYou)], [allTasks, visibleProjects, data?.cards, data?.needsYou]);
   const releaseBySha = useMemo(() => new Map((data?.workflows ?? []).map((release) => [release.workflowSha256, release])), [data?.workflows]);
   const lines = useMemo(() => (floor && data ? productionLines(groups, data, queue) : []), [floor, groups, data, queue]);
   const floorTasks = useMemo(() => lines.flatMap((line) => line.tasks), [lines]);
@@ -534,9 +535,9 @@ function WorkflowStudio({ onScopeChange, data, refresh, initialProjectId, initia
       </div>
     </header>
     {floor ? <div className="factory-workspace">
-      <ProductionFloor lines={lines} idle={groups.filter((entry) => liveCountFor(entry) === 0)} instances={data.instances ?? []} releaseBySha={releaseBySha} onSelect={setSelected} onOpenLine={openLine} />
+      <ProductionFloor lines={lines} childNeedsYou={childDecisionTasks(lines.flatMap(line => line.projects), data.cards ?? [], data.needsYou)} idle={groups.filter((entry) => liveCountFor(entry) === 0)} instances={data.instances ?? []} releaseBySha={releaseBySha} onSelect={setSelected} onOpenLine={openLine} />
       {selected && <div className="factory-drawer-scrim" onClick={() => setSelected(null)} />}
-      <Drawer card={selected} context={drawerContextFromTask(floorTasks.find((task) => task.card?.id === selected?.id), lines.find((line) => line.tasks.some((task) => task.card?.id === selected?.id))?.stages ?? [])} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onClose={() => setSelected(null)} onDecide={decide} onRetry={retry} onResolve={resolve} />
+      <Drawer card={selected} context={decisionDrawerContext(drawerContextFromTask(floorTasks.find((task) => task.card?.id === selected?.id), lines.find((line) => line.tasks.some((task) => task.card?.id === selected?.id))?.stages ?? []), selected, data?.needsYou)} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onClose={() => setSelected(null)} onDecide={decide} onRetry={retry} onResolve={resolve} />
     </div> : <div className={`workflow-workspace factory-workspace ${selected ? "with-drawer" : ""}`}>
       <main className="workflow-runway">
         <div className="runway-toolbar factory-toolbar">
@@ -558,7 +559,7 @@ function WorkflowStudio({ onScopeChange, data, refresh, initialProjectId, initia
         </div>
       </main>
       {selected && <div className="factory-drawer-scrim" onClick={() => setSelected(null)} />}
-      <Drawer card={selected} context={drawerContextFromTask(allTasks.find((task) => task.card?.id === selected?.id), stages)} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onClose={() => setSelected(null)} onDecide={decide} onRetry={retry} onResolve={resolve} />
+      <Drawer card={selected} context={decisionDrawerContext(drawerContextFromTask(allTasks.find((task) => task.card?.id === selected?.id), stages), selected, data?.needsYou)} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onClose={() => setSelected(null)} onDecide={decide} onRetry={retry} onResolve={resolve} />
     </div>}
     {editor && <WorkflowEditor initialSource={editor.source} mode={editor.mode} onClose={() => setEditor(null)} onPublished={async () => { setEditor(null); await refresh(true); }} />}
     {bulkApproval && <div className="workflow-modal bulk-approval-modal" role="dialog" aria-modal="true" aria-label="批量审核">
@@ -724,7 +725,7 @@ function FactoryInbox({ needsYou, onSelect }) {
   if (!needsYou.length) return null;
   return <div className="factory-inbox">
     <header><strong>需要你</strong><span>{needsYou.length} 件</span></header>
-    {needsYou.map((task) => <button key={`${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}`} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}>
+    {needsYou.map((task) => <button key={task.card?.id ?? `${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}`} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}>
       <span className="factory-inbox-dot" />
       <div><strong>{task.attention.reason}</strong><small>{task.contentTitle ? `${task.contentTitle} · ` : ""}{task.projectName}</small></div>
       <span className="factory-inbox-open">处理</span>
@@ -753,8 +754,8 @@ function productionLines(groups, data, queue) {
   return lines.sort((left, right) => right.counts["needs-you"] - left.counts["needs-you"] || moving(right) - moving(left) || right.projects.length - left.projects.length);
 }
 
-function ProductionFloor({ lines, idle, instances, releaseBySha, onSelect, onOpenLine }) {
-  const needsYou = lines.flatMap((line) => line.tasks.filter((task) => task.attention.kind === "needs-you"));
+function ProductionFloor({ lines, childNeedsYou = [], idle, instances, releaseBySha, onSelect, onOpenLine }) {
+  const needsYou = [...lines.flatMap((line) => line.tasks.filter((task) => task.attention.kind === "needs-you")), ...childNeedsYou];
   return <section className="factory-overview production-floor" aria-label="在产总览">
     <FactoryInbox needsYou={needsYou} onSelect={onSelect} />
     {lines.length === 0 && <p className="floor-empty">现在没有在产的项目。下面的 Workflow 都可以直接新建项目。</p>}
@@ -850,9 +851,8 @@ function FactoryOverview({ scope, stages, projects, focused = false, renderContr
             })}
             {(counts.running + counts.healing) > 0 && <em>{counts.running + counts.healing} 个在做</em>}
           </div>
-          {(project.calls ?? []).length > 0 && <div className="factory-project-stages" aria-label="流程调用轮次">{project.calls.map(call => <span key={call.id}>{call.stageId}{call.contentItemId ? ` · ${call.contentItemId}` : ""} · 第 {call.iteration} 轮 · {({running: "执行中", succeeded: "已通过", continued: "已进入下一轮", held: "已停住"})[call.state]} · {call.reason} · 本轮操作 {call.operations}，累计 {call.totalOperations}/{call.maxOperations}{focused && call.cardIds.map(id => <a key={id} href={`/?view=board&card=${encodeURIComponent(id)}`} onClick={event => event.stopPropagation()}> 查看任务</a>)}</span>)}</div>}
           <small className="factory-project-time">{projectTiming(project)}</small>
-          {focused && renderControls?.(project)}
+          {focused && (project.calls?.length > 0 ? <div className="factory-project-footer">{renderControls?.(project)}<ProjectExecutionDetails key={project.id} project={project} stages={release?.manifest?.spec?.stages ?? []} needsYou={needsYou.map(task => task.attention.request).filter(Boolean)} /></div> : renderControls?.(project))}
         </div>;
       })}
     </div>}
