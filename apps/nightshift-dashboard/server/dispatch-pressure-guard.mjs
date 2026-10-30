@@ -71,7 +71,10 @@ export class DispatchPressureGuard {
     // until the next sample, but do not halve the target or start a red
     // cooldown: on V (2026-10-29 18:26-00:30) treating it as red alternated
     // with green probes and held the board at one card for six hours.
-    if (hostPressure?.blocked && hostPressure.warmingUp && hostPressure.reason === "host sample warming up") {
+    // A lease timeout in the same probe is still red: warm-ups follow restarts
+    // and errors, which is when lease timeouts happen too.
+    if (hostPressure?.blocked && hostPressure.warmingUp && hostPressure.reason === "host sample warming up" &&
+      agentDbPressure?.level !== "red") {
       this.startCredits = 0;
       this.lastProbe = { at: new Date(at).toISOString(), error: hostPressure.reason, latencyMs: null, level: "warming" };
       return this.snapshot(Math.max(0, Number(running) || 0));
