@@ -6,6 +6,7 @@ const NUMBERS = ["htmlTtfb", "domReady", "overviewMs", "cachedPaint", "freshPain
 export function clientTimingEvent(body = {}) {
   const event = { event: "client.load" };
   for (const field of NUMBERS) {
+    if (body[field] === null || body[field] === undefined || body[field] === "") continue;
     const value = Number(body[field]);
     if (Number.isFinite(value) && value >= 0 && value < 600_000) event[field] = Math.round(value);
   }
