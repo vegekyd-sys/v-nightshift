@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildOverview, leanCard, leanRun } from "./overview.mjs";
+import { buildOverview, leanCard, leanRun, overviewDetails } from "./overview.mjs";
 
 const NOW = Date.parse("2026-09-28T10:00:00Z");
 const daysAgo = (days) => new Date(NOW - days * 86_400_000).toISOString();
@@ -100,3 +100,12 @@ test("each project carries when an Agent first worked on it, which a queued proj
   assert.equal(byId.OLD.workStartedAt, null, "a card that only waits has no start");
 });
 
+
+test("only projects in the shown scope need their items and runs loaded", () => {
+  const { instances } = fixture();
+  const loaded = (scope) => instances.filter((instance) => overviewDetails(instance, scope, NOW)).map((instance) => instance.id);
+  assert.deepEqual(loaded("live"), ["LIVE"]);
+  assert.deepEqual(loaded("shelved"), ["OLD"]);
+  assert.deepEqual(loaded("all"), ["LIVE", "OLD"], "archived projects are never loaded");
+  assert.deepEqual(loaded("everything"), ["LIVE"], "an unknown scope reads as live, as buildOverview does");
+});

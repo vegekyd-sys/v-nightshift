@@ -1,7 +1,7 @@
 import { publicCallSummary } from "../../../packages/nightshift-core/src/workflow-calls.mjs";
 import { activeCardCount, derivedWarmupMaxCards, warmupAdmission } from "./active-card-count.mjs";
 import { DispatchHoldLedger, dispatchHoldReason } from "./dispatch-hold-ledger.mjs";
-import { buildOverview } from "./overview.mjs";
+import { buildOverview, overviewDetails } from "./overview.mjs";
 import { createContentItemsManifestSync } from "./content-items-manifest.mjs";
 import { runSchedulerPass, instanceCardIds, visibleCardIds } from "../../../packages/nightshift-core/src/scheduler-pass.mjs";
 import { tickWithFaultProjection } from "../../../packages/nightshift-core/src/scheduler-state.mjs";
@@ -368,7 +368,7 @@ async function handleApi(request, response, url) {
     }));
     json(response, 200, {
       board,
-      cards: visibleCards(cardCache, instances).map(withCardLinks),
+      cards: visibleCards(cardCache, instances).map(cardLinker()),
       cardsUpdatedAt,
       events: store.listEvents(null, 80),
       instances: instances.map(withInstanceLinks),
@@ -379,12 +379,18 @@ async function handleApi(request, response, url) {
   }
   if (request.method === "GET" && url.pathname === "/api/overview") {
     if (url.searchParams.get("refresh") === "1") await refreshVisibleCards();
-    const instances = store.listInstances().map((instance) => instance.status === "archived" ? instance : withInstanceLinks({
-      ...instance,
-      contentItems: store.listContentItems(instance.id),
-      contentItemRuns: store.listContentItemRuns(instance.id),
-      stageRuns: store.listStageRuns(instance.id),
-    }));
+    const scope = url.searchParams.get("scope") ?? "live";
+    const now = Date.now();
+    const instances = store.listInstances().map((instance) => {
+      if (instance.status === "archived") return instance;
+      if (!overviewDetails(instance, scope, now)) return withInstanceLinks(instance);
+      return withInstanceLinks({
+        ...instance,
+        contentItems: store.listContentItems(instance.id),
+        contentItemRuns: store.listContentItemRuns(instance.id),
+        stageRuns: store.listStageRuns(instance.id),
+      });
+    });
     const visible = instances.filter((instance) => instance.status !== "archived");
     json(response, 200, {
       board,
@@ -392,9 +398,10 @@ async function handleApi(request, response, url) {
       // The board shows "Gateway 重启中，夜班已暂停" while this is not "up".
       gatewayRestart: gatewayRestartForBoard(gatewayRestart.snapshot()),
       ...buildOverview({
-        scope: url.searchParams.get("scope") ?? "live",
+        scope,
+        now,
         instances,
-        cards: visibleCards(cardCache, visible).map(withCardLinks),
+        cards: visibleCards(cardCache, visible).map(cardLinker()),
         releases: store.listReleases().map(withWorkflowLinks),
         operationsFor: (instanceId) => store.listExternalOperations(instanceId),
         skippedFor: (instanceId) => store.listSkippedContentItems(instanceId),
@@ -556,7 +563,7 @@ async function handleApi(request, response, url) {
     const cards = url.searchParams.get("refresh") === "1" ? await refreshVisibleCards({ includeArchived }) : cardCache;
     const instances = store.listInstances().filter((instance) => instance.status !== "archived");
     const filtered = includeArchived ? cards : visibleCards(cards, instances);
-    json(response, 200, { cards: (status ? filtered.filter((card) => card.status === status) : filtered).map(withCardLinks) });
+    json(response, 200, { cards: (status ? filtered.filter((card) => card.status === status) : filtered).map(cardLinker()) });
     return;
   }
   const stageHandoffMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/stages\/([^/]+)\/handoff$/);
@@ -2115,9 +2122,17 @@ function countCardsByStatus(cards) {
   return Object.fromEntries([...new Set(cards.map((card) => card.status))].sort().map((status) => [status, cards.filter((card) => card.status === status).length]));
 }
 
-function withCardLinks(card) {
+// One project's call summary reads its calls and recovery grants; a list of
+// cards shares one lookup per project instead of repeating it for every card.
+function cardLinker() {
+  const summaries = new Map();
+  return (card) => withCardLinks(card, summaries);
+}
+
+function withCardLinks(card, summaries = new Map()) {
   const id = cardInstanceId(card);
-  const call = id ? publicCallSummary(store, id).filter(call => call.cardId === card.id).at(-1) : null;
+  if (id && !summaries.has(id)) summaries.set(id, publicCallSummary(store, id));
+  const call = id ? summaries.get(id).filter(call => call.cardId === card.id).at(-1) : null;
   return { ...card, ...(call ? { metadata: { ...card.metadata, automation: { ...card.metadata?.automation, workflowCall: { iteration: call.iteration, state: call.state, blocked: call.blocked, reason: call.reason } } } } : {}), humanAttempt: publicHumanAttempt(store.getHumanAttempt(card.id)), links: cardLinks(card.id) };
 }
 

@@ -95,6 +95,22 @@ test("known failed recovery gets exactly one card/hash-bound allowance, preservi
   assert.equal(op.ownerCardId, "retry-card");
 });
 
+test("a call summary reads the project's recovery grants once, and not at all without calls", async t => {
+  const f = await failedRecoveryFixture(t);
+  f.store.authorizeOperationRecovery(f.request);
+  const store = f.store;
+  const original = store.listOperationRecoveries.bind(store);
+  let reads = 0;
+  store.listOperationRecoveries = (rootId) => { reads += 1; return original(rootId); };
+  const summary = publicCallSummary(store, "ROOT");
+  assert.equal(summary[0].recoveryOperations, 1);
+  assert.equal(summary[0].maxOperations, 2);
+  assert.equal(reads, 1, "one read per summary, not two per call");
+  reads = 0;
+  assert.deepEqual(publicCallSummary(store, f.call.childId), []);
+  assert.equal(reads, 0, "a project without calls never reads the audit log");
+});
+
 test("recovery cannot enlarge root budget, zero-operation calls, or unknown outcomes", async t => {
   const full = await failedRecoveryFixture(t, { parentSpec: { limits: { maxOperations: 1 } } });
   assert.throws(() => full.store.authorizeOperationRecovery(full.request), /Root|Project/i);

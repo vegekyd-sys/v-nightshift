@@ -189,14 +189,18 @@ async function finishController(runtime, parent, release, stage, run, call) {
 }
 
 export function publicCallSummary(store, instanceId) {
-  return store.executionIds(instanceId).flatMap(id => store.listCalls(id)).map(call => ({
+  const calls = store.executionIds(instanceId).flatMap(id => store.listCalls(id));
+  if (!calls.length) return [];
+  const grants = store.listOperationRecoveries(store.rootInstanceId(instanceId));
+  const recoveriesFor = call => grants.filter(grant => grant.scopeIds.includes(`call:${call.parentId}:${call.cardId}`)).length;
+  return calls.map(call => ({
     id: call.id, parentId: call.parentId, childId: call.childId, cardId: call.cardId, stageId: call.stageId, contentItemId: call.contentItemId,
     iteration: call.iteration, state: call.state, blocked: call.state === "held" || call.reason.startsWith("child-work-stopped"), reason: call.reason, deadline: call.deadline,
     totalOperations: store.listCalls(call.parentId).filter(entry => entry.cardId === call.cardId).flatMap(entry => store.executionIds(entry.childId)).reduce((sum, id) => sum + store.listExternalOperations(id).length, 0),
     operations: store.executionIds(call.childId).reduce((sum, id) => sum + store.listExternalOperations(id).length, 0),
     baseMaxOperations: call.maxOperations,
-    recoveryOperations: store.listOperationRecoveries(store.rootInstanceId(instanceId)).filter(grant => grant.scopeIds.includes(`call:${call.parentId}:${call.cardId}`)).length,
-    maxOperations: call.maxOperations + store.listOperationRecoveries(store.rootInstanceId(instanceId)).filter(grant => grant.scopeIds.includes(`call:${call.parentId}:${call.cardId}`)).length,
+    recoveryOperations: recoveriesFor(call),
+    maxOperations: call.maxOperations + recoveriesFor(call),
     cardIds: [...new Set(store.executionIds(call.childId).flatMap(id => [...store.listStageRuns(id), ...store.listContentItemRuns(id)].map(run => run.cardId).filter(Boolean).concat(store.listActionCardIds(id))))],
   }));
 }

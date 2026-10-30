@@ -13,10 +13,22 @@ const AUTOMATION_FIELDS = ["instanceId", "stageId", "contentItemId", "scheduledA
 const INPUT_FIELDS = ["targetCount", "deliveryMode", "authorizationScope", "publicationTarget"];
 const FAILURE_FIELDS = ["kind", "source", "retryable", "automaticRetry", "nextRetryAt", "validationPhase"];
 
+export function overviewScope(scope) {
+  return OVERVIEW_SCOPES.includes(scope) ? scope : "live";
+}
+
+// Whether the overview sends this project's items and runs. Only the scope a
+// page shows needs them; on V (2026-10-30) 460 of 480 projects were outside it.
+export function overviewDetails(instance, scope, now = Date.now()) {
+  if (instance.status === "archived") return false;
+  const wanted = overviewScope(scope);
+  return wanted === "all" || projectScope(instance, now) === wanted;
+}
+
 export function buildOverview({ scope = "live", instances, cards, releases, operationsFor, skippedFor, now = Date.now() }) {
-  const wanted = OVERVIEW_SCOPES.includes(scope) ? scope : "live";
+  const wanted = overviewScope(scope);
   const visible = instances.filter((instance) => instance.status !== "archived");
-  const detailed = new Set(visible.filter((instance) => wanted === "all" || projectScope(instance, now) === wanted).map((instance) => instance.id));
+  const detailed = new Set(visible.filter((instance) => overviewDetails(instance, wanted, now)).map((instance) => instance.id));
   const usedShas = new Set(visible.filter((instance) => detailed.has(instance.id)).map((instance) => instance.workflowSha256));
   const latestShas = latestReleaseShas(releases);
   const stagesBySha = new Map(releases.map((release) => [release.workflowSha256, release.manifest?.spec?.stages]));
