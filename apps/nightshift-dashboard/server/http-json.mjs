@@ -45,9 +45,10 @@ function gzipCached(etag, body) {
  * `no-cache` + ETag so a browser re-polling an unchanged body gets a 304 with no
  * payload instead of the full document again.
  */
-export function sendJson(request, response, status, value, { revalidate = false } = {}) {
+export function sendJson(request, response, status, value, { revalidate = false, headers: extraHeaders = {} } = {}) {
   const body = Buffer.from(JSON.stringify(value), "utf8");
   const headers = {
+    ...extraHeaders,
     "Cache-Control": revalidate ? "no-cache" : "no-store",
     "Content-Type": "application/json; charset=utf-8",
     "X-Content-Type-Options": "nosniff",

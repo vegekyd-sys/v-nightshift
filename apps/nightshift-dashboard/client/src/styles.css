@@ -976,3 +976,7 @@ body { background:radial-gradient(circle at 72% -20%,rgba(128,92,214,.14),transp
 .floor-idle .floor-idle-toggle svg { transition:transform .15s ease; }
 .floor-idle .floor-idle-toggle[aria-expanded="true"] svg { transform:rotate(180deg); }
 .floor-idle.is-open .floor-idle-toggle { flex-basis:100%; justify-content:flex-start; }
+
+/* Shown while the page draws the overview this browser saw last and waits for the fresh one. */
+.stale-note { position:fixed; z-index:80; top:12px; left:50%; transform:translateX(-50%); padding:5px 12px; border-radius:999px; background:rgba(24,29,42,.92); color:#9aa3b5; font-size:12px; pointer-events:none; animation:stale-note-in .2s ease .3s both; }
+@keyframes stale-note-in { from { opacity:0; } to { opacity:1; } }
