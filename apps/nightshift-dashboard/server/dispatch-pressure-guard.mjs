@@ -40,6 +40,7 @@ export class DispatchPressureGuard {
     this.recoveryGreenStartedAt = null;
     this.recoveryGreenSamples = 0;
     this.holdUntilMs = 0;
+    this.lastHalvedAtMs = -Infinity;
     this.recoveringPressure = false;
     this.idleLatencySamples = [];
     this.lastProbe = null;
@@ -95,7 +96,16 @@ export class DispatchPressureGuard {
     }
     const thresholds = this.effectiveThresholds();
     if (error || normalizedLatency === null || normalizedLatency >= thresholds.redLatencyMs) {
-      this.targetMaxActive = Math.max(this.minActive, Math.floor(this.targetMaxActive / 2));
+      // Halve at most once per cooldown length; reds in between only extend the
+      // hold, during which nothing starts anyway. Halving on every red made the
+      // cut depend on how often the board probes: at 5 s probes, 30 s of
+      // pressure on V (2026-10-30 13:43) took the target 18 -> 9 -> 4 -> 2 -> 1.
+      // Timed from the last halving, not the hold: sustained reds keep pushing
+      // the hold out and would otherwise never halve again.
+      if (at - this.lastHalvedAtMs >= this.redCooldownMs) {
+        this.targetMaxActive = Math.max(this.minActive, Math.floor(this.targetMaxActive / 2));
+        this.lastHalvedAtMs = at;
+      }
       this.greenStreak = 0;
       this.recoveryGreenStartedAt = null;
       this.recoveryGreenSamples = 0;
