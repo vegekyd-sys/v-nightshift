@@ -741,15 +741,22 @@ function scopeTitle(scope) {
   return ({ live: "在产", paused: "已暂停", delivered: "已交付", shelved: "搁置", all: "" })[scope] ?? "";
 }
 
-function FactoryInbox({ needsYou, onSelect }) {
+const INBOX_PREVIEW = 3;
+
+// Past three items, the rest of 需要你 waits behind one link, so a long queue
+// does not push the production lines off the screen.
+export function FactoryInbox({ needsYou, onSelect }) {
+  const [showAll, setShowAll] = useState(false);
   if (!needsYou.length) return null;
+  const shown = showAll ? needsYou : needsYou.slice(0, INBOX_PREVIEW);
   return <div className="factory-inbox">
     <header><strong>需要你</strong><span>{needsYou.length} 件</span></header>
-    {needsYou.map((task) => <button key={task.card?.id ?? `${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}`} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}>
+    {shown.map((task) => <button key={task.card?.id ?? `${task.projectId}-${task.contentItemId ?? "project"}-${task.stageId}`} disabled={!task.card} onClick={() => task.card && onSelect(task.card)}>
       <span className="factory-inbox-dot" />
       <div><strong>{task.attention.reason}</strong><small>{task.contentTitle ? `${task.contentTitle} · ` : ""}{task.projectName}</small></div>
       <span className="factory-inbox-open">处理</span>
     </button>)}
+    {needsYou.length > INBOX_PREVIEW && <button className="factory-inbox-more" onClick={() => setShowAll((value) => !value)}>{showAll ? "只看前 3 件" : `还有 ${needsYou.length - INBOX_PREVIEW} 件，展开`}</button>}
   </div>;
 }
 
