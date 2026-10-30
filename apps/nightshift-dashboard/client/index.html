@@ -5,6 +5,26 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#070b10" />
     <title>Night Shift Workboard</title>
+    <script>
+      // Ask for the board's data while the app's script is still downloading;
+      // src/first-paint.js hands these requests to the app.
+      (function () {
+        var early = (window.__nightshiftEarly = {});
+        function get(path) {
+          var request = fetch(path, { headers: { "Content-Type": "application/json" } }).then(function (response) {
+            return response.json().catch(function () { return {}; }).then(function (body) {
+              if (!response.ok) throw new Error(body.error || "Request failed: " + response.status);
+              return { body: body, cache: response.headers.get("Server-Timing") };
+            });
+          });
+          request.catch(function () {});
+          return request;
+        }
+        early.overview = get("/api/overview?scope=live");
+        var card = new URLSearchParams(location.search).get("card");
+        if (card) early.card = { id: card, request: get("/api/cards/" + encodeURIComponent(card)) };
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

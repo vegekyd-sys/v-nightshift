@@ -2,6 +2,8 @@ import { publicCallSummary } from "../../../packages/nightshift-core/src/workflo
 import { activeCardCount, derivedWarmupMaxCards, warmupAdmission } from "./active-card-count.mjs";
 import { DispatchHoldLedger, dispatchHoldReason } from "./dispatch-hold-ledger.mjs";
 import { buildOverview, overviewDetails } from "./overview.mjs";
+import { CardFingerprints } from "./card-fingerprints.mjs";
+import { clientTimingEvent } from "./client-timing.mjs";
 import { createContentItemsManifestSync } from "./content-items-manifest.mjs";
 import { runSchedulerPass, instanceCardIds, visibleCardIds } from "../../../packages/nightshift-core/src/scheduler-pass.mjs";
 import { tickWithFaultProjection } from "../../../packages/nightshift-core/src/scheduler-state.mjs";
@@ -377,44 +379,17 @@ async function handleApi(request, response, url) {
     }, { revalidate: true });
     return;
   }
+  if (request.method === "POST" && url.pathname === "/api/client-timing") {
+    console.log(JSON.stringify(clientTimingEvent(await bodyJson(request))));
+    response.writeHead(204).end();
+    return;
+  }
   if (request.method === "GET" && url.pathname === "/api/overview") {
-    if (url.searchParams.get("refresh") === "1") await refreshVisibleCards();
-    const scope = url.searchParams.get("scope") ?? "live";
-    const now = Date.now();
-    const instances = store.listInstances().map((instance) => {
-      if (instance.status === "archived") return instance;
-      if (!overviewDetails(instance, scope, now)) return withInstanceLinks(instance);
-      return withInstanceLinks({
-        ...instance,
-        contentItems: store.listContentItems(instance.id),
-        contentItemRuns: store.listContentItemRuns(instance.id),
-        stageRuns: store.listStageRuns(instance.id),
-      });
-    });
-    const visible = instances.filter((instance) => instance.status !== "archived");
-    json(response, 200, {
-      board,
-      cardsUpdatedAt,
-      // The board shows "Gateway 重启中，夜班已暂停" while this is not "up".
-      gatewayRestart: gatewayRestartForBoard(gatewayRestart.snapshot()),
-      ...buildOverview({
-        scope,
-        now,
-        instances,
-        cards: visibleCards(cardCache, visible).map(cardLinker()),
-        releases: store.listReleases().map(withWorkflowLinks),
-        operationsFor: (instanceId) => store.listExternalOperations(instanceId),
-        skippedFor: (instanceId) => store.listSkippedContentItems(instanceId),
-      }),
-      // 需要你 is scope-independent: every project that is not shelved.
-      needsYou: buildNeedsYou({
-        store,
-        instances: visible,
-        cards: visibleCards(cardCache, visible),
-        releases: store.listReleases(),
-        pending: needsYou.pendingList(),
-      }),
-    }, { revalidate: true });
+    const force = url.searchParams.get("refresh") === "1";
+    if (force) await refreshVisibleCards();
+    const started = performance.now();
+    const { value, hit } = overviewFor(url.searchParams.get("scope") ?? "live", { force });
+    json(response, 200, value, { revalidate: true, headers: { "Server-Timing": `overview;desc="${hit ? "cached" : "built"}";dur=${(performance.now() - started).toFixed(1)}` } });
     return;
   }
   const fullCardMatch = url.pathname.match(/^\/api\/cards\/([^/]+)$/);
@@ -1250,6 +1225,7 @@ function runScheduler({ trigger = "manual" } = {}) {
     lastSchedulerError = result.warnings.length ? result.warnings.join("; ") : null;
     schedulerCircuit.recordPass(result.warnings, { probe: circuitDecision.probe });
     await announceTransitions();
+    warmOverview();
     if (result.retryAfterMs > 0) changeScheduler.enqueueAfter("dispatch.window", result.retryAfterMs);
     // Starts held back by warm-up resume when a warming card leaves its window.
     if (warmup.retryAfterMs > 0 && pressure.availableStarts > 0) changeScheduler.enqueueAfter("dispatch.warmup", warmup.retryAfterMs);
@@ -1530,7 +1506,7 @@ async function refreshVisibleCards({ includeArchived = false } = {}) {
   return cardCache;
 }
 
-let cardCacheDigest = null;
+const cardFingerprints = new CardFingerprints();
 
 async function refreshCards({ cardIds = null } = {}) {
   const scoped = Array.isArray(cardIds);
@@ -1543,21 +1519,23 @@ async function refreshCards({ cardIds = null } = {}) {
   }
   cardRefreshScope = scope;
   cardRefreshPromise = workboard.listCards(scoped ? { cardIds: normalizedCardIds } : {}).then((cards) => {
+    let changed;
     if (scoped) {
       const merged = new Map(cardCache.map((card) => [card.id, card]));
       for (const id of normalizedCardIds) merged.delete(id);
       for (const card of cards) merged.set(card.id, card);
       cardCache = [...merged.values()];
+      changed = cardFingerprints.replaceSome(normalizedCardIds, cards);
     } else {
       cardCache = cards;
+      changed = cardFingerprints.replaceAll(cards);
     }
     // Only move the timestamp when the board actually changed: it is part of
     // the bootstrap body, so bumping it every refresh would change the ETag
     // and turn every poll into a full download even on a quiet board.
-    const digest = createHash("sha1").update(JSON.stringify(cardCache)).digest("base64url");
-    if (digest !== cardCacheDigest) {
-      cardCacheDigest = digest;
+    if (changed || !cardsUpdatedAt) {
       cardsUpdatedAt = new Date().toISOString();
+      warmOverview();
     }
     return cards;
   }).finally(() => {
@@ -2110,6 +2088,79 @@ function projectConcurrency(instance) {
     project: own,
     workflow: release?.spec?.concurrency?.perInstance ?? 1,
     max: PROJECT_CONCURRENCY_MAX,
+  };
+}
+
+// The board polls the overview every 30 s from each open page, and building
+// it reads every project and card (0.8 s on V, 2026-10-30). Keep the last body
+// per scope and rebuild only when something it reads changed: this process's
+// writes, another process's writes, the cards, a scheduler pass, the Gateway
+// state, pending 需要你 reads, or the minute (scopes and "today" use the clock).
+const overviewCache = new Map();
+let overviewWantedAt = 0;
+
+function overviewKey(scope, now) {
+  const { changes } = store.db.prepare("SELECT total_changes() AS changes").get();
+  const { data_version: dataVersion } = store.db.prepare("PRAGMA data_version").get();
+  return JSON.stringify([changes, dataVersion, cardsUpdatedAt, lastSchedulerAt, gatewayRestart.snapshot(), needsYou.pendingList(), Math.floor(now / 60_000)]);
+}
+
+function overviewFor(scope, { force = false } = {}) {
+  const now = Date.now();
+  overviewWantedAt = now;
+  const key = overviewKey(scope, now);
+  const cached = overviewCache.get(scope);
+  if (!force && cached?.key === key) return { value: cached.value, hit: true };
+  const value = buildOverviewBody(scope, now);
+  // The key is read again: building can itself write (needs-you bookkeeping).
+  overviewCache.set(scope, { key: overviewKey(scope, now), value });
+  return { value, hit: false };
+}
+
+// After the cards or a scheduler pass changed, build the live overview before
+// the next poll asks for it, while someone has the board open.
+function warmOverview() {
+  if (Date.now() - overviewWantedAt > 120_000) return;
+  setImmediate(() => {
+    try { overviewFor("live"); } catch (error) { console.error(`Night Shift overview warm-up failed: ${error.message}`); }
+  });
+}
+
+function buildOverviewBody(scope, now) {
+  const instances = store.listInstances().map((instance) => {
+    if (instance.status === "archived") return instance;
+    if (!overviewDetails(instance, scope, now)) return withInstanceLinks(instance);
+    return withInstanceLinks({
+      ...instance,
+      contentItems: store.listContentItems(instance.id),
+      contentItemRuns: store.listContentItemRuns(instance.id),
+      stageRuns: store.listStageRuns(instance.id),
+    });
+  });
+  const visible = instances.filter((instance) => instance.status !== "archived");
+  const cards = visibleCards(cardCache, visible);
+  return {
+    board,
+    cardsUpdatedAt,
+    // The board shows "Gateway 重启中，夜班已暂停" while this is not "up".
+    gatewayRestart: gatewayRestartForBoard(gatewayRestart.snapshot()),
+    ...buildOverview({
+      scope,
+      now,
+      instances,
+      cards: cards.map(cardLinker()),
+      releases: store.listReleases().map(withWorkflowLinks),
+      operationsFor: (instanceId) => store.listExternalOperations(instanceId),
+      skippedFor: (instanceId) => store.listSkippedContentItems(instanceId),
+    }),
+    // 需要你 is scope-independent: every project that is not shelved.
+    needsYou: buildNeedsYou({
+      store,
+      instances: visible,
+      cards,
+      releases: store.listReleases(),
+      pending: needsYou.pendingList(),
+    }),
   };
 }
 

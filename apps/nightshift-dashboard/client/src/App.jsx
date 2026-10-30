@@ -18,6 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { api } from "./api.js";
+import { readCachedOverview, reportLoad, saveOverview, takeEarlyCard, takeEarlyOverview } from "./first-paint.js";
 import { childDecisionTasks, decisionDrawerContext, cardAttention, countByKind, inScope, isToday, needsYouQueue, preferTask, projectProgress, projectRuns, projectScope, scopeAuthorizes, skippedItems, stageExpected, supersededCards, taskAttention, visibleStages } from "./attention.js";
 import { Drawer, Icons, Sidebar } from "./components.jsx";
 import { projectTiming } from "./timing.js";
@@ -29,7 +30,9 @@ export function App() {
   const initialLocation = useRef(readDashboardLocation()).current;
   const deepLinkApplied = useRef(false);
   const [active, setActive] = useState(initialLocation.view);
-  const [data, setData] = useState(null);
+  // The last overview this browser saw draws the page at once; the fresh one replaces it.
+  const [data, setData] = useState(() => readCachedOverview());
+  const cachedPaintAt = useRef(null);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(null);
@@ -58,8 +61,20 @@ export function App() {
     const scope = scopeRef.current;
     if (refreshInFlight.current?.scope === scope) return refreshInFlight.current.request;
     setRefreshing(true);
-    const request = api(`/api/overview?scope=${scope}${force ? "&refresh=1" : ""}`)
-      .then((result) => { if (scopeRef.current === scope) { setData(result); setError(""); } return result; })
+    const early = force ? null : takeEarlyOverview(scope);
+    let overviewCache = null;
+    const request = (early
+      ? early.then((result) => { overviewCache = /desc="(cached|built)"/.exec(result.cache ?? "")?.[1] ?? null; return result.body; })
+      : api(`/api/overview?scope=${scope}${force ? "&refresh=1" : ""}`))
+      .then((result) => {
+        if (scopeRef.current === scope) {
+          setData(result);
+          setError("");
+          saveOverview(scope, result);
+          reportLoad({ view: active, cachedPaint: cachedPaintAt.current, overviewCache, deepLink: Boolean(initialLocation.card) });
+        }
+        return result;
+      })
       .catch((reason) => { setError(reason.message); throw reason; })
       .finally(() => { if (refreshInFlight.current?.request === request) { setRefreshing(false); refreshInFlight.current = null; } });
     refreshInFlight.current = { request, scope };
@@ -75,7 +90,7 @@ export function App() {
   useEffect(() => {
     if (!selected?.id) { setFullCard(null); return undefined; }
     let current = true;
-    api(`/api/cards/${encodeURIComponent(selected.id)}`)
+    (takeEarlyCard(selected.id) ?? api(`/api/cards/${encodeURIComponent(selected.id)}`))
       .then((result) => { if (current) setFullCard({ ...result.card, fullDetail: true }); })
       .catch(() => undefined);
     return () => { current = false; };
@@ -106,6 +121,10 @@ export function App() {
   }, [active]);
 
   useEffect(() => {
+    if (data?.stale && cachedPaintAt.current === null) cachedPaintAt.current = performance.now();
+  }, [data]);
+
+  useEffect(() => {
     window.localStorage.setItem(NAVIGATION_KEY, navigationCollapsed ? "collapsed" : "expanded");
   }, [navigationCollapsed]);
 
@@ -114,7 +133,7 @@ export function App() {
     if (initialLocation.card) {
       const card = (data.cards ?? []).find((entry) => entry.id === initialLocation.card);
       if (card) setSelected(card);
-      else api(`/api/cards/${encodeURIComponent(initialLocation.card)}`).then((result) => setSelected(result.card)).catch(() => undefined);
+      else (takeEarlyCard(initialLocation.card) ?? api(`/api/cards/${encodeURIComponent(initialLocation.card)}`)).then((result) => setSelected(result.card)).catch(() => undefined);
     }
     deepLinkApplied.current = true;
   }, [data, initialLocation.card]);
@@ -223,6 +242,7 @@ export function App() {
       <Sidebar active={active} collapsed={navigationCollapsed} onChange={setActive} onToggle={() => setNavigationCollapsed((value) => !value)} />
       <main className="main-shell">
         {error && <div className="error-banner">{error}</div>}
+        {data?.stale && <div className="stale-note" role="status">正在更新</div>}
         <GatewayRestartBanner state={data?.gatewayRestart} />
         {active === "board" && <LiveBoard onScopeChange={requestScope} data={data} query={query} setQuery={setQuery} selected={selectedForDecision} setSelected={setSelected} refreshing={refreshing} refresh={refresh} decide={decide} retry={retry} resolve={resolveRequest} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} />}
         {active === "workflows" && <WorkflowStudio onScopeChange={requestScope} data={data} refresh={refresh} initialProjectId={workflowProjectId} initialWorkflowId={initialLocation.workflow} setSelected={setSelected} selected={selectedForDecision} decide={decide} approveMany={approveMany} retry={retry} resolve={resolveRequest} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onNewProject={(release) => setProjectReleaseSha(release?.workflowSha256 ?? data?.workflows?.[0]?.workflowSha256)} />}
