@@ -8,9 +8,14 @@ export function createHostPressureProbe({
   // newly admitted Agent can allocate before the next probe. Operators size this
   // per host: a 16 GiB lab and a 32 GiB production box do not share one percent.
   reserveFloorMiB = 4096, reservePercent = 40,
+  // The swap rate stays valid as an average over a longer gap. A busy dashboard
+  // stretches the probe cycle well past 15 s (V, 2026-10-29: /api/health took
+  // 20-25 s), and a 15 s window then read every other probe as "warming up".
+  maxSampleGapMs = 120_000,
 } = {}) {
   const floorKiB = positiveNumber(reserveFloorMiB, "reserveFloorMiB") * 1024;
   const fraction = positiveNumber(reservePercent, "reservePercent") / 100;
+  const maxGapMs = positiveNumber(maxSampleGapMs, "maxSampleGapMs");
   if (fraction >= 1) throw new Error("reservePercent must be below 100");
   let local = false;
   try { local = ["localhost", "127.0.0.1", "[::1]"].includes(new URL(gatewayUrl).hostname); } catch {}
@@ -38,7 +43,7 @@ export function createHostPressureProbe({
       if (totalKiB <= 0 || availableKiB > totalKiB) throw new Error("Invalid host memory accounting");
       const memoryFullAvg10 = psi(memoryPsi), ioFullAvg10 = psi(ioPsi);
       const elapsed = previous ? at - previous.at : null;
-      const warm = elapsed !== null && elapsed > 0 && elapsed <= 15_000 && swapOutPages >= previous.swapOutPages;
+      const warm = elapsed !== null && elapsed > 0 && elapsed <= maxGapMs && swapOutPages >= previous.swapOutPages;
       const swapOutPagesPerSecond = warm ? (swapOutPages - previous.swapOutPages) * 1000 / elapsed : null;
       previous = { at, swapOutPages };
       const reasons = [];
@@ -50,6 +55,7 @@ export function createHostPressureProbe({
       // Observe it here; Gateway latency governs disk contention admission.
       if (swapOutPagesPerSecond !== null && swapOutPagesPerSecond >= 1024) reasons.push("active swap-out");
       return { enabled: true, at: new Date(at).toISOString(), blocked: reasons.length > 0, reason: reasons.join("; ") || null,
+        warmingUp: !warm,
         availableMiB: Math.round(availableKiB / 1024), admissionReserveMiB: Math.ceil(admissionReserveKiB / 1024), totalMiB: Math.round(totalKiB / 1024), memoryFullAvg10, ioFullAvg10, swapOutPagesPerSecond };
     } catch (error) {
       previous = null;

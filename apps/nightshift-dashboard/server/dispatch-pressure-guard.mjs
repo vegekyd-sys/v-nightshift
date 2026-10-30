@@ -67,6 +67,15 @@ export class DispatchPressureGuard {
     this.workerPool = workerPool;
     this.hostPressure = hostPressure;
     this.agentDbPressure = agentDbPressure;
+    // A first or stale host sample has measured nothing yet. Withhold starts
+    // until the next sample, but do not halve the target or start a red
+    // cooldown: on V (2026-10-29 18:26-00:30) treating it as red alternated
+    // with green probes and held the board at one card for six hours.
+    if (hostPressure?.blocked && hostPressure.warmingUp && hostPressure.reason === "host sample warming up") {
+      this.startCredits = 0;
+      this.lastProbe = { at: new Date(at).toISOString(), error: hostPressure.reason, latencyMs: null, level: "warming" };
+      return this.snapshot(Math.max(0, Number(running) || 0));
+    }
     if (hostPressure?.blocked) error = hostPressure.reason || "host under resource pressure";
     // Lease timeouts are red: cards are already killing runs. Slow admissions are
     // yellow: the lease is contended and one more writer is what tips it over.
