@@ -388,6 +388,11 @@ test("reds inside one cooldown halve the target once and only extend the hold", 
   assert.equal(snapshot.targetMaxActive, 9, "five more reds in the same cooldown");
   assert(Date.parse(snapshot.holdUntil) > firstHold, "each red still pushes the hold out");
   assert.equal(snapshot.availableStarts, 0);
-  now = Date.parse(snapshot.holdUntil);
-  assert.equal(guard.recordProbe({ latencyMs: 1_500, running: 16, workerPool: pool }).targetMaxActive, 4, "pressure that outlasts the cooldown halves again");
+  for (now = 35_000; now < 60_000; now += 5_000) snapshot = guard.recordProbe({ latencyMs: 1_500, running: 16, workerPool: pool });
+  assert.equal(snapshot.targetMaxActive, 9);
+  // Sustained reds keep pushing the hold out; they still halve once a minute.
+  const targets = [];
+  for (now = 60_000; now <= 180_000; now += 5_000) targets.push(guard.recordProbe({ latencyMs: 1_500, running: 16, workerPool: pool }).targetMaxActive);
+  assert.deepEqual([targets[0], targets[12], targets[24]], [4, 2, 1], "18 -> 9 -> 4 -> 2 -> 1 over four minutes, not four probes");
+  assert.equal(new Set(targets.slice(1, 12)).size, 1, "nothing in between");
 });
