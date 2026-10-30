@@ -268,3 +268,14 @@ test("a database from before project limits gains the column and keeps its dispa
   store.close();
   await rm(dir, { recursive: true, force: true });
 });
+
+test("per-project audit reads use an index instead of scanning every event", () => {
+  const store = new NightShiftStore();
+  const plan = (sql, ...params) => store.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params).map((row) => row.detail).join(" ; ");
+  // listOperationRecoveries and listEvents(instanceId): on V (2026-10-30) each
+  // was a scan of 1.04 M rows, about six times a second.
+  assert.match(plan("SELECT payload_json FROM audit_events WHERE instance_id = ? AND type = ? ORDER BY sequence", "P", "t"), /USING INDEX audit_events_instance_type_idx/);
+  assert.match(plan("SELECT * FROM audit_events WHERE instance_id = ? ORDER BY sequence DESC LIMIT ?", "P", 10), /USING INDEX audit_events_instance_type_idx/);
+  assert.match(plan("SELECT * FROM external_operations WHERE instance_id = ? ORDER BY created_at", "P"), /USING INDEX external_operations_instance_idx/);
+  store.close();
+});

@@ -126,6 +126,8 @@ export class NightShiftStore {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+      -- Read per project for every call summary and every project on the board.
+      CREATE INDEX IF NOT EXISTS external_operations_instance_idx ON external_operations(instance_id, created_at);
       CREATE TABLE IF NOT EXISTS instance_controls (
         instance_id TEXT PRIMARY KEY REFERENCES instances(id),
         automatic_dispatch INTEGER NOT NULL DEFAULT 1,
@@ -145,6 +147,11 @@ export class NightShiftStore {
         payload_json TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
+      -- Every per-project read (operation recoveries, recent events) used to
+      -- scan the whole table: 1.04 M rows / 422 MB on V (2026-10-30), read about
+      -- six times a second by the board, which kept its process at 100% CPU and
+      -- made /api/overview take 23 s.
+      CREATE INDEX IF NOT EXISTS audit_events_instance_type_idx ON audit_events(instance_id, type);
       CREATE TABLE IF NOT EXISTS notification_subject_state (
         subject_key TEXT PRIMARY KEY,
         state TEXT NOT NULL,
