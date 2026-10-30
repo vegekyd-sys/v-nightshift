@@ -293,6 +293,19 @@ test("a person's cut reply holds dispatch for the full harm cooldown", () => {
   assert.equal(guard.recordProbe({ latencyMs: 80, running: 7, workerPool: pool }).availableStarts, 1);
 });
 
+test("a cut reply during a host sample warm-up is still red and holds for the harm cooldown", () => {
+  let now = 0;
+  const guard = new DispatchPressureGuard({ initialMaxActive: 12, now: () => now, userHarmCooldownMs: 900_000 });
+  const pool = { capacity: 45, active: 12, queued: 0 };
+  const warming = { enabled: true, blocked: true, warmingUp: true, reason: "host sample warming up" };
+  const pressure = guard.recordProbe({ running: 12, workerPool: pool, hostPressure: warming, agentDbPressure: HARMED });
+  assert.equal(pressure.lastProbe.level, "red");
+  assert.equal(pressure.targetMaxActive, 6);
+  assert.equal(pressure.recoveringPressure, true);
+  now = 899_000;
+  assert.equal(guard.recordProbe({ latencyMs: 80, running: 12, workerPool: pool }).availableStarts, 0);
+});
+
 // Replays V on 2026-09-28: ten cards cut a person's reply at 14:55, recovery
 // at 15:10 went straight back to ten, and two more replies were cut at 15:22.
 test("recovery after a cut reply stays below the concurrency that caused it and climbs one card per step", () => {
