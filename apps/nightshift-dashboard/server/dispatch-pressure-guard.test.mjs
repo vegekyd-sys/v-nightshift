@@ -375,3 +375,19 @@ test("an unobserved lease never blocks dispatch by itself", () => {
   assert.equal(pressure.lastProbe.level, "green");
   assert.equal(pressure.dispatchAllowed, true);
 });
+
+// V, 2026-10-30 13:43: 30 s of pressure at 5 s probes took the target 18 -> 1.
+test("reds inside one cooldown halve the target once and only extend the hold", () => {
+  let now = 0;
+  const guard = new DispatchPressureGuard({ now: () => now, initialMaxActive: 18 });
+  const pool = { capacity: 45, active: 16, queued: 0 };
+  let snapshot = guard.recordProbe({ latencyMs: 1_500, running: 16, workerPool: pool });
+  assert.equal(snapshot.targetMaxActive, 9);
+  const firstHold = Date.parse(snapshot.holdUntil);
+  for (now = 5_000; now <= 30_000; now += 5_000) snapshot = guard.recordProbe({ latencyMs: 1_500, running: 16, workerPool: pool });
+  assert.equal(snapshot.targetMaxActive, 9, "five more reds in the same cooldown");
+  assert(Date.parse(snapshot.holdUntil) > firstHold, "each red still pushes the hold out");
+  assert.equal(snapshot.availableStarts, 0);
+  now = Date.parse(snapshot.holdUntil);
+  assert.equal(guard.recordProbe({ latencyMs: 1_500, running: 16, workerPool: pool }).targetMaxActive, 4, "pressure that outlasts the cooldown halves again");
+});

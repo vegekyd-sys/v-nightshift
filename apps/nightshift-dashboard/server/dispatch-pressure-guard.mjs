@@ -95,7 +95,11 @@ export class DispatchPressureGuard {
     }
     const thresholds = this.effectiveThresholds();
     if (error || normalizedLatency === null || normalizedLatency >= thresholds.redLatencyMs) {
-      this.targetMaxActive = Math.max(this.minActive, Math.floor(this.targetMaxActive / 2));
+      // Starts are already held until the cooldown ends, so a further red inside
+      // it only extends the hold. Halving on every red made the cut depend on
+      // how often the board probes: at 5 s probes, 30 s of pressure on V
+      // (2026-10-30 13:43) took the target 18 -> 9 -> 4 -> 2 -> 1.
+      if (at >= this.holdUntilMs) this.targetMaxActive = Math.max(this.minActive, Math.floor(this.targetMaxActive / 2));
       this.greenStreak = 0;
       this.recoveryGreenStartedAt = null;
       this.recoveryGreenSamples = 0;
