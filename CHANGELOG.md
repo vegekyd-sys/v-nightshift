@@ -1,5 +1,6 @@
 # Changelog
 
+- #39 fix(cards): 父卡依赖链接满 50 个时，子卡去掉这张父卡再建（记在 unlinkedParents），不再每轮被拒；80 条的项目不再卡在第 50 条，被拒后也不再触发约 14,700 张卡的恢复读取。
 - #38 feat(cli): 看板能做的操作都有了命令，V 不再需要 curl、sqlite3 或手改文件。新增 `workflows retire|restore|source`（退役后不在列表、不能新建项目，有未完成项目或被调用时拒绝；同版本号换内容发布改为报错并提示升版本）、`projects skip-item|dispatch|retry-dispatch|tick|handoff|deliverables|artifact`、`cards get|takeover|human-complete|approve-all`、`nightshiftctl help`；`projects monitor` 与卡片决定只读本项目或这张卡（原来每次读整板约 250 MB）。
 - #37 fix(delivery): 播放及全屏按视频原比例完整显示，不再把竖屏画面裁成横条；预览封面布局不变。
 - #36 fix(dispatch): 红灯每个冷却时长（60 s）最多把并发上限减半一次，按距上次减半计时；之前 5 s 一次探测会让 30 s 压力把上限从 18 砍到 1。
