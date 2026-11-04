@@ -127,8 +127,31 @@ export class WorkboardGatewayAdapter {
       },
     };
     if (dryRun) return { action, payload, status: "planned" };
-    const result = await this.call("workboard.cards.create", payload);
-    return { action, card: result.card, status: "created" };
+    const recovering = this.needsFullSnapshot;
+    try {
+      const result = await this.call("workboard.cards.create", payload);
+      return { action, card: result.card, status: "created" };
+    } catch (error) {
+      if (!payload.parents?.length || !CARD_LINK_LIMIT_ERROR.test(error?.message ?? "")) throw error;
+      // The board keeps at most 50 dependency links on a card, and a parent
+      // gains one per child. On V (2026-11-04) DL-1104-11 had 80 items: the
+      // plan card took 50 brief cards and the 51st was refused on every pass.
+      // Parents only draw lineage (Night Shift creates a card once its
+      // dependencies are done), so the card is created without the full ones.
+      // The board rolled the refused create back, so no recovery read is due.
+      this.needsFullSnapshot = recovering;
+      const full = new Set((await this.listCards({ cardIds: payload.parents }))
+        .filter((parent) => dependencyLinkCount(parent) >= WORKBOARD_CARD_LINKS_LIMIT)
+        .map((parent) => parent.id));
+      const unlinked = full.size ? payload.parents.filter((id) => full.has(id)) : payload.parents;
+      const parents = payload.parents.filter((id) => !unlinked.includes(id));
+      const result = await this.call("workboard.cards.create", {
+        ...payload,
+        parents: parents.length ? parents : undefined,
+        metadata: { ...payload.metadata, automation: { ...payload.metadata.automation, unlinkedParents: unlinked } },
+      });
+      return { action, card: result.card, status: "created" };
+    }
   }
 
   async moveCard(id, status, position) {
@@ -451,6 +474,14 @@ function dispatchBurst(value) {
     throw new Error("startBurst must be an integer between 1 and 36");
   }
   return parsed;
+}
+
+// The native board's limit and refusal (`appendLinkPreservingDependencies`).
+export const WORKBOARD_CARD_LINKS_LIMIT = 50;
+const CARD_LINK_LIMIT_ERROR = /card link limit reached/i;
+
+function dependencyLinkCount(card) {
+  return (card.metadata?.links ?? []).filter((link) => link.type === "parent" || link.type === "child").length;
 }
 
 const MUTATION_METHOD = /^workboard\.cards\.(create|dispatchWithOptions|complete|block|release|move|update|reassign)$/;

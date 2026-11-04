@@ -420,3 +420,54 @@ test("rejects a read chunk size that would reintroduce oversized frames", () => 
   assert.throws(() => new WorkboardGatewayAdapter({ readChunkSize: 0 }), /readChunkSize/);
   assert.throws(() => new WorkboardGatewayAdapter({ readChunkSize: 5_000 }), /readChunkSize/);
 });
+
+// DL-1104-11 on V: the plan card had 50 child links and the 51st brief card
+// was refused with "card link limit reached." on every scheduler pass.
+test("a card whose parent is out of dependency links is created without that parent", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "nightshift-link-limit-"));
+  const configPath = join(dir, "config.json");
+  await writeFile(configPath, JSON.stringify({ gateway: { auth: { token: "fixture" } } }));
+  const childLinks = Array.from({ length: 50 }, (_, index) => ({ id: `l-${index}`, type: "child", targetCardId: `brief-${index}` }));
+  const board = {
+    plan: { id: "plan", metadata: { links: childLinks } },
+    other: { id: "other", metadata: { links: [{ id: "x", type: "child", targetCardId: "y" }] } },
+  };
+  const calls = [];
+  const adapter = new WorkboardGatewayAdapter({ configPath, entry: "/fixture/index.js", gatewayUrl: "ws://localhost:1", rpcClientFactory: () => ({
+    onEvent() { return () => {}; },
+    async request(method, params) {
+      calls.push({ method, params });
+      if (method === "workboard.cards.list") return { cards: (params.cardIds ?? Object.keys(board)).map((id) => board[id]).filter(Boolean) };
+      if (method === "workboard.cards.create") {
+        if ((params.parents ?? []).includes("plan")) throw new Error("card link limit reached.");
+        return { card: { id: "brief-50", ...params } };
+      }
+      throw new Error(`unexpected ${method}`);
+    },
+  }) });
+  const action = { type: "create_workboard_card", idempotencyKey: "k-brief-50", card: { title: "brief 51", parents: ["plan", "other"], automation: {} } };
+  const result = await adapter.applyAction(action, { cards: [] });
+
+  assert.equal(result.status, "created");
+  const creates = calls.filter((call) => call.method === "workboard.cards.create");
+  assert.equal(creates.length, 2);
+  assert.deepEqual(creates[1].params.parents, ["other"]);
+  assert.deepEqual(creates[1].params.metadata.automation.unlinkedParents, ["plan"]);
+  assert.deepEqual(calls.find((call) => call.method === "workboard.cards.list").params.cardIds, ["plan", "other"]);
+  // A refusal the board rolled back is not a stale cache: the next read stays scoped.
+  await adapter.listCards({ cardIds: ["brief-50"] });
+  assert.deepEqual(calls.at(-1).params.cardIds, ["brief-50"]);
+});
+
+test("other create failures are not retried", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "nightshift-link-limit-"));
+  const configPath = join(dir, "config.json");
+  await writeFile(configPath, JSON.stringify({ gateway: { auth: { token: "fixture" } } }));
+  let creates = 0;
+  const adapter = new WorkboardGatewayAdapter({ configPath, entry: "/fixture/index.js", gatewayUrl: "ws://localhost:1", rpcClientFactory: () => ({
+    onEvent() { return () => {}; },
+    async request(method) { if (method === "workboard.cards.create") { creates += 1; throw new Error("parents supports at most 20 entries"); } return { cards: [] }; },
+  }) });
+  await assert.rejects(adapter.applyAction({ idempotencyKey: "k", card: { title: "t", parents: ["a"], automation: {} } }, { cards: [] }), /at most 20/);
+  assert.equal(creates, 1);
+});
