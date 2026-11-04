@@ -174,9 +174,11 @@ function recordedTasks(stage, instance) {
     .map((run) => run.contentItemId)).size;
 }
 
+// A project sent as a tally (stage-tasks.js) has its stages, sizes and
+// progress worked out by the server, from the items and runs it did not send.
 export function visibleStages(stages, instances) {
   if (!instances.length) return stages;
-  return stages.filter((stage) => instances.some((instance) => projectStageEnabled(stage, instance) || recordedTasks(stage, instance) > 0));
+  return stages.filter((stage) => instances.some((instance) => instance.tally ? Boolean(instance.tally.stages[stage.id]) : projectStageEnabled(stage, instance) || recordedTasks(stage, instance) > 0));
 }
 
 function stageEnabled(stage, inputs) {
@@ -200,6 +202,7 @@ export function expectedTasks(stages, instance) {
 // bar of 1/2 that later becomes 1/42 reads as going backwards, so a declared
 // target count stands in; without one the bar says it is still splitting.
 export function projectProgress(stages, instance) {
+  if (instance.tally) return instance.tally.progress;
   const enabled = stages.filter((stage) => projectStageEnabled(stage, instance));
   const historical = stages.filter((stage) => !projectStageEnabled(stage, instance))
     .reduce((sum, stage) => sum + recordedTasks(stage, instance), 0);
@@ -218,6 +221,7 @@ export function projectProgress(stages, instance) {
 // How many tasks one stage will have across the shown projects.
 export function stageExpected(stage, instances) {
   return instances.reduce((sum, instance) => {
+    if (instance.tally) return sum + (instance.tally.stages[stage.id]?.planned ?? 0);
     if (!projectStageEnabled(stage, instance)) return sum + recordedTasks(stage, instance);
     return sum + (stage.scope === "content-item" ? Math.max(0, (instance.contentItems ?? []).length - skippedItems(instance).size) : 1);
   }, 0);

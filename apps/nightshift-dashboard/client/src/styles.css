@@ -370,6 +370,7 @@ body { background:radial-gradient(circle at 72% -20%,rgba(128,92,214,.14),transp
 .factory-done-row { display:flex; align-items:center; gap:7px; min-height:26px; padding:0 4px; border:0; border-radius:6px; background:transparent; color:#7c8d86; text-align:left; cursor:pointer; }
 .factory-done-row svg { flex:0 0 auto; color:#5fb585; }.factory-done-row span { overflow:hidden; font-size:10px; text-overflow:ellipsis; white-space:nowrap; }.factory-done-row:hover { background:#0f1620; color:#b9d4c5; }
 .factory-done-more { margin-top:4px; height:26px; border:0; border-radius:6px; background:transparent; color:#5f7a6c; font-size:10px; text-align:left; padding:0 4px; cursor:pointer; }.factory-done-more:hover { color:#9fc3ae; }
+.factory-done-elsewhere { display:block; margin-top:4px; padding:0 4px; color:#6f6a8f; font-size:12px; }
 @media (max-width: 1100px) { .factory-topbar { grid-template-columns:minmax(0,1fr) auto; }.factory-metrics { grid-column:1 / -1; order:3; } }
 @media (max-width: 760px) { .factory-scope { overflow-x:auto; }.factory-metrics { gap:18px; }.factory-actions>button.primary { display:none; }.factory-overview { padding:12px 14px 4px; }.factory-projects { grid-template-columns:1fr; } }
 .stage-counts .attention-stale { color:#5d6a7c; }

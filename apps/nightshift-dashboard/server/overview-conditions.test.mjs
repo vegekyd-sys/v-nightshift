@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildOverview } from "./overview.mjs";
 import * as attention from "../client/src/attention.js";
+import { tallyCounts } from "../client/src/stage-tasks.js";
 import { stageEnabled } from "../../../packages/nightshift-core/src/workflow.mjs";
 
 const SHA = "a".repeat(64);
@@ -39,7 +40,7 @@ for (const [proxy, account] of [["buy", "buy"], ["reuse", "reuse"], ["buy", "reu
   test(`overview branch facts keep nine stages and 17/17 tasks for ${proxy}/${account}`, () => {
     const input = fixture(proxy, account);
     const unchanged = JSON.stringify(input);
-    const overview = JSON.parse(JSON.stringify(buildOverview({ ...input, scope: "delivered" })));
+    const overview = JSON.parse(JSON.stringify(buildOverview({ ...input, scope: "delivered", project: "SYNTHETIC" })));
     const project = overview.instances[0];
     const stages = overview.workflows[0].manifest.spec.stages;
     assert.equal(attention.projectProgress(stages, project).expected, 17, "lean overview must not lose the two conditional tasks");
@@ -56,6 +57,13 @@ for (const [proxy, account] of [["buy", "buy"], ["reuse", "reuse"], ["buy", "reu
     assert.equal(project.inputs.accountMode, undefined);
     assert.ok(!JSON.stringify(overview).includes("DO-NOT-PROJECT"));
     assert.equal(JSON.stringify(input), unchanged, "display projection never mutates runtime data");
+    const tallied = buildOverview({ ...input, scope: "delivered" }).instances[0];
+    assert.equal(tallied.detail, false, "a delivered project nobody opened is a tally");
+    assert.deepEqual(attention.visibleStages(stages, [tallied]).map((stage) => stage.id), visible.map((stage) => stage.id));
+    assert.deepEqual(attention.projectProgress(stages, tallied), attention.projectProgress(stages, project));
+    assert.deepEqual(visible.map((stage) => attention.stageExpected(stage, [tallied])), visible.map((stage) => attention.stageExpected(stage, [project])));
+    assert.equal(tallyCounts(tallied).done, 17);
+    assert.ok(!JSON.stringify(tallied).includes("DO-NOT-PROJECT"));
   });
 }
 
@@ -71,7 +79,7 @@ test("overview evaluates generic conditions with engine semantics without exposi
   releases[0].manifest.spec.stages = stages;
   instances[0].inputs = { flag: false, amount: 0, nullable: null, credential: "SYNTHETIC-PRIVATE-VALUE", arbitrary: "DROP-ME" };
   instances[0].stageRuns = []; instances[0].contentItemRuns = [];
-  const overview = buildOverview({ scope: "delivered", instances, releases, cards: [], now: NOW });
+  const overview = buildOverview({ scope: "delivered", project: "SYNTHETIC", instances, releases, cards: [], now: NOW });
   const project = overview.instances[0];
   const expected = stages.filter((stage) => stageEnabled(stage, instances[0].inputs)).map((stage) => stage.id);
   assert.deepEqual(attention.visibleStages(stages, [project]).map((stage) => stage.id), expected);
@@ -118,13 +126,16 @@ test("historical tasks remain visible without predicting more work in a disabled
     { stageId: stage.id, contentItemId: "a", attempt: 1, status: "blocked" },
     { stageId: stage.id, contentItemId: "a", attempt: 2, status: "done" },
   );
-  const overview = buildOverview({ ...data, scope: "delivered" });
+  const overview = buildOverview({ ...data, scope: "delivered", project: "SYNTHETIC" });
   const project = overview.instances[0];
   const stages = overview.workflows[0].manifest.spec.stages;
   assert.equal(attention.stageExpected(stage, [project]), 1, "count the historical item once, not all three items");
   assert.equal(project.stageConditions.historical, false, "history does not enable the branch");
   assert.ok(attention.visibleStages(stages, [project]).some((entry) => entry.id === stage.id));
   assert.equal(attention.projectProgress(stages, project).expected, 18);
+  const tallied = buildOverview({ ...data, scope: "delivered" }).instances[0];
+  assert.equal(attention.stageExpected(stage, [tallied]), 1);
+  assert.equal(attention.projectProgress(stages, tallied).expected, 18);
   project.skippedContentItems = [{ contentItemId: "a" }];
   assert.equal(attention.stageExpected(stage, [project]), 0, "skipped items do not add expected work");
 });

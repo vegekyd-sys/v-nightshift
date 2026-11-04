@@ -2,6 +2,8 @@ import { publicCallSummary } from "../../../packages/nightshift-core/src/workflo
 import { activeCardCount, derivedWarmupMaxCards, warmupAdmission } from "./active-card-count.mjs";
 import { DispatchHoldLedger, dispatchHoldReason } from "./dispatch-hold-ledger.mjs";
 import { buildOverview, overviewDetails } from "./overview.mjs";
+import { needsYouQueue, projectScope } from "../client/src/attention.js";
+import { projectTally } from "../client/src/stage-tasks.js";
 import { CardFingerprints } from "./card-fingerprints.mjs";
 import { clientTimingEvent } from "./client-timing.mjs";
 import { createContentItemsManifestSync } from "./content-items-manifest.mjs";
@@ -388,7 +390,7 @@ async function handleApi(request, response, url) {
     const force = url.searchParams.get("refresh") === "1";
     if (force) await refreshVisibleCards();
     const started = performance.now();
-    const { value, hit } = overviewFor(url.searchParams.get("scope") ?? "live", { force });
+    const { value, hit } = overviewFor(url.searchParams.get("scope") ?? "live", { force, project: url.searchParams.get("project") || null });
     json(response, 200, value, { revalidate: true, headers: { "Server-Timing": `overview;desc="${hit ? "cached" : "built"}";dur=${(performance.now() - started).toFixed(1)}` } });
     return;
   }
@@ -2147,6 +2149,8 @@ function projectConcurrency(instance) {
 // writes, another process's writes, the cards, a scheduler pass, the Gateway
 // state, pending 需要你 reads, or the minute (scopes and "today" use the clock).
 const overviewCache = new Map();
+// A page that opened one project asks for it by id; keep only the latest few.
+const OVERVIEW_CACHE_ENTRIES = 8;
 let overviewWantedAt = 0;
 
 function overviewKey(scope, now) {
@@ -2155,16 +2159,47 @@ function overviewKey(scope, now) {
   return JSON.stringify([changes, dataVersion, cardsUpdatedAt, lastSchedulerAt, gatewayRestart.snapshot(), needsYou.pendingList(), Math.floor(now / 60_000)]);
 }
 
-function overviewFor(scope, { force = false } = {}) {
+function overviewFor(scope, { force = false, project = null } = {}) {
   const now = Date.now();
   overviewWantedAt = now;
+  const entry = JSON.stringify([scope, project]);
   const key = overviewKey(scope, now);
-  const cached = overviewCache.get(scope);
+  const cached = overviewCache.get(entry);
   if (!force && cached?.key === key) return { value: cached.value, hit: true };
-  const value = buildOverviewBody(scope, now);
+  const value = buildOverviewBody(scope, now, project);
   // The key is read again: building can itself write (needs-you bookkeeping).
-  overviewCache.set(scope, { key: overviewKey(scope, now), value });
+  overviewCache.delete(entry);
+  overviewCache.set(entry, { key: overviewKey(scope, now), value });
+  while (overviewCache.size > OVERVIEW_CACHE_ENTRIES) overviewCache.delete(overviewCache.keys().next().value);
   return { value, hit: false };
+}
+
+// A delivered or shelved project goes out as a tally of its lanes, which needs
+// its items and runs read once; it rarely changes again, so the tally is kept
+// until the project, its cards or the day do. Moving projects are tallied
+// fresh: their runs change without the project row changing.
+const tallyCache = new Map();
+
+function projectTallyFor(instance, cards, stages, now, queue) {
+  const state = projectScope(instance, now);
+  const settled = state === "delivered" || state === "shelved";
+  const queued = queue ? [queue.holding, cards.filter((card) => queue.byCard.has(card.id) || queue.pending.has(card.id)).map((card) => [card.id, queue.byCard.get(card.id)?.kind ?? "pending"])] : null;
+  const stamp = settled
+    ? JSON.stringify([instance.updatedAt, instance.workflowSha256, state, cards.length, Math.max(0, ...cards.map((card) => Date.parse(card.updatedAt ?? 0) || Number(card.updatedAt) || 0)), new Date(now).toDateString(), queued])
+    : null;
+  const cached = stamp && tallyCache.get(instance.id);
+  if (cached?.stamp === stamp) return cached.tally;
+  const tally = projectTally(stages, {
+    ...instance,
+    contentItems: store.listContentItems(instance.id),
+    contentItemRuns: store.listContentItemRuns(instance.id),
+    stageRuns: store.listStageRuns(instance.id),
+    operations: store.listExternalOperations(instance.id),
+    skippedContentItems: store.listSkippedContentItems(instance.id),
+  }, cards, now, queue);
+  if (stamp) tallyCache.set(instance.id, { stamp, tally });
+  else tallyCache.delete(instance.id);
+  return tally;
 }
 
 // After the cards or a scheduler pass changed, build the live overview before
@@ -2176,10 +2211,10 @@ function warmOverview() {
   });
 }
 
-function buildOverviewBody(scope, now) {
+function buildOverviewBody(scope, now, project = null) {
   const instances = store.listInstances().map((instance) => {
     if (instance.status === "archived") return instance;
-    if (!overviewDetails(instance, scope, now)) return withInstanceLinks(instance);
+    if (!overviewDetails(instance, scope, now, project)) return withInstanceLinks(instance);
     return withInstanceLinks({
       ...instance,
       contentItems: store.listContentItems(instance.id),
@@ -2189,28 +2224,34 @@ function buildOverviewBody(scope, now) {
   });
   const visible = instances.filter((instance) => instance.status !== "archived");
   const cards = visibleCards(cardCache, visible);
+  // 需要你 is scope-independent: every project that is not shelved.
+  const needsYouBody = buildNeedsYou({
+    store,
+    instances: visible,
+    cards,
+    releases: store.listReleases(),
+    pending: needsYou.pendingList(),
+  });
+  const restart = gatewayRestartForBoard(gatewayRestart.snapshot());
+  const queue = needsYouQueue(needsYouBody, restart);
   return {
     board,
     cardsUpdatedAt,
     // The board shows "Gateway 重启中，夜班已暂停" while this is not "up".
-    gatewayRestart: gatewayRestartForBoard(gatewayRestart.snapshot()),
+    gatewayRestart: restart,
     ...buildOverview({
       scope,
+      project,
       now,
       instances,
+      queue,
+      tallyFor: (instance, own, stages) => projectTallyFor(instance, own, stages, now, queue),
       cards: cards.map(cardLinker()),
       releases: store.listReleases().map(withWorkflowLinks),
       operationsFor: (instanceId) => store.listExternalOperations(instanceId),
       skippedFor: (instanceId) => store.listSkippedContentItems(instanceId),
     }),
-    // 需要你 is scope-independent: every project that is not shelved.
-    needsYou: buildNeedsYou({
-      store,
-      instances: visible,
-      cards,
-      releases: store.listReleases(),
-      pending: needsYou.pendingList(),
-    }),
+    needsYou: needsYouBody,
   };
 }
 
