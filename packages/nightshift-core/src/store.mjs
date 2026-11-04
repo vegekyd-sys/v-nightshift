@@ -835,7 +835,7 @@ export class NightShiftStore {
     for (const id of existingIds) {
       if (nextIds.has(id)) continue;
       const runs = this.db.prepare("SELECT COUNT(*) AS count FROM content_item_runs WHERE instance_id = ? AND content_item_id = ?").get(instanceId, id);
-      if (runs.count > 0) throw new Error(`Cannot remove content item ${id} after execution has started`);
+      if (runs.count > 0) throw new Error(`Cannot remove content item ${id} after execution has started; keep it in content-items.json and run nightshiftctl projects skip-item ${instanceId} ${id} --reason <text>`);
       this.db.prepare("DELETE FROM content_items WHERE instance_id = ? AND id = ?").run(instanceId, id);
     }
     const statement = this.db.prepare(`

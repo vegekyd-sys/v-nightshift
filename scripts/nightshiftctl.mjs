@@ -183,6 +183,19 @@ async function run(input) {
     }
     return { action, apply: true, plan, results };
   }
+  // Leave one content item out of the project: nothing more is planned for it
+  // and the project delivers the rest. Never remove an item from
+  // content-items.json instead; that fails every scheduler pass once the item
+  // has run.
+  if (resource === "projects" && action === "skip-item" && subject) {
+    const contentItemId = input[3];
+    const reason = option(input, "--reason");
+    if (!contentItemId || contentItemId.startsWith("--") || !reason) throw new Error("projects skip-item <id> <content-item-id> --reason <text> [--actor V]");
+    return api(`/api/instances/${encodeURIComponent(subject)}/content-items/${encodeURIComponent(contentItemId)}/skip`, {
+      body: JSON.stringify({ reason, actor: option(input, "--actor") ?? "Night Shift operator" }),
+      method: "POST",
+    });
+  }
   if (resource === "projects" && action === "inputs" && subject) {
     const file = option(input, "--file");
     if (!file) throw new Error("projects inputs requires --file <json>");
@@ -290,7 +303,7 @@ async function run(input) {
       method: "POST",
     });
   }
-  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|monitor|preflight|create|start|pause|archive|restore | projects concurrency <id> [<1-8>|default] [--reason <text>] | projects workflow <id> <version|latest> [--reason <text>] | projects priority <id> [<n>|first|last|default] [--reason <text>] | projects order <id> [<id> …] [--reason <text>] | projects queue | projects inputs <id> --file <json> | projects collaboration <id> --to <oc_…|user:ou_…> [--by <ou_…>] | decisions list [--project <id>] [--status open|decided] | decisions get <id> | decisions decide <id> --option <id> [--note <text>] [--apply-to-group] | governance audit [--refresh] | governance archive|restore <manifest.json> [--apply] | storage retention [--apply] | operations reserve|checkpoint <card-id> | operations authorize-recovery <card-id> --failed-operation <key> --request-hash <sha256> --reason <text> --authorization <ref> --evidence <ref> [--actor V] | cards list|session|approve|changes|reject|retry | cards retry <card-id> [--actor V] [--note <text>] [--allow-new-operation]");
+  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|monitor|preflight|create|start|pause|archive|restore | projects concurrency <id> [<1-8>|default] [--reason <text>] | projects workflow <id> <version|latest> [--reason <text>] | projects priority <id> [<n>|first|last|default] [--reason <text>] | projects order <id> [<id> …] [--reason <text>] | projects queue | projects inputs <id> --file <json> | projects skip-item <id> <content-item-id> --reason <text> [--actor V] | projects collaboration <id> --to <oc_…|user:ou_…> [--by <ou_…>] | decisions list [--project <id>] [--status open|decided] | decisions get <id> | decisions decide <id> --option <id> [--note <text>] [--apply-to-group] | governance audit [--refresh] | governance archive|restore <manifest.json> [--apply] | storage retention [--apply] | operations reserve|checkpoint <card-id> | operations authorize-recovery <card-id> --failed-operation <key> --request-hash <sha256> --reason <text> --authorization <ref> --evidence <ref> [--actor V] | cards list|session|approve|changes|reject|retry | cards retry <card-id> [--actor V] [--note <text>] [--allow-new-operation]");
 }
 
 async function resolveWorkflow(project) {

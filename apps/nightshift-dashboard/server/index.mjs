@@ -776,6 +776,25 @@ async function handleApi(request, response, url) {
     });
     return;
   }
+  const skipItemMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/content-items\/([^/]+)\/skip$/);
+  if (request.method === "POST" && skipItemMatch) {
+    const body = await bodyJson(request);
+    try {
+      const result = await serializedOperation(() => runtime.skipContentItem({
+        instanceId: decodeURIComponent(skipItemMatch[1]),
+        contentItemId: decodeURIComponent(skipItemMatch[2]),
+        reason: body.reason ?? null,
+        actor: operatorIdentity(request, body),
+      }));
+      if (result.blockedCardIds.length) await refreshCards({ cardIds: result.blockedCardIds });
+      // The rest of the project may now be ready for delivery.
+      changeScheduler.enqueue("content-item.skipped");
+      json(response, 200, result);
+    } catch (error) {
+      json(response, error.statusCode ?? 500, { error: error.message });
+    }
+    return;
+  }
   const tickMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/tick$/);
   if (request.method === "POST" && tickMatch) {
     const body = await bodyJson(request);
