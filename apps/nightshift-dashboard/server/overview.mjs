@@ -140,12 +140,13 @@ function leanRelease(release) {
 }
 
 function releaseSummary(release) {
-  return pick(release, ["workflowId", "name", "version", "workflowSha256", "publishedAt", "links"]);
+  return pick(release, ["workflowId", "name", "version", "workflowSha256", "publishedAt", "links", "retired"]);
 }
 
 function latestReleaseShas(releases) {
   const latest = new Map();
   for (const release of releases) {
+    if (release.retired) continue;
     const current = latest.get(release.workflowId);
     if (!current || String(release.publishedAt ?? "") > String(current.publishedAt ?? "")) latest.set(release.workflowId, release);
   }

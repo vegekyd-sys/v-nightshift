@@ -2199,6 +2199,70 @@ test("skipping from a request records the item, closes the request and does not 
   store.close();
 });
 
+// V on 2026-11-04 removed a published item from content-items.json to drop a
+// duplicate; every scheduler pass then failed. Skipping is the command for it.
+test("an item can be skipped without a stop: its waiting cards are blocked and delivery goes on", async () => {
+  const { runtime, store, workboard } = await deliveryProject("NS-SKIP-DIRECT");
+  store.upsertContentItemRun({ instanceId: "NS-SKIP-DIRECT", contentItemId: "gone", stageId: "brief", attempt: 2, cardId: "NS-SKIP-DIRECT-gone-brief-2", status: "ready", summary: null });
+  workboard.cards.push(
+    { id: "NS-SKIP-DIRECT-gone-brief", status: "blocked", labels: ["instance:NS-SKIP-DIRECT", "stage:brief", "content-item:gone"] },
+    { id: "NS-SKIP-DIRECT-gone-brief-2", status: "ready", labels: ["instance:NS-SKIP-DIRECT", "stage:brief", "content-item:gone"] },
+    { id: "NS-SKIP-DIRECT-kept-produce", status: "done", labels: ["instance:NS-SKIP-DIRECT", "stage:produce", "content-item:kept"] },
+  );
+  const result = await runtime.skipContentItem({ instanceId: "NS-SKIP-DIRECT", contentItemId: "gone", reason: "和 BH-MX-025 重复", actor: "local:V" });
+  assert.equal(result.skipped.reason, "和 BH-MX-025 重复");
+  assert.deepEqual(result.blockedCardIds, ["NS-SKIP-DIRECT-gone-brief-2"], "only the item's card that had not started");
+  assert.deepEqual(result.doneStageIds, ["route", "materials"]);
+  assert.equal(workboard.cards.find((card) => card.id === "NS-SKIP-DIRECT-gone-brief-2").status, "blocked");
+  assert.equal(workboard.cards.find((card) => card.id === "NS-SKIP-DIRECT-kept-produce").status, "done", "other items are untouched");
+  assert.ok(store.listEvents("NS-SKIP-DIRECT").some((event) => event.type === "content-item.skipped"));
+  const ticked = await runtime.tick("NS-SKIP-DIRECT", { dispatch: false });
+  assert.ok(ticked.actions.some((action) => action.stageId === "deliver-download"), "delivery goes ahead without it");
+  assert.equal(store.listContentItems("NS-SKIP-DIRECT").length, 2, "the manifest still lists it");
+  store.close();
+});
+
+// A timed publish the board still holds cannot be moved; it must not start
+// when its time comes.
+test("a skipped item's timed card is stopped when it comes due, not started", async () => {
+  const { runtime, store, workboard } = await deliveryProject("NS-SKIP-TIMED");
+  store.upsertContentItemRun({ instanceId: "NS-SKIP-TIMED", contentItemId: "gone", stageId: "brief", attempt: 2, cardId: "NS-SKIP-TIMED-timed", status: "scheduled", summary: null });
+  const timed = { id: "NS-SKIP-TIMED-timed", status: "scheduled", labels: ["instance:NS-SKIP-TIMED", "stage:brief", "content-item:gone"],
+    metadata: { automation: { scheduledAt: Date.now() + 60 * 60_000 } } };
+  workboard.cards.push(timed);
+  const result = await runtime.skipContentItem({ instanceId: "NS-SKIP-TIMED", contentItemId: "gone", reason: "不发了", actor: "local:V" });
+  assert.deepEqual(result.heldCardIds, ["NS-SKIP-TIMED-timed"]);
+  assert.equal(timed.status, "scheduled", "the board still holds it");
+  timed.metadata.automation.scheduledAt = Date.now() - 1_000;
+  workboard.startOnDispatch = true;
+  await runtime.tick("NS-SKIP-TIMED", { dispatch: true });
+  assert.equal(timed.status, "blocked");
+  assert.equal(workboard.dispatchCalls.some((call) => call.options?.cardIds?.includes("NS-SKIP-TIMED-timed")), false);
+  store.close();
+});
+
+test("an item an Agent is working on, or one the project does not have, is not skipped", async () => {
+  const { runtime, store, workboard } = await deliveryProject("NS-SKIP-RUNNING");
+  workboard.cards.push({ id: "NS-SKIP-RUNNING-gone-brief", status: "running", labels: ["instance:NS-SKIP-RUNNING", "stage:brief", "content-item:gone"] });
+  await assert.rejects(runtime.skipContentItem({ instanceId: "NS-SKIP-RUNNING", contentItemId: "gone", reason: "x", actor: "local:V" }), /stop it first/);
+  await assert.rejects(runtime.skipContentItem({ instanceId: "NS-SKIP-RUNNING", contentItemId: "nope", reason: "x", actor: "local:V" }), /has no content item nope/);
+  await assert.rejects(runtime.skipContentItem({ instanceId: "NS-SKIP-RUNNING", contentItemId: "gone", reason: "", actor: "local:V" }), /reason is required/);
+  assert.deepEqual(store.listSkippedContentItems("NS-SKIP-RUNNING"), []);
+  store.close();
+});
+
+test("skipping an item settles its open request", async () => {
+  const { runtime, store } = await stoppedRun({
+    id: "NS-SKIP-OPEN", stageId: "produce", outcome: { status: "completed" },
+    session: { messages: [{ role: "assistant", stopReason: "stop", timestamp: Date.now() - 60_000, content: [{ type: "text", text: "需要人做：请补素材\n原因：Scene 检索为 0" }] }] },
+  });
+  await runtime.reconcile("NS-SKIP-OPEN", null, { inspectSessions: true });
+  assert.equal(openRequests(store, "NS-SKIP-OPEN").length, 1);
+  await runtime.skipContentItem({ instanceId: "NS-SKIP-OPEN", contentItemId: "video-1", reason: "不做了", actor: "local:V" });
+  assert.equal(openRequests(store, "NS-SKIP-OPEN").length, 0);
+  store.close();
+});
+
 test("a stop on a project-wide stage cannot be skipped", async () => {
   const { runtime, store } = await stoppedRun({
     id: "NS-SKIP-PROJECT", stageId: "plan", outcome: { status: "completed" },

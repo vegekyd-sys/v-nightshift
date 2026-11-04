@@ -527,3 +527,47 @@ test("exports support the existing relative-to-handoff path convention", async t
   await f.tick();
   assert.equal(f.store.listCalls("ROOT")[0].state, "succeeded");
 });
+
+// V had no way to take test Workflows off the list; on 2026-10-25 it deleted a
+// release row with sqlite3 to publish new content under the same version.
+test("a Workflow is retired only once nothing unfinished uses it, and can be restored", () => {
+  const store = new NightShiftStore();
+  try {
+    const runtime = new NightShiftRuntime({ store, workboard: {} });
+    const child = runtime.publish(flow("child", [system("verify")], { outputs: { result: { stage: "verify", output: "result" } } }));
+    const parent = runtime.publish(flow("parent", [system("acquire", { actor: "workflow", call: { workflow: child.workflowSha256, inputs: {} } })]));
+    const lone = runtime.publish(flow("lone", [system("work")]));
+    runtime.startInstance({ id: "NS-LONE", workflowSha256: lone.workflowSha256, agentBindings: { operator: "main" } });
+
+    assert.throws(() => runtime.retireWorkflow({ workflow: "lone", actor: "local:V", reason: "test" }), /projects not finished: NS-LONE \(active\)/);
+    assert.throws(() => runtime.retireWorkflow({ workflow: "child", actor: "local:V", reason: "test" }), /called by: parent@1\.0\.0/);
+    assert.throws(() => runtime.retireWorkflow({ workflow: "lone", actor: "local:V" }), /reason is required/);
+    assert.throws(() => runtime.retireWorkflow({ workflow: "nope", actor: "local:V", reason: "x" }), /No Workflow release matches nope/);
+
+    store.updateInstanceStatus("NS-LONE", "done");
+    const { retired } = runtime.retireWorkflow({ workflow: "lone@1.0.0", actor: "local:V", reason: "测试用完" });
+    assert.deepEqual(retired.map((entry) => entry.workflowId), ["lone"]);
+    assert.deepEqual(store.listReleases({ includeRetired: false }).map((entry) => entry.workflowId).sort(), ["child", "parent"]);
+    assert.equal(store.getRelease(lone.workflowSha256).retired.reason, "测试用完");
+    assert.equal(store.getInstance("NS-LONE").workflowSha256, lone.workflowSha256, "the project that ran on it keeps it");
+    assert.ok(store.listEvents(null).some((event) => event.type === "workflow.retired"));
+
+    // Retiring the caller frees the called one.
+    runtime.retireWorkflow({ workflow: "parent", actor: "local:V", reason: "x" });
+    runtime.retireWorkflow({ workflow: child.workflowSha256, actor: "local:V", reason: "x" });
+    assert.throws(() => runtime.publish(flow("caller-2", [system("acquire", { actor: "workflow", call: { workflow: child.workflowSha256, inputs: {} } })])), /is retired/);
+
+    assert.deepEqual(runtime.restoreWorkflow({ workflow: "lone", actor: "local:V" }).restored.map((entry) => entry.workflowId), ["lone"]);
+    assert.equal(store.getRelease(lone.workflowSha256).retired, null);
+  } finally { store.close(); }
+});
+
+test("publishing other content under a version already published says to raise the version", () => {
+  const store = new NightShiftStore();
+  try {
+    const runtime = new NightShiftRuntime({ store, workboard: {} });
+    const first = runtime.publish(flow("same", [system("one")]));
+    assert.equal(runtime.publish(flow("same", [system("one")])).workflowSha256, first.workflowSha256, "the same content publishes again as a no-op");
+    assert.throws(() => runtime.publish(flow("same", [system("two")])), /same 1\.0\.0 is already published with other content.*raise metadata\.version/);
+  } finally { store.close(); }
+});

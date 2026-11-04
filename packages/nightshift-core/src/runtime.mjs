@@ -83,7 +83,62 @@ export class NightShiftRuntime {
     const workflow = parseWorkflow(sourceYaml);
     const release = compileWorkflow(workflow);
     validateCallReleases(release, this.store);
+    // On V on 2026-10-25 V deleted a release row with sqlite3 to publish new
+    // content under the same version.
+    const sameVersion = this.store.listReleases().find((entry) => entry.workflowId === release.metadata.id &&
+      entry.version === release.metadata.version && entry.workflowSha256 !== release.metadata.workflowSha256);
+    if (sameVersion) {
+      throw Object.assign(new Error(`${release.metadata.id} ${release.metadata.version} is already published with other content (${sameVersion.workflowSha256.slice(0, 12)}); raise metadata.version`), { statusCode: 409 });
+    }
     return this.store.saveRelease(release, sourceYaml);
+  }
+
+  // Take a Workflow, or one version of it, off the list: no new project starts
+  // on it. Refused while a project that has not finished runs on it, or while a
+  // Workflow still in use calls it; restore puts it back.
+  retireWorkflow({ workflow, actor, reason }) {
+    if (!actor) throw Object.assign(new Error("actor is required"), { statusCode: 400 });
+    if (!reason) throw Object.assign(new Error("reason is required"), { statusCode: 400 });
+    const releases = this.resolveWorkflowReleases(workflow).filter((release) => !release.retired);
+    const shas = new Set(releases.map((release) => release.workflowSha256));
+    const unfinished = this.store.listInstances({ includeInternal: true }).filter((instance) => shas.has(instance.workflowSha256) && !["done", "archived"].includes(instance.status));
+    const callers = this.store.listReleases({ includeRetired: false })
+      .filter((release) => !shas.has(release.workflowSha256) &&
+        (release.manifest.spec?.stages ?? []).some((stage) => stage.actor === "workflow" && shas.has(stage.call?.workflow)));
+    if (unfinished.length || callers.length) {
+      const why = [
+        ...(unfinished.length ? [`projects not finished: ${unfinished.map((instance) => `${instance.id} (${instance.status})`).join(", ")}`] : []),
+        ...(callers.length ? [`called by: ${[...new Set(callers.map((release) => `${release.workflowId}@${release.version}`))].join(", ")}`] : []),
+      ];
+      throw Object.assign(new Error(`${workflow} is still in use; ${why.join("; ")}`), { statusCode: 409, unfinished: unfinished.map((instance) => instance.id) });
+    }
+    for (const release of releases) {
+      this.store.retireRelease({ workflowSha: release.workflowSha256, actor, reason });
+      this.store.appendEvent({ type: "workflow.retired", payload: { workflowSha256: release.workflowSha256, workflowId: release.workflowId, version: release.version, actor, reason } });
+    }
+    return { retired: releases.map(releaseRef) };
+  }
+
+  restoreWorkflow({ workflow, actor }) {
+    if (!actor) throw Object.assign(new Error("actor is required"), { statusCode: 400 });
+    const releases = this.resolveWorkflowReleases(workflow).filter((release) => release.retired);
+    for (const release of releases) {
+      this.store.restoreRelease(release.workflowSha256);
+      this.store.appendEvent({ type: "workflow.restored", payload: { workflowSha256: release.workflowSha256, workflowId: release.workflowId, version: release.version, actor } });
+    }
+    return { restored: releases.map(releaseRef) };
+  }
+
+  // "<id>", "<id>@<version>" or a release SHA, retired releases included.
+  resolveWorkflowReleases(workflow) {
+    const text = String(workflow ?? "").trim();
+    const split = text.lastIndexOf("@");
+    const id = split > 0 ? text.slice(0, split) : text;
+    const version = split > 0 ? text.slice(split + 1) : null;
+    const releases = this.store.listReleases().filter((release) => release.workflowSha256 === text ||
+      (release.workflowId === id && (!version || release.version === version)));
+    if (!text || releases.length === 0) throw Object.assign(new Error(`No Workflow release matches ${text || "(empty)"}`), { statusCode: 404 });
+    return releases;
   }
 
   startInstance(instance) {
@@ -722,6 +777,51 @@ export class NightShiftRuntime {
     return { request: this.store.getDecisionRequest(decisionId), affectedCardIds, alreadyDecided: false, errors };
   }
 
+  // A person decides an item will not be delivered without waiting for it to
+  // stop: the same record a 跳过 on 需要你 leaves. On V on 2026-11-04 V removed
+  // a published item from content-items.json instead, and every scheduler pass
+  // failed until the manifest was restored. Its cards that have not started
+  // are blocked (a timed card when its time comes) so they never start; a card
+  // an Agent is working on must stop first. What already ran is not undone.
+  async skipContentItem({ instanceId, contentItemId, reason, actor }) {
+    if (!this.store.getInstance(instanceId)) throw Object.assign(new Error(`Unknown project ${instanceId}`), { statusCode: 404 });
+    if (!this.store.listContentItems(instanceId).some((item) => item.id === contentItemId)) {
+      throw Object.assign(new Error(`Project ${instanceId} has no content item ${contentItemId}`), { statusCode: 404 });
+    }
+    if (!reason) throw Object.assign(new Error("reason is required"), { statusCode: 400 });
+    if (!actor) throw Object.assign(new Error("actor is required"), { statusCode: 400 });
+    const runs = this.store.listContentItemRuns(instanceId).filter((run) => run.contentItemId === contentItemId);
+    const cardIds = [...new Set(runs.map((run) => run.cardId).filter(Boolean))];
+    const cards = cardIds.length ? (await this.workboard.listCards({ cardIds })).filter((card) => cardIds.includes(card.id)) : [];
+    const running = cards.filter((card) => card.status === "running" || card.execution?.status === "running");
+    if (running.length) {
+      throw Object.assign(new Error(`An Agent is working on ${contentItemId} (${running.map((card) => card.id).join(", ")}); stop it first`), { statusCode: 409 });
+    }
+    const skipped = this.store.skipContentItem({ instanceId, contentItemId, reason, actor });
+    const blockedCardIds = [];
+    const heldCardIds = [];
+    for (const card of cards) {
+      if (["done", "blocked", "cancelled"].includes(card.status)) continue;
+      // A timed card the board still holds is stopped by the dispatch pass
+      // when its time comes; so is any card the board would not move now.
+      if (card.status === "scheduled" && !cardIsStartable(card, this.now())) {
+        heldCardIds.push(card.id);
+        continue;
+      }
+      try {
+        await this.workboard.moveCard(card.id, "blocked");
+        blockedCardIds.push(card.id);
+      } catch {
+        heldCardIds.push(card.id);
+      }
+    }
+    for (const request of this.store.listDecisionRequests({ instanceId, includeDescendants: false })) {
+      if (request.contentItemId === contentItemId) this.store.supersedeDecisionRequests(request.cardId);
+    }
+    const doneStageIds = [...new Set(runs.filter((run) => run.status === "done").map((run) => run.stageId))];
+    return { skipped, blockedCardIds, heldCardIds, doneStageIds };
+  }
+
   // Items a person decided not to deliver, with the title and reason the
   // delivery brief and the completion notice show.
   skippedContentItems(instanceId) {
@@ -1328,10 +1428,27 @@ export class NightShiftRuntime {
             if (run.contentItemId) this.store.upsertContentItemRun(updated); else this.store.upsertStageRun(updated);
           }
         }
+        // The board holds a timed card until its time, so skipping an item
+        // could not move it then; now that it could start, it stops instead.
+        // Never started even if the board refuses the move.
+        const skippedCardIds = new Set();
+        for (const card of instanceCards.values()) {
+          if (!cardIsStartable(card, now)) continue;
+          const labelOf = (prefix) => (card.labels ?? []).find((label) => label.startsWith(prefix))?.slice(prefix.length);
+          const itemId = labelOf("content-item:");
+          if (!itemId || !this.isContentItemSkipped(labelOf("instance:"), itemId)) continue;
+          skippedCardIds.add(card.id);
+          try {
+            await this.workboard.moveCard(card.id, "blocked");
+            card.status = "blocked";
+          } catch (error) {
+            this.store.appendEvent({ eventId: `content-item-skip-block-failed:${card.id}`, instanceId, type: "content-item.skip.block-failed", payload: { cardId: card.id, contentItemId: itemId, error: error.message } });
+          }
+        }
         const active = [...instanceCards.values()].filter(cardConsumesDispatchSlot);
         const activeAcrossBoard = currentCards.filter(cardConsumesDispatchSlot).length;
         const cardIds = [...instanceCards.values()].filter((card) =>
-          cardIsStartable(card, now) && this.callCanDispatch(card, now) && ["agent", "system"].includes(stageActor(card)) && !active.includes(card) && !cardHasActiveClaim(card, now) && !(card.labels ?? []).includes("nightshift:approval"))
+          cardIsStartable(card, now) && !skippedCardIds.has(card.id) && this.callCanDispatch(card, now) && ["agent", "system"].includes(stageActor(card)) && !active.includes(card) && !cardHasActiveClaim(card, now) && !(card.labels ?? []).includes("nightshift:approval"))
           .map((card) => card.id);
         const maxStarts = Math.min(
           this.dispatchMaxStarts,
@@ -2036,4 +2153,8 @@ function downstreamStageIds(release, failedStageId) {
     }
   }
   return downstream;
+}
+
+function releaseRef(release) {
+  return { workflowId: release.workflowId, version: release.version, workflowSha256: release.workflowSha256 };
 }

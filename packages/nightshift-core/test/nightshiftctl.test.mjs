@@ -108,3 +108,60 @@ test("projects monitor includes linked call contexts without unrelated business 
     assert.equal(result.tasks.some(task => task.cardId === "private-other"), false);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
+
+// Every Live Board operation has a command, and V's commands read one project
+// or one card instead of the whole board (about 250 MB on V, 2026-11-04).
+test("the new commands call their endpoints and read only what they need", async (t) => {
+  const seen = [];
+  const card = { id: "c1", status: "review", labels: ["instance:P1", "stage:review", "content-item:i1"], metadata: { automation: { instanceId: "P1" } } };
+  const server = createServer(async (request, response) => {
+    let body = ""; for await (const chunk of request) body += chunk;
+    seen.push({ method: request.method, url: request.url, body: body ? JSON.parse(body) : null });
+    if (request.url.startsWith("/api/instances/P1/artifacts/")) {
+      response.setHeader("content-type", "video/mp4");
+      return response.end(Buffer.alloc(16));
+    }
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/api/cards/c1") return response.end(JSON.stringify({ card }));
+    if (request.url.startsWith("/api/workflows?")) return response.end(JSON.stringify({ workflows: [
+      { workflowId: "wf", version: "2.0.0", workflowSha256: "b".repeat(64) },
+      { workflowId: "wf", version: "1.0.0", workflowSha256: "a".repeat(64), retired: { reason: "old" } },
+    ] }));
+    if (request.url.endsWith("/source")) return response.end(JSON.stringify({ sourceMarkdown: "# wf" }));
+    response.end(JSON.stringify({ ok: true, cards: [] }));
+  });
+  await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  t.after(() => new Promise((resolveClose) => server.close(resolveClose)));
+  const ctl = (...args) => execFileAsync(process.execPath, ["scripts/nightshiftctl.mjs", ...args], { cwd: root, encoding: "utf8", env: { ...process.env, NIGHTSHIFT_URL: `http://127.0.0.1:${server.address().port}` } });
+  const last = () => seen.at(-1);
+
+  await ctl("workflows", "retire", "wf@1.0.0", "--reason", "测试用完", "--actor", "V");
+  assert.deepEqual(last(), { method: "POST", url: "/api/workflows/retire", body: { workflow: "wf@1.0.0", reason: "测试用完", actor: "V" } });
+  await ctl("workflows", "restore", "wf", "--actor", "V");
+  assert.equal(last().url, "/api/workflows/restore");
+  assert.match(JSON.parse((await ctl("workflows", "source", "wf")).stdout).sourceMarkdown, /# wf/);
+  assert.equal(last().url, `/api/workflows/${"b".repeat(64)}/source`, "an id means its newest release");
+  await ctl("projects", "dispatch", "P1", "off", "--actor", "V");
+  assert.deepEqual(last(), { method: "POST", url: "/api/instances/P1/dispatch-control", body: { automaticDispatch: false, actor: "V" } });
+  await ctl("projects", "retry-dispatch", "P1", "--actor", "V");
+  assert.equal(last().url, "/api/instances/P1/retry-dispatch");
+  await ctl("projects", "tick", "P1", "--dispatch");
+  assert.deepEqual(last().body, { dispatch: true, dryRun: false });
+  await ctl("projects", "handoff", "P1", "review", "--item", "i1");
+  assert.equal(last().url, "/api/instances/P1/stages/review/handoff?contentItemId=i1");
+  await ctl("projects", "deliverables", "P1", "--item", "i1");
+  assert.equal(last().url, "/api/instances/P1/content-items/i1/deliverables");
+  await assert.rejects(ctl("projects", "artifact", "P1", "final/a.mp4"), /save it with --out/);
+
+  seen.length = 0;
+  await ctl("projects", "monitor", "P1");
+  assert.ok(seen.some((entry) => entry.url === "/api/cards?project=P1"));
+  assert.ok(seen.every((entry) => !entry.url.includes("refresh=1")), "no whole-board read");
+  seen.length = 0;
+  await ctl("cards", "takeover", "c1", "--reason", "手动做", "--actor", "V");
+  assert.deepEqual(seen.map((entry) => entry.url), ["/api/cards/c1", "/api/instances/P1/cards/c1/human-takeover"]);
+  await ctl("cards", "approve", "c1", "--evidence", "看过了", "--actor", "V");
+  assert.ok(seen.every((entry) => !entry.url.startsWith("/api/cards?")), "a card decision reads that card only");
+  await ctl("cards", "approve-all", "c1", "c2", "--evidence", "看过了", "--actor", "V");
+  assert.deepEqual(last(), { method: "POST", url: "/api/cards/bulk/approve", body: { cardIds: ["c1", "c2"], evidence: "看过了", actor: "V" } });
+});

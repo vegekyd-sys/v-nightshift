@@ -1,11 +1,49 @@
 #!/usr/bin/env node
 
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 // Import the one module this HTTP client needs, never the package index: the
 // index also loads the SQLite store, and Node prints an ExperimentalWarning on
 // stderr whenever node:sqlite is loaded.
 import { validateGovernanceManifest } from "../packages/nightshift-core/src/governance.mjs";
+
+// Every operation the Live Board offers has a command here, so V never needs
+// curl, sqlite3 or a hand edit of the engine's files.
+const USAGE = [
+  "health",
+  "workflows list [--include-retired]",
+  "workflows validate|import|publish <workflow.md>",
+  "workflows source <id>[@<version>]|<sha> [--out <file>]",
+  "workflows retire <id>[@<version>] --reason <text> [--actor V]",
+  "workflows restore <id>[@<version>] [--actor V]",
+  "projects list [--include-archived] | get <id> | monitor <id> | queue",
+  "projects preflight|create <project.json>",
+  "projects start|pause|archive|restore <id>",
+  "projects dispatch <id> on|off [--actor V]",
+  "projects retry-dispatch <id> [--actor V]",
+  "projects tick <id> [--dispatch] [--dry-run]",
+  "projects concurrency <id> [<1-8>|default] [--reason <text>]",
+  "projects priority <id> [<n>|first|last|default] [--reason <text>]",
+  "projects order <id> [<id> …] [--reason <text>]",
+  "projects workflow <id> <version|latest> [--reason <text>]",
+  "projects inputs <id> --file <json>",
+  "projects collaboration <id> --to <oc_…|user:ou_…> [--by <ou_…>]",
+  "projects skip-item <id> <content-item-id> --reason <text> [--actor V]",
+  "projects handoff <id> <stage-id> [--item <content-item-id>]",
+  "projects deliverables <id> [--item <content-item-id>]",
+  "projects artifact <id> <path> [--item <content-item-id>] [--out <file>]",
+  "decisions list [--project <id>] [--status open|decided] | get <id>",
+  "decisions decide <id> --option <id> [--note <text>] [--apply-to-group] [--actor V]",
+  "cards list [--project <id>] [--status <status>] | get <card-id> | session <card-id> [--run-id <id>]",
+  "cards approve|changes|reject <card-id> --evidence <text> [--actor V]",
+  "cards approve-all <card-id> [<card-id> …] --evidence <text> [--actor V]",
+  "cards retry <card-id> [--actor V] [--note <text>] [--allow-new-operation]",
+  "cards takeover <card-id> --reason <text> [--actor V] | human-complete <card-id> [--actor V]",
+  "operations reserve|checkpoint <card-id>",
+  "operations authorize-recovery <card-id> --failed-operation <key> --request-hash <sha256> --reason <text> --authorization <ref> --evidence <ref> [--actor V]",
+  "governance audit [--refresh] | archive|restore <manifest.json> [--apply]",
+  "storage retention [--apply]",
+];
 
 const baseUrl = process.env.NIGHTSHIFT_URL ?? "http://127.0.0.1:24879";
 const args = process.argv.slice(2);
@@ -20,8 +58,28 @@ try {
 
 async function run(input) {
   const [resource, action, subject] = input;
+  if (resource === "help" || !resource) return { usage: USAGE.map((line) => `nightshiftctl ${line}`) };
   if (resource === "health") return api("/api/health");
-  if (resource === "workflows" && action === "list") return api("/api/workflows");
+  if (resource === "workflows" && action === "list") return api(`/api/workflows${input.includes("--include-retired") ? "?includeRetired=1" : ""}`);
+  // <ref> is <id> (its newest release), <id>@<version> or a release SHA.
+  if (resource === "workflows" && action === "source" && subject) {
+    const [release] = await findReleases(subject, { newestOnly: true });
+    const source = await api(`/api/workflows/${release.workflowSha256}/source`);
+    const out = option(input, "--out");
+    if (!out) return { ...releaseRef(release), sourceMarkdown: source.sourceMarkdown ?? source.sourceYaml };
+    await writeFile(resolve(out), source.sourceMarkdown ?? source.sourceYaml ?? "");
+    return { ...releaseRef(release), written: resolve(out) };
+  }
+  // Off the Workflow list and closed to new projects; refused while a project
+  // that has not finished runs on it or a Workflow in use calls it.
+  if (resource === "workflows" && action === "retire" && subject) {
+    const reason = option(input, "--reason");
+    if (!reason) throw new Error("workflows retire <id>[@<version>] --reason <text> [--actor V]");
+    return api("/api/workflows/retire", { body: JSON.stringify({ workflow: subject, reason, actor: option(input, "--actor") ?? "Night Shift operator" }), method: "POST" });
+  }
+  if (resource === "workflows" && action === "restore" && subject) {
+    return api("/api/workflows/restore", { body: JSON.stringify({ workflow: subject, actor: option(input, "--actor") ?? "Night Shift operator" }), method: "POST" });
+  }
   if (resource === "workflows" && ["validate", "import", "publish"].includes(action) && subject) {
     const sourceMarkdown = await readFile(resolve(subject), "utf8");
     const endpoint = action === "validate" ? "/api/workflows/validate" : action === "import" ? "/api/workflows/import" : "/api/workflows/publish";
@@ -35,7 +93,7 @@ async function run(input) {
   if (resource === "projects" && action === "monitor" && subject) {
     const [project, cardsResult] = await Promise.all([
       api(`/api/instances/${encodeURIComponent(subject)}`),
-      api("/api/cards?refresh=1"),
+      api(`/api/cards?project=${encodeURIComponent(subject)}`),
     ]);
     const executionIds = new Set([subject, ...((project.instance ?? project).calls ?? []).map(call => call.childId)]);
     const cards = cardsResult.cards.filter((card) => executionIds.has(label(card, "instance")));
@@ -183,6 +241,72 @@ async function run(input) {
     }
     return { action, apply: true, plan, results };
   }
+  // Leave one content item out of the project: nothing more is planned for it
+  // and the project delivers the rest. Never remove an item from
+  // content-items.json instead; that fails every scheduler pass once the item
+  // has run.
+  if (resource === "projects" && action === "skip-item" && subject) {
+    const contentItemId = input[3];
+    const reason = option(input, "--reason");
+    if (!contentItemId || contentItemId.startsWith("--") || !reason) throw new Error("projects skip-item <id> <content-item-id> --reason <text> [--actor V]");
+    return api(`/api/instances/${encodeURIComponent(subject)}/content-items/${encodeURIComponent(contentItemId)}/skip`, {
+      body: JSON.stringify({ reason, actor: option(input, "--actor") ?? "Night Shift operator" }),
+      method: "POST",
+    });
+  }
+  // Automatic dispatch for one project: off holds its cards on the board,
+  // on lets the scheduler start them again.
+  if (resource === "projects" && action === "dispatch" && subject) {
+    const value = input[3];
+    if (!["on", "off"].includes(value)) throw new Error("projects dispatch <id> on|off [--actor V]");
+    return api(`/api/instances/${encodeURIComponent(subject)}/dispatch-control`, {
+      body: JSON.stringify({ automaticDispatch: value === "on", actor: option(input, "--actor") ?? "Night Shift operator" }),
+      method: "POST",
+    });
+  }
+  // 仅重试此项目: dispatch this project's waiting cards now.
+  if (resource === "projects" && action === "retry-dispatch" && subject) {
+    return api(`/api/instances/${encodeURIComponent(subject)}/retry-dispatch`, {
+      body: JSON.stringify({ actor: option(input, "--actor") ?? "Night Shift operator" }),
+      method: "POST",
+    });
+  }
+  // One scheduler pass for this project now. Without --dispatch it only plans.
+  if (resource === "projects" && action === "tick" && subject) {
+    return api(`/api/instances/${encodeURIComponent(subject)}/tick`, {
+      body: JSON.stringify({ dispatch: input.includes("--dispatch"), dryRun: input.includes("--dry-run") }),
+      method: "POST",
+    });
+  }
+  if (resource === "projects" && action === "handoff" && subject) {
+    const stage = input[3];
+    if (!stage || stage.startsWith("--")) throw new Error("projects handoff <id> <stage-id> [--item <content-item-id>]");
+    const item = option(input, "--item");
+    return api(`/api/instances/${encodeURIComponent(subject)}/stages/${encodeURIComponent(stage)}/handoff${item ? `?contentItemId=${encodeURIComponent(item)}` : ""}`);
+  }
+  if (resource === "projects" && action === "deliverables" && subject) {
+    const item = option(input, "--item");
+    return api(`/api/instances/${encodeURIComponent(subject)}${item ? `/content-items/${encodeURIComponent(item)}` : ""}/deliverables`);
+  }
+  // A file the project published, saved with --out; small text and JSON files
+  // are returned inline.
+  if (resource === "projects" && action === "artifact" && subject) {
+    const path = input[3];
+    if (!path || path.startsWith("--")) throw new Error("projects artifact <id> <path> [--item <content-item-id>] [--out <file>]");
+    const item = option(input, "--item");
+    const response = await fetch(new URL(`/api/instances/${encodeURIComponent(subject)}${item ? `/content-items/${encodeURIComponent(item)}` : ""}/artifacts/${path.split("/").map(encodeURIComponent).join("/")}`, baseUrl));
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error ?? `Night Shift API returned HTTP ${response.status}`);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    const contentType = response.headers.get("content-type") ?? "";
+    const out = option(input, "--out");
+    if (out) {
+      await writeFile(resolve(out), bytes);
+      return { path, contentType, bytes: bytes.length, written: resolve(out) };
+    }
+    if (!/json|text/.test(contentType) || bytes.length > 1_000_000) throw new Error(`${path} is ${contentType || "binary"}, ${bytes.length} bytes: save it with --out <file>`);
+    const text = bytes.toString("utf8");
+    return { path, contentType, bytes: bytes.length, content: /json/.test(contentType) ? JSON.parse(text) : text };
+  }
   if (resource === "projects" && action === "inputs" && subject) {
     const file = option(input, "--file");
     if (!file) throw new Error("projects inputs requires --file <json>");
@@ -260,8 +384,31 @@ async function run(input) {
     });
   }
   if (resource === "cards" && action === "list") {
-    const status = option(input, "--status");
-    return api(`/api/cards${status ? `?status=${encodeURIComponent(status)}` : ""}`);
+    const query = new URLSearchParams();
+    for (const [flag, key] of [["--project", "project"], ["--status", "status"]]) if (option(input, flag)) query.set(key, option(input, flag));
+    return api(`/api/cards${query.size ? `?${query}` : ""}`);
+  }
+  if (resource === "cards" && action === "get" && subject) return api(`/api/cards/${encodeURIComponent(subject)}`);
+  // 接管此卡 / 校验产物并完成: a person does the card's work outside the Agent.
+  if (resource === "cards" && ["takeover", "human-complete"].includes(action) && subject) {
+    const card = await findCard(subject);
+    const instanceId = card.metadata?.automation?.instanceId ?? label(card, "instance");
+    const reason = option(input, "--reason");
+    if (action === "takeover" && !reason) throw new Error("cards takeover <card-id> --reason <text> [--actor V]");
+    return api(`/api/instances/${encodeURIComponent(instanceId)}/cards/${encodeURIComponent(subject)}/human-${action === "takeover" ? "takeover" : "complete"}`, {
+      body: JSON.stringify({ actor: option(input, "--actor") ?? "Night Shift operator", reason }),
+      method: "POST",
+    });
+  }
+  // Approve up to 100 review cards in one call.
+  if (resource === "cards" && action === "approve-all" && subject) {
+    const cardIds = input.slice(2).filter((entry, index, all) => !entry.startsWith("--") && !(all[index - 1] ?? "").startsWith("--"));
+    const evidence = option(input, "--evidence");
+    if (!evidence) throw new Error("cards approve-all <card-id> [<card-id> …] --evidence <text> [--actor V]");
+    return api("/api/cards/bulk/approve", {
+      body: JSON.stringify({ cardIds, evidence, actor: option(input, "--actor") ?? "Night Shift operator" }),
+      method: "POST",
+    });
   }
   if (resource === "cards" && action === "session" && subject) {
     const runId = option(input, "--run-id");
@@ -290,7 +437,7 @@ async function run(input) {
       method: "POST",
     });
   }
-  throw new Error("Usage: nightshiftctl health | workflows list|validate|import|publish | projects list|get|monitor|preflight|create|start|pause|archive|restore | projects concurrency <id> [<1-8>|default] [--reason <text>] | projects workflow <id> <version|latest> [--reason <text>] | projects priority <id> [<n>|first|last|default] [--reason <text>] | projects order <id> [<id> …] [--reason <text>] | projects queue | projects inputs <id> --file <json> | projects collaboration <id> --to <oc_…|user:ou_…> [--by <ou_…>] | decisions list [--project <id>] [--status open|decided] | decisions get <id> | decisions decide <id> --option <id> [--note <text>] [--apply-to-group] | governance audit [--refresh] | governance archive|restore <manifest.json> [--apply] | storage retention [--apply] | operations reserve|checkpoint <card-id> | operations authorize-recovery <card-id> --failed-operation <key> --request-hash <sha256> --reason <text> --authorization <ref> --evidence <ref> [--actor V] | cards list|session|approve|changes|reject|retry | cards retry <card-id> [--actor V] [--note <text>] [--allow-new-operation]");
+  throw new Error(`Usage: nightshiftctl <command>, one of:\n${USAGE.map((line) => `  nightshiftctl ${line}`).join("\n")}`);
 }
 
 async function resolveWorkflow(project) {
@@ -308,10 +455,24 @@ async function resolveWorkflow(project) {
 }
 
 async function findCard(id) {
-  const result = await api("/api/cards?refresh=1");
-  const card = result.cards.find((entry) => entry.id === id);
-  if (!card) throw new Error(`Unknown native Workboard card ${id}`);
-  return card;
+  const result = await api(`/api/cards/${encodeURIComponent(id)}`).catch((error) => {
+    throw new Error(/not found/i.test(error.message) ? `Unknown native Workboard card ${id}` : error.message);
+  });
+  return result.card;
+}
+
+async function findReleases(ref, { newestOnly = false } = {}) {
+  const { workflows } = await api("/api/workflows?includeRetired=1");
+  const split = ref.lastIndexOf("@");
+  const id = split > 0 ? ref.slice(0, split) : ref;
+  const version = split > 0 ? ref.slice(split + 1) : null;
+  const matches = workflows.filter((entry) => entry.workflowSha256 === ref || (entry.workflowId === id && (!version || entry.version === version)));
+  if (matches.length === 0) throw new Error(`No Workflow release matches ${ref}`);
+  return newestOnly ? matches.slice(0, 1) : matches;
+}
+
+function releaseRef(release) {
+  return { workflowId: release.workflowId, version: release.version, workflowSha256: release.workflowSha256, retired: release.retired ?? null };
 }
 
 async function api(path, options = {}) {
