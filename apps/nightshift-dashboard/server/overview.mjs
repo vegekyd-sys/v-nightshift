@@ -3,7 +3,8 @@
 // briefs, card events, comments and old workflow sources that the pages only
 // need for one card at a time. This keeps what the pages draw and nothing
 // else; detail is fetched when a card or workflow is opened.
-import { projectScope } from "../client/src/attention.js";
+import { isToday, projectScope } from "../client/src/attention.js";
+import { projectTally } from "../client/src/stage-tasks.js";
 import { stageEnabled } from "../../../packages/nightshift-core/src/workflow.mjs";
 
 export const OVERVIEW_SCOPES = ["live", "paused", "delivered", "shelved", "all"];
@@ -17,18 +18,31 @@ export function overviewScope(scope) {
   return OVERVIEW_SCOPES.includes(scope) ? scope : "live";
 }
 
-// Whether the overview sends this project's items and runs. Only the scope a
-// page shows needs them; on V (2026-10-30) 460 of 480 projects were outside it.
-export function overviewDetails(instance, scope, now = Date.now()) {
+// How many finished cards of projects it does not load the 全部 scope still
+// lists, newest first, besides every card finished today.
+export const ALL_SCOPE_DONE_CARDS = 200;
+
+// Whether the overview sends this project's items and runs: projects that are
+// moving (在产, 已暂停), and the one project a page has opened. A delivered or
+// shelved project is sent as a tally; on V (2026-11-04) sending them in detail
+// made 已交付 13 MB for 424 projects and 14,671 cards.
+export function overviewDetails(instance, scope, now = Date.now(), project = null) {
   if (instance.status === "archived") return false;
+  if (project && instance.id === project) return true;
   const wanted = overviewScope(scope);
-  return wanted === "all" || projectScope(instance, now) === wanted;
+  const actual = projectScope(instance, now);
+  if (actual !== "live" && actual !== "paused") return false;
+  return wanted === "all" || actual === wanted;
 }
 
-export function buildOverview({ scope = "live", instances, cards, releases, operationsFor, skippedFor, now = Date.now() }) {
+// tallyFor(instance, cards, stages) gives the tally of a project not sent in
+// detail. Without it the instance passed in must carry its items and runs.
+// `queue` is the 需要你 queue (needsYouQueue), which decides a task's kind as
+// it does on the pages.
+export function buildOverview({ scope = "live", project = null, instances, cards, releases, operationsFor, skippedFor, tallyFor, queue = null, now = Date.now() }) {
   const wanted = overviewScope(scope);
   const visible = instances.filter((instance) => instance.status !== "archived");
-  const detailed = new Set(visible.filter((instance) => overviewDetails(instance, wanted, now)).map((instance) => instance.id));
+  const detailed = new Set(visible.filter((instance) => overviewDetails(instance, wanted, now, project)).map((instance) => instance.id));
   const usedShas = new Set(visible.filter((instance) => detailed.has(instance.id)).map((instance) => instance.workflowSha256));
   const latestShas = latestReleaseShas(releases);
   const stagesBySha = new Map(releases.map((release) => [release.workflowSha256, release.manifest?.spec?.stages]));
@@ -38,27 +52,60 @@ export function buildOverview({ scope = "live", instances, cards, releases, oper
   const cardCounts = { live: 0, paused: 0, delivered: 0, shelved: 0, all: 0 };
   const agentDoneToday = {};
   const workStartedAt = new Map();
+  const cardsOf = new Map();
   for (const card of cards) {
     const state = scopeOf.get(cardInstanceId(card));
     if (!state) continue;
+    if (!cardsOf.has(cardInstanceId(card))) cardsOf.set(cardInstanceId(card), []);
+    cardsOf.get(cardInstanceId(card)).push(card);
     const started = cardStartedAt(card);
     if (started && !(workStartedAt.get(cardInstanceId(card)) <= started)) workStartedAt.set(cardInstanceId(card), started);
     cardCounts[state] += 1;
     cardCounts.all += 1;
     if (card.status === "done" && card.agentId && sameDay(card.updatedAt, now)) agentDoneToday[card.agentId] = (agentDoneToday[card.agentId] ?? 0) + 1;
   }
+  const tally = (instance) => {
+    const stages = stagesBySha.get(instance.workflowSha256) ?? [];
+    const own = cardsOf.get(instance.id) ?? [];
+    return tallyFor ? tallyFor(instance, own, stages) : projectTally(stages, instance, own, now, queue);
+  };
+  const shown = cardsShown(cards, detailed, scopeOf, wanted, now);
   return {
     scope: wanted,
+    ...(project ? { project } : {}),
     cardCounts,
     agentDoneToday,
     instances: visible.map((instance) => detailed.has(instance.id)
       ? leanProject(instance, operationsFor?.(instance.id) ?? [], skippedFor?.(instance.id) ?? [], workStartedAt.get(instance.id), stagesBySha.get(instance.workflowSha256))
-      : projectSummary(instance, workStartedAt.get(instance.id))),
-    cards: cards.filter((card) => detailed.has(cardInstanceId(card))).map(leanCard),
+      : { ...projectSummary(instance, workStartedAt.get(instance.id)), tally: tally(instance) }),
+    cards: shown.cards.map(leanCard),
+    // Finished cards of undetailed projects the 全部 scope counted but did not send.
+    ...(wanted === "all" ? { omittedDoneCards: shown.omittedDone } : {}),
     workflows: releases.map((release) => usedShas.has(release.workflowSha256) || latestShas.has(release.workflowSha256)
       ? leanRelease(release)
       : releaseSummary(release)),
   };
+}
+
+// The cards of detailed projects. Live Board's 全部 lists cards rather than
+// projects, so that scope adds the cards still open in the other projects, the
+// ones finished today and the newest finished; the rest it only counts.
+function cardsShown(cards, detailed, scopeOf, scope, now) {
+  const own = (card) => detailed.has(cardInstanceId(card));
+  if (scope !== "all") return { cards: cards.filter(own), omittedDone: 0 };
+  const shown = [];
+  const done = [];
+  for (const card of cards) {
+    if (!scopeOf.has(cardInstanceId(card))) continue;
+    if (own(card) || card.status !== "done" || isToday(card.updatedAt, now)) shown.push(card);
+    else done.push(card);
+  }
+  done.sort((left, right) => cardTime(right.updatedAt) - cardTime(left.updatedAt));
+  return { cards: [...shown, ...done.slice(0, ALL_SCOPE_DONE_CARDS)], omittedDone: Math.max(0, done.length - ALL_SCOPE_DONE_CARDS) };
+}
+
+function cardTime(value) {
+  return typeof value === "number" ? value : Date.parse(value ?? 0) || 0;
 }
 
 export function leanCard(card) {

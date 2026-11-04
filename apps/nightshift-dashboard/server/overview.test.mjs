@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildOverview, leanCard, leanRun, overviewDetails } from "./overview.mjs";
+import { ALL_SCOPE_DONE_CARDS, buildOverview, leanCard, leanRun, overviewDetails } from "./overview.mjs";
+import { needsYouQueue } from "../client/src/attention.js";
 
 const NOW = Date.parse("2026-09-28T10:00:00Z");
 const daysAgo = (days) => new Date(NOW - days * 86_400_000).toISOString();
@@ -66,8 +67,9 @@ test("workflows carry stage structure for releases in use or latest, and never t
 
 test("other scopes and an unknown scope", () => {
   const { instances, cards, releases } = fixture();
-  assert.deepEqual(buildOverview({ scope: "shelved", instances, cards, releases, now: NOW }).cards.map((card) => card.id), ["c-old"]);
-  assert.equal(buildOverview({ scope: "all", instances, cards, releases, now: NOW }).cards.length, 2);
+  assert.deepEqual(buildOverview({ scope: "shelved", instances, cards, releases, now: NOW }).cards.map((card) => card.id), [], "a shelved project is a tally");
+  assert.deepEqual(buildOverview({ scope: "shelved", project: "OLD", instances, cards, releases, now: NOW }).cards.map((card) => card.id), ["c-old"], "until a page opens it");
+  assert.equal(buildOverview({ scope: "all", instances, cards, releases, now: NOW }).cards.length, 2, "全部 keeps the open cards of every project");
   assert.equal(buildOverview({ scope: "everything", instances, cards, releases, now: NOW }).scope, "live");
 });
 
@@ -105,7 +107,59 @@ test("only projects in the shown scope need their items and runs loaded", () => 
   const { instances } = fixture();
   const loaded = (scope) => instances.filter((instance) => overviewDetails(instance, scope, NOW)).map((instance) => instance.id);
   assert.deepEqual(loaded("live"), ["LIVE"]);
-  assert.deepEqual(loaded("shelved"), ["OLD"]);
-  assert.deepEqual(loaded("all"), ["LIVE", "OLD"], "archived projects are never loaded");
+  assert.deepEqual(loaded("shelved"), [], "shelved and delivered projects go out as tallies");
+  assert.deepEqual(loaded("all"), ["LIVE"], "archived projects are never loaded");
+  assert.deepEqual(instances.filter((instance) => overviewDetails(instance, "shelved", NOW, "OLD")).map((instance) => instance.id), ["OLD"], "the opened project is loaded");
+  assert.deepEqual(instances.filter((instance) => overviewDetails(instance, "all", NOW, "GONE")).map((instance) => instance.id), ["LIVE"], "never an archived one");
   assert.deepEqual(loaded("everything"), ["LIVE"], "an unknown scope reads as live, as buildOverview does");
+});
+
+test("a project sent as a tally draws like the same project in detail, in a fraction of the size", () => {
+  const { releases } = fixture();
+  const items = Array.from({ length: 80 }, (_, index) => ({ id: `i${index}`, title: `条目 ${index}`, route: "SCENE_EDIT", brief: bigBrief }));
+  const done = {
+    id: "DONE", name: "交付", status: "done", updatedAt: daysAgo(0), workflowSha256: "a".repeat(64), inputs: { targetCount: 80, authorizationScope: { paidProduction: true } }, approvals: [],
+    contentItems: items, stageRuns: [],
+    contentItemRuns: items.map((item) => ({ stageId: "brief", contentItemId: item.id, attempt: 1, cardId: `c-${item.id}`, status: "done", updatedAt: daysAgo(0) })),
+  };
+  const cards = items.map((item) => ({ id: `c-${item.id}`, title: `卡 ${item.id}`, status: "done", agentId: "makaron", updatedAt: NOW - 60_000, createdAt: 1, labels: ["instance:DONE", "stage:brief"], metadata: { automation: { instanceId: "DONE", stageId: "brief", contentItemId: item.id } } }));
+  const tallied = buildOverview({ scope: "delivered", instances: [done], cards, releases, now: NOW });
+  const opened = buildOverview({ scope: "delivered", project: "DONE", instances: [done], cards, releases, now: NOW });
+  assert.equal(tallied.cards.length, 0);
+  assert.deepEqual(tallied.instances[0].tally, { progress: { expected: 80, estimated: false, splitting: false }, stages: { brief: { planned: 80, counts: { done: 80 }, today: 80 } } });
+  assert.equal(opened.instances[0].detail, true);
+  assert.equal(opened.cards.length, 80);
+  assert.ok(JSON.stringify(tallied).length * 10 < JSON.stringify(opened).length, `${JSON.stringify(tallied).length} vs ${JSON.stringify(opened).length}`);
+});
+
+test("全部 sends the open and today's cards of undetailed projects, the newest finished ones, and counts the rest", () => {
+  const { releases } = fixture();
+  const old = { id: "OLD", name: "旧", status: "done", updatedAt: daysAgo(5), workflowSha256: "a".repeat(64), contentItems: [], contentItemRuns: [], stageRuns: [] };
+  const card = (id, status, updatedAt) => ({ id, status, updatedAt, labels: ["instance:OLD"], metadata: { automation: { instanceId: "OLD" } } });
+  const cards = [
+    ...Array.from({ length: ALL_SCOPE_DONE_CARDS + 5 }, (_, index) => card(`d${index}`, "done", NOW - 2 * 86_400_000 - index * 1000)),
+    card("open", "blocked", NOW - 9 * 86_400_000),
+    card("today", "done", NOW - 60_000),
+    { id: "native", status: "done", updatedAt: NOW, labels: [] },
+  ];
+  const overview = buildOverview({ scope: "all", instances: [old], cards, releases, now: NOW });
+  const ids = overview.cards.map((entry) => entry.id);
+  assert.ok(ids.includes("open") && ids.includes("today") && ids.includes("d0"));
+  assert.ok(!ids.includes(`d${ALL_SCOPE_DONE_CARDS}`), "older finished cards are only counted");
+  assert.ok(!ids.includes("native"), "cards outside Night Shift projects stay out, as before");
+  assert.equal(overview.cards.length, ALL_SCOPE_DONE_CARDS + 2);
+  assert.equal(overview.omittedDoneCards, 5);
+  assert.equal("omittedDoneCards" in buildOverview({ scope: "delivered", instances: [old], cards, releases, now: NOW }), false);
+});
+
+test("a tally judges a blocked task by the 需要你 queue, as the pages do", () => {
+  const { releases } = fixture();
+  const done = { id: "DONE", name: "交付", status: "done", updatedAt: daysAgo(1), workflowSha256: "a".repeat(64), inputs: { authorizationScope: { paidProduction: true } }, approvals: [], stageRuns: [],
+    contentItems: [{ id: "i1" }, { id: "i2" }],
+    contentItemRuns: ["i1", "i2"].map((id) => ({ stageId: "brief", contentItemId: id, attempt: 1, cardId: `c-${id}`, status: "blocked" })) };
+  const cards = ["i1", "i2"].map((id) => ({ id: `c-${id}`, status: "blocked", labels: ["instance:DONE", "stage:brief"], metadata: { automation: { instanceId: "DONE", stageId: "brief", contentItemId: id } } }));
+  const queue = needsYouQueue({ items: [{ cardId: "c-i1", kind: "decision", problem: "选一个" }] });
+  const counts = (options) => buildOverview({ scope: "delivered", instances: [done], cards, releases, now: NOW, ...options }).instances[0].tally.stages.brief.counts;
+  assert.deepEqual(counts({ queue }), { "needs-you": 1, healing: 1 }, "only the queued card needs a person");
+  assert.deepEqual(counts({}), { "needs-you": 2 }, "without a queue the board judges blocked cards itself");
 });
