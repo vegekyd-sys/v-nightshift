@@ -29,6 +29,14 @@ export class NightShiftStore {
         published_at TEXT NOT NULL,
         UNIQUE(workflow_id, version)
       );
+      -- A retired release is gone from the Workflow list and takes no new
+      -- project; the projects that ran on it keep it.
+      CREATE TABLE IF NOT EXISTS workflow_retirements (
+        workflow_sha TEXT PRIMARY KEY REFERENCES workflow_releases(workflow_sha),
+        actor TEXT NOT NULL,
+        reason TEXT,
+        retired_at TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS workflow_calls (
         id TEXT PRIMARY KEY, parent_id TEXT NOT NULL REFERENCES instances(id),
         child_id TEXT NOT NULL UNIQUE, controller_card_id TEXT NOT NULL,
@@ -499,16 +507,31 @@ export class NightShiftStore {
 
   getRelease(workflowSha) {
     const row = this.db
-      .prepare("SELECT * FROM workflow_releases WHERE workflow_sha = ?")
+      .prepare(`SELECT r.*, t.actor AS retired_by, t.reason AS retire_reason, t.retired_at FROM workflow_releases r
+        LEFT JOIN workflow_retirements t ON t.workflow_sha = r.workflow_sha WHERE r.workflow_sha = ?`)
       .get(workflowSha);
     return row ? releaseRow(row) : null;
   }
 
-  listReleases() {
+  listReleases({ includeRetired = true } = {}) {
     return this.db
-      .prepare("SELECT * FROM workflow_releases ORDER BY published_at DESC")
+      .prepare(`SELECT r.*, t.actor AS retired_by, t.reason AS retire_reason, t.retired_at FROM workflow_releases r
+        LEFT JOIN workflow_retirements t ON t.workflow_sha = r.workflow_sha
+        ${includeRetired ? "" : "WHERE t.workflow_sha IS NULL"} ORDER BY r.published_at DESC`)
       .all()
       .map(releaseRow);
+  }
+
+  retireRelease({ workflowSha, actor, reason = null }, now = new Date()) {
+    if (!workflowSha || !actor) throw new Error("retireRelease needs workflowSha and actor");
+    this.db.prepare("INSERT OR IGNORE INTO workflow_retirements(workflow_sha, actor, reason, retired_at) VALUES (?, ?, ?, ?)")
+      .run(workflowSha, actor, reason, now.toISOString());
+    return this.getRelease(workflowSha);
+  }
+
+  restoreRelease(workflowSha) {
+    this.db.prepare("DELETE FROM workflow_retirements WHERE workflow_sha = ?").run(workflowSha);
+    return this.getRelease(workflowSha);
   }
 
   createInstance(instance, now = new Date()) {
@@ -1194,6 +1217,7 @@ function releaseRow(row) {
     sourceMarkdown: row.source_yaml,
     manifest: JSON.parse(row.manifest_json),
     publishedAt: row.published_at,
+    retired: row.retired_at ? { actor: row.retired_by, reason: row.retire_reason, retiredAt: row.retired_at } : null,
   };
 }
 

@@ -73,6 +73,7 @@ export function validateCallReleases(release, store, depth = 0) {
     if (stage.actor !== "workflow") continue;
     const child = store.getRelease(stage.call.workflow)?.manifest;
     if (!child) throw new Error(`Unknown pinned called Workflow ${stage.call.workflow}`);
+    if (depth === 0 && store.getRelease(stage.call.workflow)?.retired) throw new Error(`Called Workflow ${stage.call.workflow} is retired`);
     if (!child.spec.outputs || !Object.keys(child.spec.outputs).length) throw new Error("Called Workflow must declare spec.outputs");
     for (const name of stage.outputs ?? []) if (!Object.hasOwn(child.spec.outputs, name)) throw new Error(`Called Workflow does not export ${name}`);
     for (const condition of [stage.repeat?.until, stage.repeat?.while].filter(Boolean)) {

@@ -245,8 +245,8 @@ export function App() {
         {data?.stale && <div className="stale-note" role="status">正在更新</div>}
         <GatewayRestartBanner state={data?.gatewayRestart} />
         {active === "board" && <LiveBoard onScopeChange={requestScope} data={data} query={query} setQuery={setQuery} selected={selectedForDecision} setSelected={setSelected} refreshing={refreshing} refresh={refresh} decide={decide} retry={retry} resolve={resolveRequest} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} />}
-        {active === "workflows" && <WorkflowStudio onScopeChange={requestScope} data={data} refresh={refresh} initialProjectId={workflowProjectId} initialWorkflowId={initialLocation.workflow} setSelected={setSelected} selected={selectedForDecision} decide={decide} approveMany={approveMany} retry={retry} resolve={resolveRequest} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onNewProject={(release) => setProjectReleaseSha(release?.workflowSha256 ?? data?.workflows?.[0]?.workflowSha256)} />}
-        {active === "projects" && <Projects onScopeChange={requestScope} data={data} refresh={refresh} onNewProject={() => setProjectReleaseSha(data?.workflows?.[0]?.workflowSha256)} onOpenProject={(projectId) => { setWorkflowProjectId(projectId); updateDashboardLocation({ project: projectId, view: "workflows" }); setActive("workflows"); }} />}
+        {active === "workflows" && <WorkflowStudio onScopeChange={requestScope} data={data} refresh={refresh} initialProjectId={workflowProjectId} initialWorkflowId={initialLocation.workflow} setSelected={setSelected} selected={selectedForDecision} decide={decide} approveMany={approveMany} retry={retry} resolve={resolveRequest} delivery={delivery} deliveryState={deliveryState} deliveryError={deliveryError} handoff={handoff} handoffState={handoffState} handoffError={handoffError} onNewProject={(release) => setProjectReleaseSha(release?.workflowSha256 ?? data?.workflows?.find((entry) => !entry.retired)?.workflowSha256)} />}
+        {active === "projects" && <Projects onScopeChange={requestScope} data={data} refresh={refresh} onNewProject={() => setProjectReleaseSha(data?.workflows?.find((entry) => !entry.retired)?.workflowSha256)} onOpenProject={(projectId) => { setWorkflowProjectId(projectId); updateDashboardLocation({ project: projectId, view: "workflows" }); setActive("workflows"); }} />}
         {active === "agents" && <Agents onScopeChange={requestScope} data={data} />}
       </main>
       {projectReleaseSha && <ProjectEditor releases={data?.workflows ?? []} initialReleaseSha={projectReleaseSha} onClose={() => setProjectReleaseSha(null)} onCreated={(result) => { setProjectReleaseSha(null); setActive("projects"); if (result.initialScheduleError) setError(`项目已创建，首次调度将在下一轮重试：${result.initialScheduleError}`); refresh(true).catch((reason) => setError(reason.message)); }} />}
@@ -999,7 +999,7 @@ function ProjectEditor({ releases, initialReleaseSha, onClose, onCreated }) {
       <header><div><span>New project</span><h2>把客户工作放上生产线</h2><p>项目会锁定所选 Workflow 版本；创建后立即进入第一个阶段。</p></div><button type="button" aria-label="关闭新建项目" onClick={onClose}><X size={18} /></button></header>
       <div className="project-form-body">
         <section className="project-form-main">
-          <label className="project-field"><span>Workflow 版本</span><select value={releaseSha} onChange={(event) => chooseRelease(event.target.value)}>{releases.map((entry) => <option key={entry.workflowSha256} value={entry.workflowSha256}>{entry.name} · {entry.version}</option>)}</select><small>项目开始后会固定在 SHA {release.workflowSha256.slice(0, 12)}</small></label>
+          <label className="project-field"><span>Workflow 版本</span><select value={releaseSha} onChange={(event) => chooseRelease(event.target.value)}>{releases.filter((entry) => !entry.retired || entry.workflowSha256 === releaseSha).map((entry) => <option key={entry.workflowSha256} value={entry.workflowSha256}>{entry.name} · {entry.version}</option>)}</select><small>项目开始后会固定在 SHA {release.workflowSha256.slice(0, 12)}</small></label>
           <div className="project-form-grid"><label className="project-field"><span>项目名称</span><input autoFocus value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} placeholder="例如：振丰｜8 月内容生产" required /></label><label className="project-field"><span>Project ID</span><input className="mono" maxLength={31} value={form.id} onChange={(event) => setForm((current) => ({ ...current, id: event.target.value }))} required /><small>最多 31 个英文、数字、点、下划线或连字符</small></label></div>
           <div className="project-section-head"><strong>Workflow 输入</strong><span>由 workflow.md 自动生成</span></div>
           <div className="project-inputs">{Object.entries(contracts).map(([name, contract]) => <ProjectInput key={name} name={name} contract={contract} value={form.inputs[name]} onChange={(value) => updateInput(name, value)} />)}</div>
@@ -1274,9 +1274,12 @@ function defaultStage(number) {
   };
 }
 
+// A retired release takes no new project and leaves the Workflow list; the
+// projects that ran on it still find it by SHA in data.workflows.
 function groupWorkflowReleases(releases) {
   const groups = new Map();
   for (const release of releases) {
+    if (release.retired) continue;
     const current = groups.get(release.workflowId) ?? { id: release.workflowId, name: release.name, releases: [] };
     current.releases.push(release);
     groups.set(release.workflowId, current);

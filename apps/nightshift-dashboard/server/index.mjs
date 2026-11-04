@@ -416,15 +416,26 @@ async function handleApi(request, response, url) {
   }
   if (request.method === "GET" && url.pathname === "/api/workflows") {
     json(response, 200, {
-      workflows: store.listReleases().map((release) => ({
+      workflows: store.listReleases({ includeRetired: url.searchParams.get("includeRetired") === "1" }).map((release) => ({
         name: release.name,
         publishedAt: release.publishedAt,
         version: release.version,
         workflowId: release.workflowId,
         workflowSha256: release.workflowSha256,
+        retired: release.retired,
         links: workflowLinks(release),
       })),
     });
+    return;
+  }
+  const workflowRetireMatch = url.pathname.match(/^\/api\/workflows\/(retire|restore)$/);
+  if (request.method === "POST" && workflowRetireMatch) {
+    const body = await bodyJson(request);
+    const actor = operatorIdentity(request, body);
+    const result = await serializedOperation(() => workflowRetireMatch[1] === "retire"
+      ? runtime.retireWorkflow({ workflow: body.workflow, actor, reason: body.reason ?? null })
+      : runtime.restoreWorkflow({ workflow: body.workflow, actor }));
+    json(response, 200, result);
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/instances") {
@@ -534,6 +545,19 @@ async function handleApi(request, response, url) {
   }
   if (request.method === "GET" && url.pathname === "/api/cards") {
     const status = url.searchParams.get("status");
+    // One project's cards (its Workflow calls included), read from the
+    // Gateway by ID. The whole board is about 250 MB on V and V asked for it
+    // 139 times in two weeks (2026-11-04) to look at one project.
+    const project = url.searchParams.get("project");
+    if (project) {
+      if (!store.getInstance(project)) {
+        json(response, 404, { error: "Project not found" });
+        return;
+      }
+      const cards = await refreshCards({ cardIds: instanceCardIds(store, project) });
+      json(response, 200, { cards: (status ? cards.filter((card) => card.status === status) : cards).map(cardLinker()) });
+      return;
+    }
     const includeArchived = url.searchParams.get("includeArchived") === "1";
     const cards = url.searchParams.get("refresh") === "1" ? await refreshVisibleCards({ includeArchived }) : cardCache;
     const instances = store.listInstances().filter((instance) => instance.status !== "archived");
@@ -679,6 +703,7 @@ async function handleApi(request, response, url) {
     const body = await bodyJson(request);
     const release = store.getRelease(body.workflowSha256);
     try {
+      refuseRetired(release);
       validateProjectRequest(release?.manifest, body);
       const preflight = await preflightProjectSkills(release.manifest, body);
       json(response, preflight.ok ? 200 : 422, preflight.ok ? preflight : { ...preflight, error: preflightError(preflight) });
@@ -690,6 +715,7 @@ async function handleApi(request, response, url) {
   if (request.method === "POST" && url.pathname === "/api/instances") {
     const body = await bodyJson(request);
     const release = store.getRelease(body.workflowSha256);
+    refuseRetired(release);
     validateProjectRequest(release?.manifest, body);
     const preflight = await preflightProjectSkills(release.manifest, body);
     if (!preflight.ok) {
@@ -1174,6 +1200,11 @@ function runDailyRetention() {
       console.log(`Night Shift storage retention removed ${result.files} files (${(result.bytes / 2 ** 30).toFixed(2)} GiB) from ${result.projects.length} finished projects, and ${result.finals.finals} delivered finals held by the CDN (${(result.finals.bytes / 2 ** 30).toFixed(2)} GiB, ${result.finals.kept} kept)${result.errors ? `; ${result.errors} failed: ${result.projects.filter((project) => project.error).map((project) => `${project.id} ${project.error}`).join("; ")}` : ""}`);
     })
     .catch((error) => console.error(`Night Shift storage retention failed: ${error.message}`));
+}
+
+function refuseRetired(release) {
+  if (!release?.retired) return;
+  throw Object.assign(new Error(`${release.workflowId} ${release.version} is retired (${release.retired.reason ?? "no reason"}); restore it or pick another release`), { statusCode: 409 });
 }
 
 function operatorIdentity(request, body) {

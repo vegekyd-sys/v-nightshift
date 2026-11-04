@@ -83,7 +83,62 @@ export class NightShiftRuntime {
     const workflow = parseWorkflow(sourceYaml);
     const release = compileWorkflow(workflow);
     validateCallReleases(release, this.store);
+    // On V on 2026-10-25 V deleted a release row with sqlite3 to publish new
+    // content under the same version.
+    const sameVersion = this.store.listReleases().find((entry) => entry.workflowId === release.metadata.id &&
+      entry.version === release.metadata.version && entry.workflowSha256 !== release.metadata.workflowSha256);
+    if (sameVersion) {
+      throw Object.assign(new Error(`${release.metadata.id} ${release.metadata.version} is already published with other content (${sameVersion.workflowSha256.slice(0, 12)}); raise metadata.version`), { statusCode: 409 });
+    }
     return this.store.saveRelease(release, sourceYaml);
+  }
+
+  // Take a Workflow, or one version of it, off the list: no new project starts
+  // on it. Refused while a project that has not finished runs on it, or while a
+  // Workflow still in use calls it; restore puts it back.
+  retireWorkflow({ workflow, actor, reason }) {
+    if (!actor) throw Object.assign(new Error("actor is required"), { statusCode: 400 });
+    if (!reason) throw Object.assign(new Error("reason is required"), { statusCode: 400 });
+    const releases = this.resolveWorkflowReleases(workflow).filter((release) => !release.retired);
+    const shas = new Set(releases.map((release) => release.workflowSha256));
+    const unfinished = this.store.listInstances({ includeInternal: true }).filter((instance) => shas.has(instance.workflowSha256) && !["done", "archived"].includes(instance.status));
+    const callers = this.store.listReleases({ includeRetired: false })
+      .filter((release) => !shas.has(release.workflowSha256) &&
+        (release.manifest.spec?.stages ?? []).some((stage) => stage.actor === "workflow" && shas.has(stage.call?.workflow)));
+    if (unfinished.length || callers.length) {
+      const why = [
+        ...(unfinished.length ? [`projects not finished: ${unfinished.map((instance) => `${instance.id} (${instance.status})`).join(", ")}`] : []),
+        ...(callers.length ? [`called by: ${[...new Set(callers.map((release) => `${release.workflowId}@${release.version}`))].join(", ")}`] : []),
+      ];
+      throw Object.assign(new Error(`${workflow} is still in use; ${why.join("; ")}`), { statusCode: 409, unfinished: unfinished.map((instance) => instance.id) });
+    }
+    for (const release of releases) {
+      this.store.retireRelease({ workflowSha: release.workflowSha256, actor, reason });
+      this.store.appendEvent({ type: "workflow.retired", payload: { workflowSha256: release.workflowSha256, workflowId: release.workflowId, version: release.version, actor, reason } });
+    }
+    return { retired: releases.map(releaseRef) };
+  }
+
+  restoreWorkflow({ workflow, actor }) {
+    if (!actor) throw Object.assign(new Error("actor is required"), { statusCode: 400 });
+    const releases = this.resolveWorkflowReleases(workflow).filter((release) => release.retired);
+    for (const release of releases) {
+      this.store.restoreRelease(release.workflowSha256);
+      this.store.appendEvent({ type: "workflow.restored", payload: { workflowSha256: release.workflowSha256, workflowId: release.workflowId, version: release.version, actor } });
+    }
+    return { restored: releases.map(releaseRef) };
+  }
+
+  // "<id>", "<id>@<version>" or a release SHA, retired releases included.
+  resolveWorkflowReleases(workflow) {
+    const text = String(workflow ?? "").trim();
+    const split = text.lastIndexOf("@");
+    const id = split > 0 ? text.slice(0, split) : text;
+    const version = split > 0 ? text.slice(split + 1) : null;
+    const releases = this.store.listReleases().filter((release) => release.workflowSha256 === text ||
+      (release.workflowId === id && (!version || release.version === version)));
+    if (!text || releases.length === 0) throw Object.assign(new Error(`No Workflow release matches ${text || "(empty)"}`), { statusCode: 404 });
+    return releases;
   }
 
   startInstance(instance) {
@@ -2098,4 +2153,8 @@ function downstreamStageIds(release, failedStageId) {
     }
   }
   return downstream;
+}
+
+function releaseRef(release) {
+  return { workflowId: release.workflowId, version: release.version, workflowSha256: release.workflowSha256 };
 }
