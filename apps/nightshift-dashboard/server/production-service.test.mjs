@@ -57,3 +57,18 @@ test("a failed scheduler pass arms its own retry", async () => {
   assert.match(server, /function scheduleSchedulerRetry\(\)[\s\S]{0,300}enqueueAfter\("scheduler\.retry"/);
   assert.match(server, /onError: \(error\) => \{[\s\S]{0,200}scheduleSchedulerRetry\(\)/);
 });
+
+// V, 2026-11-09: a host drop-in kept Night Shift on /opt/openclaw-2026.9.1-v, a
+// stock 9.1 install, while the Gateway had run the patched core since 09-15.
+test("Night Shift loads the Gateway's own OpenClaw and retires the host drop-in that overrode it", async () => {
+  const unit = await readFile(new URL("../../../systemd/nightshift-workboard.service", import.meta.url), "utf8");
+  assert.match(unit, /^Environment=NIGHTSHIFT_OPENCLAW_ENTRY=\/opt\/openclaw-experiments\/db91-release-v2026\.9\.1-db91\.6\/core\/dist\/index\.js$/m);
+  assert.doesNotMatch(unit, /^Environment=.*(openclaw-2026\.7\.1|openclaw-2026\.9\.1-v)/m);
+  const script = await readFile(new URL("../../../scripts/manage-nightshift-production.sh", import.meta.url), "utf8");
+  assert.match(script, /^legacy_entry_dropin=\/etc\/systemd\/system\/nightshift-workboard\.service\.d\/91-openclaw91\.conf$/m);
+  const deploy = script.slice(script.indexOf('install -o root -g root -m 644 "$release/systemd/nightshift-workboard.service"'));
+  assert.match(deploy.slice(0, 600), /cp -a "\$legacy_entry_dropin" "\$backup\/legacy-entry-dropin\.before"[\s\S]*rm -f "\$legacy_entry_dropin"/);
+  assert.ok(deploy.indexOf('rm -f "$legacy_entry_dropin"') < deploy.indexOf("systemctl daemon-reload"), "the drop-in is gone before the reload");
+  const rollback = script.slice(script.indexOf("  rollback)"));
+  assert.match(rollback, /cp -a "\$backup\/legacy-entry-dropin\.before" "\$legacy_entry_dropin"/);
+});
