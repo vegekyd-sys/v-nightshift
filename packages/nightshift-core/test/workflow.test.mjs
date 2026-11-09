@@ -221,6 +221,9 @@ test("paid production approval is isolated per content item", async () => {
   assert.match(approved[0].card.notes, /\{"version":1/);
   assert.deepEqual(approved[0].card.automation.sideEffects, ["paid-production"]);
   assert.match(approved[0].card.notes, /External-operation gate/);
+  // V, 2026-11-09: "a stable SHA-256 of the exact external request" alone sent card agents
+  // grepping every instance (25 GB) for another card's hashing convention.
+  assert.match(approved[0].card.notes, /You define that hash: .*do not search other instances, logs or source code for a convention\./u);
 });
 
 test("SCENE_EDIT production requires temporal duplicate evidence", async () => {

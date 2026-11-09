@@ -51,6 +51,38 @@ test("nightshiftctl prints only the API result, with no runtime warning on stder
   }
 });
 
+// V, 2026-11-09: an agent's exec environment carries the Gateway's egress proxy
+// (HTTP_PROXY/HTTPS_PROXY with NODE_USE_ENV_PROXY=1, and OpenClaw clears
+// NO_PROXY on purpose). Node's fetch then sent every call to the loopback engine
+// through the proxy, which refuses loopback: every Night Shift card's
+// `operations reserve` printed "fetch failed". Agents went looking for the right
+// NIGHTSHIFT_URL with `grep -r` over ~/.openclaw (37 GB read, Gateway stalls).
+test("nightshiftctl reaches a loopback engine even when the environment routes HTTP through a proxy", async () => {
+  const server = createServer((request, response) => {
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify(request.url === "/api/health" ? { ok: true } : { error: "not found" }));
+  });
+  // A proxy that refuses everything, like the egress proxy does for loopback targets.
+  const proxied = [];
+  const proxy = createServer((request, response) => { proxied.push(request.url); response.statusCode = 403; response.end("loopback denied"); });
+  proxy.on("connect", (request, socket) => { proxied.push(request.url); socket.end("HTTP/1.1 403 Forbidden\r\n\r\n"); });
+  await Promise.all([server, proxy].map((s) => new Promise((resolveListen) => s.listen(0, "127.0.0.1", resolveListen))));
+  try {
+    const { NODE_OPTIONS, NODE_NO_WARNINGS, NO_PROXY, no_proxy, ...env } = process.env;
+    const proxyUrl = `http://user:pass@127.0.0.1:${proxy.address().port}`;
+    const { stdout, stderr } = await execFileAsync(process.execPath, ["scripts/nightshiftctl.mjs", "health"], {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...env, NIGHTSHIFT_URL: `http://127.0.0.1:${server.address().port}`, HTTP_PROXY: proxyUrl, HTTPS_PROXY: proxyUrl, http_proxy: proxyUrl, NODE_USE_ENV_PROXY: "1" },
+    });
+    assert.deepEqual(JSON.parse(stdout), { ok: true });
+    assert.deepEqual(proxied, [], "the loopback call went through the proxy");
+    assert.equal(stderr, "");
+  } finally {
+    await Promise.all([server, proxy].map((s) => new Promise((resolveClose) => s.close(resolveClose))));
+  }
+});
+
 // V reports progress from `projects monitor`. A card a fresh attempt replaced
 // stays blocked on the native board; counting it as blocked told V five videos
 // were stuck in a project that had delivered all 24 (DL-1009-02, 2026-10-10).
