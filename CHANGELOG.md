@@ -1,5 +1,6 @@
 # Changelog
 
+- #42 fix(deploy): 夜班改用 Gateway 自己跑的 core OpenClaw（`NIGHTSHIFT_OPENCLAW_ENTRY`），部署时撤掉把入口指向旧 `/opt/openclaw-2026.9.1-v` 的主机 drop-in `91-openclaw91.conf`（备份可回滚）；配合 platform #586，发飞书通知的 `message send` 不再整库复制状态库、超时后留下 0.6 GB 副本。11/09 21:19 上 V，Gateway 进程未变。
 - #41 fix(runtime): 卡片还在跑时，转录最后一条是 `stop` 也先问 Gateway 这个 run 是否结束；/vds（Codex）把工具之间的过程话写成 `stop`，之前会被当成回合结束、判缺交接物并 block（11/09 切 /vds 后 3 张：BH-PT-40、一个 plan-route、一张 publish）。
 - #40 perf(board): 已交付、搁置的项目改为发服务器算好的汇总，点开项目才取明细；「已交付」响应在 V 上从 13 MB（gzip 2.5 MB）降到 0.51 MB（gzip 50 KB），手机上不再先显示 0/162；Live Board「全部」只列未完成、今天完成和最近 200 张已完成卡，其余计数。
 - #39 fix(cards): 父卡依赖链接满 50 个时，子卡去掉这张父卡再建（记在 unlinkedParents），不再每轮被拒；80 条的项目不再卡在第 50 条，被拒后也不再触发约 14,700 张卡的恢复读取。
