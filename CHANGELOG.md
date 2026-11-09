@@ -1,5 +1,6 @@
 # Changelog
 
+- #41 fix(runtime): 卡片还在跑时，转录最后一条是 `stop` 也先问 Gateway 这个 run 是否结束；/vds（Codex）把工具之间的过程话写成 `stop`，之前会被当成回合结束、判缺交接物并 block（11/09 切 /vds 后 3 张：BH-PT-40、一个 plan-route、一张 publish）。
 - #40 perf(board): 已交付、搁置的项目改为发服务器算好的汇总，点开项目才取明细；「已交付」响应在 V 上从 13 MB（gzip 2.5 MB）降到 0.51 MB（gzip 50 KB），手机上不再先显示 0/162；Live Board「全部」只列未完成、今天完成和最近 200 张已完成卡，其余计数。
 - #39 fix(cards): 父卡依赖链接满 50 个时，子卡去掉这张父卡再建（记在 unlinkedParents），不再每轮被拒；80 条的项目不再卡在第 50 条，被拒后也不再触发约 14,700 张卡的恢复读取。
 - #38 feat(cli): 看板能做的操作都有了命令，V 不再需要 curl、sqlite3 或手改文件。新增 `workflows retire|restore|source`（退役后不在列表、不能新建项目，有未完成项目或被调用时拒绝；同版本号换内容发布改为报错并提示升版本）、`projects skip-item|dispatch|retry-dispatch|tick|handoff|deliverables|artifact`、`cards get|takeover|human-complete|approve-all`、`nightshiftctl help`；`projects monitor` 与卡片决定只读本项目或这张卡（原来每次读整板约 250 MB）。
