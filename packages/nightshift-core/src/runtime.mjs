@@ -529,8 +529,14 @@ export class NightShiftRuntime {
     // not run. On V (2026-09-29 21:05) a run the Gateway recorded as a failed
     // provider request ended its transcript on "incomplete or malformed tool
     // call", was classified as the Agent's own error and reached a person.
+    //
+    // A "stop" is asked about too. The Codex harness (/vds, V's default since
+    // 2026-11-09) writes the model's commentary between tool calls as assistant
+    // messages that end in "stop" while the turn goes on: on V at 14:42 that day
+    // BH-PT-40 was blocked for a missing brief on "I'll swap it for a clean
+    // dispatch shot" and its Agent completed the card three minutes later.
     let runFailure = null;
-    if (!endedNormally && !runOutcomeRead && ["error", "aborted"].includes(stopReason) &&
+    if (!endedNormally && !runOutcomeRead && ["stop", "error", "aborted"].includes(stopReason) &&
       typeof this.workboard.getRunOutcome === "function") {
       const runId = card.runId ?? card.execution?.runId;
       let outcome = null;

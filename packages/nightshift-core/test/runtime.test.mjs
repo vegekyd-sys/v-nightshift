@@ -2125,6 +2125,40 @@ test("an error in the transcript of a run the Gateway still has running is left 
   store.close();
 });
 
+test("a stop in the transcript of a run the Gateway still has running is commentary, not the end", async () => {
+  // V, 2026-11-09 14:42: on the Codex harness BH-PT-40's transcript ended on the
+  // commentary "I'll swap it for a clean dispatch shot" (stopReason "stop") while
+  // the run went on; the card was blocked for a missing brief it wrote later.
+  const { card, runtime, store, workboard } = await stoppedRun({
+    id: "NS-RUNNING-COMMENTARY", stageId: "plan", outcome: { status: "running" },
+    session: { messages: [{ role: "assistant", stopReason: "stop", timestamp: Date.now() - 30_000,
+      content: [{ type: "text", text: "The planned closing shot is dominated by a third-party carton brand. I'll swap it." }] }] },
+  });
+  card.status = "running";
+  card.execution.status = "running";
+  await runtime.reconcile("NS-RUNNING-COMMENTARY", null, { inspectSessions: true });
+  assert.ok(workboard.runOutcomeCalls.includes(card.runId));
+  assert.equal(workboard.blockCalls.length, 0);
+  assert.equal(store.listEvents("NS-RUNNING-COMMENTARY").some((event) => event.type === "stage.terminal.blocked"), false);
+  assert.equal(attemptFailures(store, "NS-RUNNING-COMMENTARY").length, 0);
+  store.close();
+});
+
+test("a stop on a run the Gateway says ended is still checked against the output contract", async () => {
+  const { card, runtime, store, workboard } = await stoppedRun({
+    id: "NS-ENDED-STOP", stageId: "plan", outcome: { status: "succeeded", endedAt: Date.now() - 20_000 },
+    session: { messages: [{ role: "assistant", stopReason: "stop", timestamp: Date.now() - 30_000,
+      content: [{ type: "text", text: "Done, but I did not write the handoff." }] }] },
+  });
+  card.status = "running";
+  card.execution.status = "running";
+  await runtime.reconcile("NS-ENDED-STOP", null, { inspectSessions: true });
+  assert.ok(workboard.runOutcomeCalls.includes(card.runId));
+  assert.equal(workboard.blockCalls.length, 1);
+  assert.ok(store.listEvents("NS-ENDED-STOP").some((event) => event.type === "stage.terminal.blocked"));
+  store.close();
+});
+
 test("faults of the substrate do not use up a stage's own retries", async () => {
   // V, 2026-09-29: e3f71162's third interruption (a Gateway restart) exhausted
   // produce's three attempts and opened a request.
