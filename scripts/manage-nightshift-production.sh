@@ -6,6 +6,7 @@ state_root=/home/openclaw/.openclaw/nightshift
 backup_root=/home/openclaw/.openclaw/backups/nightshift-workboard
 service_name=nightshift-workboard.service
 service_path=/etc/systemd/system/nightshift-workboard.service
+legacy_entry_dropin=/etc/systemd/system/nightshift-workboard.service.d/91-openclaw91.conf
 cli_path=/home/openclaw/.local/bin/nightshiftctl
 
 wait_for_health() {
@@ -85,6 +86,13 @@ case "${1:-}" in
       exit 1
     fi
     install -o root -g root -m 644 "$release/systemd/nightshift-workboard.service" "$service_path"
+    # A host drop-in (2026-09-05) still pointed the OpenClaw entry at the stock 9.1
+    # install and overrode the unit above. The unit now carries the entry; keep the
+    # drop-in in the backup so rollback can put it back.
+    if [[ -f "$legacy_entry_dropin" ]]; then
+      cp -a "$legacy_entry_dropin" "$backup/legacy-entry-dropin.before"
+      rm -f "$legacy_entry_dropin"
+    fi
     ln -sfn "$release" "$release_root/current"
     install -d -o openclaw -g openclaw -m 755 "$(dirname "$cli_path")"
     ln -sfn "$release/scripts/nightshiftctl.mjs" "$cli_path"
@@ -115,6 +123,10 @@ case "${1:-}" in
     fi
     if [[ -f "$backup/service.before" ]]; then
       cp -a "$backup/service.before" "$service_path"
+    fi
+    if [[ -f "$backup/legacy-entry-dropin.before" ]]; then
+      install -d -o root -g root -m 755 "$(dirname "$legacy_entry_dropin")"
+      cp -a "$backup/legacy-entry-dropin.before" "$legacy_entry_dropin"
     fi
     if [[ -s "$backup/current.before" ]]; then
       previous=$(cat "$backup/current.before")
