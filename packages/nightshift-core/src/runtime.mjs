@@ -1,3 +1,4 @@
+import { resolveAgentModel } from "./agent-model.mjs";
 import { validateCallReleases } from "./workflow-call-contract.mjs";
 import { advanceWorkflowCalls } from "./workflow-calls.mjs";
 import {
@@ -1464,7 +1465,12 @@ export class NightShiftRuntime {
           cardIds.length,
         );
         if (maxStarts > 0) {
-          const result = await this.workboard.dispatch(maxStarts, { cardIds });
+          // Night Shift's own model, when one is set; otherwise the request
+          // is unchanged and the cards run on the Gateway's default model.
+          const model = resolveAgentModel(this.store, instanceId).effective;
+          const result = await this.workboard.dispatch(maxStarts, model
+            ? { cardIds, cards: [...instanceCards.values()], model }
+            : { cardIds });
           dispatchResult = result;
           if (result?.startFailures?.length) {
             throw new Error(`Agent dispatch failed: ${result.startFailures.map((failure) => `${failure.cardId}: ${failure.error}`).join("; ")}`);

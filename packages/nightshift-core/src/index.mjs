@@ -12,6 +12,7 @@ export {
 export { actionKey, buildAgentBrief, CARD_TITLE_MAX, cardTitle, nativeActionKey, planNextActions, PROJECT_CONCURRENCY_MAX, projectConcurrencyLimit, projectIdleConcurrencyLimit, redactSensitiveInputs, requiredApproval, resolveApprovalBinding, WORKBOARD_NOTES_LIMIT, WORKBOARD_PARENTS_LIMIT } from "./orchestrator.mjs";
 export { findNightShiftExternalOperation, resolveNightShiftCardContext, resolveNightShiftOperationKeys } from "./card-context.mjs";
 export { WorkboardCliAdapter, idempotencyLabel } from "./workboard-adapter.mjs";
+export { AGENT_MODEL_STATE_KEY, normalizeAgentModel, resolveAgentModel, serviceAgentModel, workboardSessionKeyForCard } from "./agent-model.mjs";
 export { NightShiftStore } from "./store.mjs";
 export { cdnHoldsCopy, FINALS_EVENT, planDeliveredFinals, planInstanceRetention, retentionCandidates, runRetention, RETENTION_LEDGER } from "./storage-retention.mjs";
 export { DESCRIBE_VERSION, NeedsYouTracker, REVIEW_OPTIONS, STOP_OPTIONS, buildNeedsYou, describeStop, eligibleProject, groupKey, readStopReport, stopOptionsFor } from "./needs-you.mjs";
