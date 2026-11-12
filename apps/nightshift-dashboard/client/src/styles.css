@@ -890,8 +890,8 @@ body { background:radial-gradient(circle at 72% -20%,rgba(128,92,214,.14),transp
 .project-tune-menu { position:absolute; z-index:131; top:calc(100% + 6px); right:0; width:340px; display:flex; flex-direction:column; gap:16px; padding:18px; border-radius:16px; background:#11131d; box-shadow:0 0 0 1px rgba(169,140,255,.18),0 24px 60px rgba(0,0,0,.5); cursor:default; text-align:left; }
 .project-tune-menu section { display:flex; flex-direction:column; gap:10px; }
 .project-tune-head { display:flex; align-items:baseline; justify-content:space-between; gap:12px; }
-.project-tune-head strong { color:#eef0f7; font-size:14px; font-weight:620; }
-.project-tune-head span { color:#8b93a8; font-size:12px; }
+.project-tune-head strong { flex:none; color:#eef0f7; font-size:14px; font-weight:620; }
+.project-tune-head span { min-width:0; color:#8b93a8; font-size:12px; text-align:right; overflow-wrap:anywhere; }
 .project-tune-menu p { margin:0; color:#6b7388; font-size:12px; line-height:1.5; }
 .project-tune-choices { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; }
 .project-tune-steps { display:grid; grid-template-columns:auto repeat(8,1fr); gap:4px; }
