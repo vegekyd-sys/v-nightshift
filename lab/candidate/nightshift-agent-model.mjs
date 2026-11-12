@@ -9,7 +9,8 @@
 //      (the board's attempt record and the session transcript);
 //   3. a later turn of the same session that names no model (as a wake-up,
 //      retry or restart recovery does) still runs on Night Shift's model;
-//   4. the Gateway configuration file is untouched: pinning a session did not
+//   4. a retry (release to ready, dispatch again) runs on it again;
+//   5. the Gateway configuration file is untouched: pinning a session did not
 //      move the default model.
 // The cards are told to answer one word and use no tools, so nothing is
 // produced and nothing is published.
@@ -216,7 +217,19 @@ try {
     model: followAssistant.at(-1)?.model ?? null,
   };
 
-  // ---- 4. the Gateway's own default is untouched ----
+  // ---- 4. a retry: the card goes back to ready and is dispatched again ----
+  // The session is already pinned in this process, so no sessions.patch is
+  // sent; the second attempt must still run on Night Shift's model.
+  await workboard.resetCardFailures(started.cardId, "model candidate retry").catch(() => null);
+  await workboard.releaseCard(started.cardId, "ready");
+  workboard.startWindowAt = null;
+  const [retryCard] = await workboard.listCards({ cardIds: [started.cardId] });
+  const retried = await workboard.dispatch(1, { cardIds: [started.cardId], cards: [retryCard], model: PINNED });
+  assert.equal(retried.started.length, 1, `the retry did not start: ${JSON.stringify(retried).slice(0, 400)}`);
+  const retryEvidence = await runEvidence(started.cardId, retried.started[0].sessionKey, retried.started[0].runId);
+  result.retry = { ...retryEvidence, sameSession: retried.started[0].sessionKey === started.sessionKey };
+
+  // ---- 5. the Gateway's own default is untouched ----
   await sleep(3_000);
   const after = JSON.parse(fs.readFileSync(configPath, "utf8"));
   result.config = {
@@ -231,6 +244,8 @@ try {
     nightshiftCardRanOnItsModel: onPinned(result.nightshift) && result.nightshift.run.status !== "failed",
     sessionKeyFormulaMatchesBoard: result.nightshift.computedSessionKeyMatches,
     laterTurnKeepsItsModel: result.followUp.model === modelId && result.followUp.assistantMessages > result.nightshift.transcript.assistantMessages,
+    retryKeepsItsModel: result.retry.attemptModels.length >= 2 && result.retry.attemptModels.every((model) => model === PINNED)
+      && result.retry.transcript.model === modelId && result.retry.run.status !== "failed",
     gatewayDefaultUntouched: result.config.fileUnchanged && result.config.defaultModelAfter === defaultModel,
   };
   result.ok = Object.values(result.checks).every(Boolean);
