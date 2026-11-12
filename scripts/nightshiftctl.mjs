@@ -50,6 +50,22 @@ const USAGE = [
 const baseUrl = process.env.NIGHTSHIFT_URL ?? "http://127.0.0.1:24879";
 const args = process.argv.slice(2);
 
+// The engine listens on loopback. An agent's exec environment on V carries the
+// Gateway's egress proxy (HTTP_PROXY/HTTPS_PROXY with NODE_USE_ENV_PROXY=1, and
+// OpenClaw clears NO_PROXY on purpose), and that proxy refuses loopback targets:
+// every call printed "fetch failed" (V, 2026-11-09). This client only talks to
+// its own engine, so for a loopback engine it runs once more without the proxy.
+if (usesEnvProxyForLoopback(baseUrl, process.env, process.execArgv)) {
+  const { spawnSync } = await import("node:child_process");
+  const { NODE_USE_ENV_PROXY, ...env } = process.env;
+  const direct = ["127.0.0.1", "localhost", "::1", process.env.NO_PROXY ?? process.env.no_proxy].filter(Boolean).join(",");
+  const child = spawnSync(process.execPath, [...process.execArgv.filter((a) => a !== "--use-env-proxy"), process.argv[1], ...args], {
+    env: { ...env, NO_PROXY: direct, no_proxy: direct, NIGHTSHIFTCTL_DIRECT: "1" },
+    stdio: "inherit",
+  });
+  process.exit(child.status ?? 1);
+}
+
 try {
   const result = await run(args);
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -499,6 +515,15 @@ async function findReleases(ref, { newestOnly = false } = {}) {
 
 function releaseRef(release) {
   return { workflowId: release.workflowId, version: release.version, workflowSha256: release.workflowSha256, retired: release.retired ?? null };
+}
+
+function usesEnvProxyForLoopback(url, env, execArgv) {
+  if (env.NIGHTSHIFTCTL_DIRECT === "1") return false;
+  const proxied = env.NODE_USE_ENV_PROXY === "1" || execArgv.includes("--use-env-proxy") || /(^|\s)--use-env-proxy(\s|$)/u.test(env.NODE_OPTIONS ?? "");
+  if (!proxied || !(env.HTTP_PROXY || env.http_proxy || env.HTTPS_PROXY || env.https_proxy)) return false;
+  let host;
+  try { host = new URL(url).hostname.replace(/^\[|\]$/gu, ""); } catch { return false; }
+  return host === "localhost" || host === "::1" || /^127\./u.test(host);
 }
 
 async function api(path, options = {}) {
