@@ -269,6 +269,11 @@ export class NightShiftStore {
     if (!controlColumns.some((column) => column.name === "priority")) {
       this.db.exec("ALTER TABLE instance_controls ADD COLUMN priority INTEGER");
     }
+    // The model its Agent sessions run on; null follows Night Shift's own
+    // setting, then the Gateway's default (agent-model.mjs).
+    if (!controlColumns.some((column) => column.name === "agent_model")) {
+      this.db.exec("ALTER TABLE instance_controls ADD COLUMN agent_model TEXT");
+    }
     for (const table of ["stage_runs", "content_item_runs"]) {
       const columns = this.db.prepare(`PRAGMA table_info(${table})`).all();
       if (!columns.some((column) => column.name === "failure_json")) {
@@ -439,19 +444,21 @@ export class NightShiftStore {
       fault: row?.fault_json ? JSON.parse(row.fault_json) : null,
       perInstanceLimit: Number.isSafeInteger(row?.per_instance_limit) ? row.per_instance_limit : null,
       priority: Number.isSafeInteger(row?.priority) ? row.priority : null,
+      agentModel: typeof row?.agent_model === "string" && row.agent_model ? row.agent_model : null,
     };
   }
 
   setInstanceControl(instanceId, patch) {
     const control = { ...this.getInstanceControl(instanceId), ...patch };
-    this.db.prepare(`INSERT INTO instance_controls (instance_id, automatic_dispatch, fault_json, updated_at, per_instance_limit, priority)
-      VALUES (?, ?, ?, ?, ?, ?)
+    this.db.prepare(`INSERT INTO instance_controls (instance_id, automatic_dispatch, fault_json, updated_at, per_instance_limit, priority, agent_model)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(instance_id) DO UPDATE SET automatic_dispatch=excluded.automatic_dispatch,
       fault_json=excluded.fault_json, updated_at=excluded.updated_at, per_instance_limit=excluded.per_instance_limit,
-      priority=excluded.priority`).run(
+      priority=excluded.priority, agent_model=excluded.agent_model`).run(
       instanceId, control.automaticDispatch ? 1 : 0, control.fault ? JSON.stringify(control.fault) : null, new Date().toISOString(),
       Number.isSafeInteger(control.perInstanceLimit) ? control.perInstanceLimit : null,
-      Number.isSafeInteger(control.priority) ? control.priority : null);
+      Number.isSafeInteger(control.priority) ? control.priority : null,
+      typeof control.agentModel === "string" && control.agentModel ? control.agentModel : null);
     return control;
   }
 

@@ -23,6 +23,8 @@ const USAGE = [
   "projects retry-dispatch <id> [--actor V]",
   "projects tick <id> [--dispatch] [--dry-run]",
   "projects concurrency <id> [<1-8>|default] [--reason <text>]",
+  "projects model <id> [<provider/model>|default] [--reason <text>]",
+  "model [<provider/model>|default] [--reason <text>]",
   "projects priority <id> [<n>|first|last|default] [--reason <text>]",
   "projects order <id> [<id> …] [--reason <text>]",
   "projects workflow <id> <version|latest> [--reason <text>]",
@@ -161,6 +163,29 @@ async function run(input) {
       method: "POST",
     });
   }
+  // The model Night Shift's Agent sessions run on. model: Night Shift's own
+  // setting for every project; projects model <id>: one project's, which wins.
+  // No value reads it; "default" clears it. Unset everywhere, cards run on the
+  // Gateway's default model.
+  if (resource === "model") {
+    const value = action;
+    if (!value || value.startsWith("--")) return api("/api/model");
+    return api("/api/model", {
+      body: JSON.stringify({ model: value, reason: option(input, "--reason") ?? null, actor: option(input, "--actor") ?? "Night Shift operator" }),
+      method: "POST",
+    });
+  }
+  if (resource === "projects" && action === "model" && subject) {
+    const value = input[3];
+    if (!value || value.startsWith("--")) {
+      const project = await api(`/api/instances/${encodeURIComponent(subject)}`);
+      return { instanceId: subject, agentModel: (project.instance ?? project).control?.agentModel ?? null };
+    }
+    return api(`/api/instances/${encodeURIComponent(subject)}/model`, {
+      body: JSON.stringify({ model: value, reason: option(input, "--reason") ?? null, actor: option(input, "--actor") ?? "Night Shift operator" }),
+      method: "POST",
+    });
+  }
   // Queue order. priority <id> [<n>|first|last|default]: higher goes first,
   // equal priorities keep arrival order. order <id> <id> …: those projects go
   // ahead of every other, in that order. queue: the current order.
@@ -191,7 +216,8 @@ async function run(input) {
     const result = await api("/api/instances");
     return (result.instances ?? []).filter((entry) => entry.status === "active")
       .map((entry) => ({ id: entry.id, name: entry.name, createdAt: entry.createdAt, priority: entry.control?.priority ?? null,
-        queue: entry.control?.queue ?? null, concurrency: entry.control?.concurrency?.effective ?? null }))
+        queue: entry.control?.queue ?? null, concurrency: entry.control?.concurrency?.effective ?? null,
+        model: entry.control?.agentModel?.effective ?? null }))
       .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || String(a.createdAt).localeCompare(String(b.createdAt)))
       .map((entry, index) => ({ order: index + 1, ...entry }));
   }

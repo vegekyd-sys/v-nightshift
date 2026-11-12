@@ -18,6 +18,7 @@ import { WorkboardChangeScheduler } from "./workboard-change-scheduler.mjs";
 import { GatewayRestartHold, isGatewayRestartError } from "../../../packages/nightshift-core/src/gateway-restart-hold.mjs";
 import { createSessionReader } from "./session-reader.mjs";
 import { HumanAttemptController, humanCompletionEvidence, publicHumanAttempt, evidenceHash } from "../../../packages/nightshift-core/src/human-attempt.mjs";
+import { AGENT_MODEL_STATE_KEY, normalizeAgentModel, resolveAgentModel, serviceAgentModel } from "../../../packages/nightshift-core/src/agent-model.mjs";
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
@@ -335,6 +336,7 @@ async function handleApi(request, response, url) {
       dispatchWarmup: { ...warmupAdmission(cardCache, { windowMs: warmupWindowMs, maxWarming: warmupMaxCards() }), derived: warmupMaxStartsSetting === null },
       dispatchHolds: dispatchHolds.snapshot(),
       gatewayRestart: gatewayRestart.snapshot(),
+      agentModel: { nightshift: serviceAgentModel(store) },
       gatewayCapacityProbeIntervalMs,
       reservedInteractiveSlots,
       reservedInteractiveWorkers,
@@ -1031,6 +1033,46 @@ async function handleApi(request, response, url) {
       return { instanceId, concurrency: after };
     });
     if (store.getInstanceControl(instanceId).automaticDispatch) changeScheduler.enqueue("concurrency.changed");
+    json(response, 200, result);
+    return;
+  }
+  // The model Night Shift's Agent sessions run on (agent-model.mjs). GET reads
+  // it; POST { model } sets it for every project, and null / "default" returns
+  // the cards to the Gateway's default model. A project's own setting wins.
+  // Cards already running keep their model; the setting applies to starts.
+  if (url.pathname === "/api/model" && ["GET", "POST"].includes(request.method)) {
+    if (request.method === "GET") {
+      json(response, 200, { agentModel: { nightshift: serviceAgentModel(store) } });
+      return;
+    }
+    const body = await bodyJson(request);
+    const actor = operatorIdentity(request, body);
+    const model = normalizeAgentModel(body.model ?? null);
+    const reason = typeof body.reason === "string" ? body.reason.slice(0, 500) : null;
+    const result = await serializedOperation(async () => {
+      const before = serviceAgentModel(store);
+      store.setServiceState(AGENT_MODEL_STATE_KEY, { model, actor, reason });
+      store.appendEvent({ instanceId: null, type: "agent-model.changed", payload: { actor, reason, scope: "nightshift", from: before, to: model } });
+      return { agentModel: { nightshift: model } };
+    });
+    json(response, 200, result);
+    return;
+  }
+  const modelMatch = url.pathname.match(/^\/api\/instances\/([^/]+)\/model$/);
+  if (request.method === "POST" && modelMatch) {
+    const instanceId = decodeURIComponent(modelMatch[1]);
+    const body = await bodyJson(request);
+    const actor = operatorIdentity(request, body);
+    if (!store.getInstance(instanceId)) throw new Error(`Unknown project ${instanceId}`);
+    const model = normalizeAgentModel(body.model ?? null);
+    const reason = typeof body.reason === "string" ? body.reason.slice(0, 500) : null;
+    const result = await serializedOperation(async () => {
+      const before = resolveAgentModel(store, instanceId);
+      store.setInstanceControl(instanceId, { agentModel: model });
+      const after = resolveAgentModel(store, instanceId);
+      store.appendEvent({ instanceId, type: "agent-model.changed", payload: { actor, reason, scope: "project", from: before, to: after } });
+      return { instanceId, agentModel: after };
+    });
     json(response, 200, result);
     return;
   }
@@ -2256,7 +2298,7 @@ function buildOverviewBody(scope, now, project = null) {
 }
 
 function withInstanceLinks(instance) {
-  const control = { ...store.getInstanceControl(instance.id), queue: projectQueue.get(instance.id) ?? null, concurrency: projectConcurrency(instance) };
+  const control = { ...store.getInstanceControl(instance.id), queue: projectQueue.get(instance.id) ?? null, concurrency: projectConcurrency(instance), agentModel: resolveAgentModel(store, instance.id) };
   return { ...instance, calls: publicCallSummary(store, instance.id), governance: normalizeProjectGovernance(instance), control, links: projectLinks(instance.id) };
 }
 

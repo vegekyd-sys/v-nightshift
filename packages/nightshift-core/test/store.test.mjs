@@ -243,7 +243,7 @@ test("a project's own session limit is stored beside its dispatch switch and can
   assert.equal(store.getInstanceControl("P").perInstanceLimit, null);
   store.setInstanceControl("P", { automaticDispatch: false });
   store.setInstanceControl("P", { perInstanceLimit: 4 });
-  assert.deepEqual(store.getInstanceControl("P"), { automaticDispatch: false, fault: null, perInstanceLimit: 4, priority: null });
+  assert.deepEqual(store.getInstanceControl("P"), { automaticDispatch: false, fault: null, perInstanceLimit: 4, priority: null, agentModel: null });
   store.setInstanceControl("P", { priority: -3 });
   assert.equal(store.getInstanceControl("P").priority, -3);
   assert.equal(store.getInstanceControl("P").perInstanceLimit, 4, "setting one control keeps the others");
@@ -262,7 +262,7 @@ test("a database from before project limits gains the column and keeps its dispa
   old.prepare("INSERT INTO instance_controls VALUES ('OLD', 0, NULL, '2026-09-29T00:00:00Z')").run();
   old.close();
   const store = new NightShiftStore(path);
-  assert.deepEqual(store.getInstanceControl("OLD"), { automaticDispatch: false, fault: null, perInstanceLimit: null, priority: null });
+  assert.deepEqual(store.getInstanceControl("OLD"), { automaticDispatch: false, fault: null, perInstanceLimit: null, priority: null, agentModel: null });
   store.setInstanceControl("OLD", { perInstanceLimit: 2 });
   assert.equal(store.getInstanceControl("OLD").perInstanceLimit, 2);
   store.close();

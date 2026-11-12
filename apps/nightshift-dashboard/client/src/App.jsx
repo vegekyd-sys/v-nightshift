@@ -662,7 +662,8 @@ function shortStageTitle(title = "") {
 function ProjectTuneBadges({ control }) {
   const priority = control?.priority ?? 0;
   const own = control?.concurrency?.project;
-  const badges = [priority > 0 ? "优先" : priority < 0 ? "靠后" : null, Number.isSafeInteger(own) ? `并发 ${own}` : null].filter(Boolean);
+  const model = control?.agentModel?.project;
+  const badges = [priority > 0 ? "优先" : priority < 0 ? "靠后" : null, Number.isSafeInteger(own) ? `并发 ${own}` : null, model ? `模型 ${model}` : null].filter(Boolean);
   if (!badges.length) return null;
   return <span className="project-tune-badges">{badges.map((badge) => <em key={badge}>{badge}</em>)}</span>;
 }
@@ -719,12 +720,23 @@ function ProjectTuneMenu({ project, onTuned }) {
           </div>
           <p>这个项目同时最多跑几张卡；默认用 Workflow 的设置。</p>
         </section>
+        {control.agentModel && <section>
+          <div className="project-tune-head"><strong>模型</strong><span>{agentModelLabel(control.agentModel)}</span></div>
+          <p>夜班派出的卡跑在这个模型上。用 nightshiftctl model 设夜班默认，projects model 设这个项目。</p>
+        </section>}
         <input className="project-tune-reason" aria-label="原因" value={reason} onChange={(event) => setReason(event.target.value)} placeholder="原因（可选，会记入审计）" />
         {error && <p className="decision-error">{error}</p>}
         <small className="project-tune-note">只影响之后派出的卡，正在跑的不会停；机器在刹车时，调高也不会多派。</small>
       </div>
     </>}
   </div>;
+}
+
+// Which model a project's cards start on and whose setting that is.
+function agentModelLabel(agentModel) {
+  if (agentModel?.source === "project") return `${agentModel.effective}（这个项目）`;
+  if (agentModel?.source === "nightshift") return `${agentModel.effective}（夜班默认）`;
+  return "跟随 V 的默认模型";
 }
 
 // While the Gateway restarts, Night Shift holds: nothing is dispatched or

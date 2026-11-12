@@ -151,6 +151,27 @@ nightshiftctl projects concurrency <project> default --reason "高峰结束"
 - Every change is an audit event `concurrency.control.changed` with the actor, the reason and the limits before and after. `/api/instances/:id` and `/api/overview` report `control.concurrency { effective, project, workflow, max }`.
 - API: `POST /api/instances/:id/concurrency { perInstance: 1–8 | null | "default", reason, actor }`.
 
+### Night Shift's own model
+
+Unset, a card's session runs on the Gateway's default model, like any other session on V (since 2026-11, /vds). Night Shift can name its own model for every project, and one project can override it:
+
+```bash
+nightshiftctl model                                                        # show
+nightshiftctl model deepseek/deepseek-v4-flash --reason "批量视频不跟 V 默认走"
+nightshiftctl model default                                                # back to the Gateway's default
+nightshiftctl projects model <project>                                     # effective model and its source
+nightshiftctl projects model <project> openai/gpt-6-luna --reason "这批要强模型"
+nightshiftctl projects model <project> default                             # back to Night Shift's setting
+```
+
+- Order: the project's setting, then Night Shift's, then the Gateway's default. `projects model` and `/api/instances/:id`, `/api/overview` report `control.agentModel { effective, source: project|nightshift|gateway-default, project, nightshift }`; the board's ⋯ menu shows it; `/api/health` and `GET /api/model` report Night Shift's setting.
+- How: before the board starts a card, Night Shift pins the model on the card's session with the Gateway's own `sessions.patch` (the per-session selection `/model` makes), on the key the board will start it on (`agent:<agent>:subagent:workboard-<board>-<card>`). The pin stays for every later turn of that session: wake-ups, retries and Gateway restart recovery start runs without naming a model. The board's batch dispatch takes no model, and its single-card start only sets one for that run.
+- Only the cards the board may start in that dispatch are pinned (twice the start budget, in the board's own order), and the dispatch is narrowed to them, so no card starts unpinned. Each session is pinned once per Night Shift process and model.
+- A card whose session refuses the model (unknown or not allowed) is not started on the default instead: it is a start failure naming the model, and the pass fails like any other refused start.
+- It needs `agents.defaults.modelSelectionScope: "session"` on the Gateway, as V and VLab set it. With any other value, an admin client's session selection is also written to the agent's or the global default model; Night Shift refuses to pin there and says so.
+- Cards already running keep their model; a change applies to the next start, including retries.
+- Stored in `service_state` key `agentModel` and `instance_controls.agent_model` (added at startup; an older release ignores both). Every change is an audit event `agent-model.changed`. API: `POST /api/model { model: "<provider/model>" | null | "default", reason, actor }`, `POST /api/instances/:id/model { … }`.
+
 ### Jumping the queue
 
 A project's place in the queue can be changed while it runs, by an operator or by an Agent on its own judgement (a delivery promise, a customer waiting, a project whose materials need fixing first):

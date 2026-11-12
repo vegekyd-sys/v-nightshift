@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { workboardSessionKeyForCard, workboardStartOrder } from "./agent-model.mjs";
 import { nativeActionKey } from "./orchestrator.mjs";
 import { PersistentGatewayRpcClient } from "./persistent-gateway-rpc-client.mjs";
 
@@ -47,6 +48,8 @@ export class WorkboardGatewayAdapter {
     this.rpcClient = null;
     this.rpcEventUnsubscribe = null;
     this.needsFullSnapshot = false;
+    // Session key -> model this process pinned on it with sessions.patch.
+    this.pinnedSessionModels = new Map();
   }
 
   async listCards({ cardIds } = {}) {
@@ -182,8 +185,11 @@ export class WorkboardGatewayAdapter {
     return result.card;
   }
 
-  async dispatch(maxStarts = 1, { cardIds } = {}) {
-    const scopedCardIds = uniqueCardIds(cardIds);
+  // model: the provider/model Night Shift's own setting names for these cards
+  // (agent-model.mjs). Without it the cards run on the Gateway's default model
+  // and the request is the same as before the setting existed.
+  async dispatch(maxStarts = 1, { cardIds, cards = null, model = null } = {}) {
+    let scopedCardIds = uniqueCardIds(cardIds);
     if (scopedCardIds.length === 0) {
       throw new Error("Night Shift dispatch requires an explicit non-empty card scope");
     }
@@ -191,6 +197,15 @@ export class WorkboardGatewayAdapter {
     const budget = this.reserveStartBudget(Math.min(maxStarts, scopedCardIds.length));
     if (budget.starts === 0) {
       return { deferred: true, retryAfterMs: budget.retryAfterMs, started: [], startFailures: [] };
+    }
+    let pinFailures = [];
+    if (model) {
+      ({ cardIds: scopedCardIds, failures: pinFailures } = await this.pinSessionModel({
+        cardIds: scopedCardIds, cards, model, starts: budget.starts,
+      }));
+      if (scopedCardIds.length === 0) {
+        return { deferred: false, retryAfterMs: null, started: [], startFailures: pinFailures };
+      }
     }
     // One scoped native dispatch lets Workboard own dependency, claim, Attempt,
     // Session and same-owner concurrency decisions. It also avoids one Gateway
@@ -211,8 +226,57 @@ export class WorkboardGatewayAdapter {
       deferred: false,
       retryAfterMs: null,
       started: result.started ?? [],
-      startFailures: result.startFailures ?? [],
+      startFailures: [...pinFailures, ...(result.startFailures ?? [])],
     };
+  }
+
+  // Pins the model on the session of each card the board may start in this
+  // dispatch, and narrows the scope to those cards so none starts unpinned.
+  // The board starts at most `starts` cards and tries at most twice as many
+  // (dispatcher.ts maxAttempts), in its own start order, so only those are
+  // pinned: a project with 80 ready cards pins a few per pass, not 80.
+  //
+  // The Workboard's batch dispatch takes no model (only its single-card start
+  // does, and only for that run). sessions.patch is the Gateway's per-session
+  // selection, the one /model makes, and it stays for every later turn.
+  async pinSessionModel({ cardIds, cards, model, starts }) {
+    await this.assertSessionScopedModelSelection();
+    const known = new Map((cards ?? []).map((card) => [card.id, card]));
+    const missing = cardIds.filter((id) => !known.has(id));
+    if (missing.length) for (const card of await this.listCards({ cardIds: missing })) known.set(card.id, card);
+    const ordered = cardIds.map((id) => known.get(id)).filter(Boolean).toSorted(workboardStartOrder);
+    const pinned = [];
+    const failures = [];
+    for (const card of ordered.slice(0, starts * 2)) {
+      const key = workboardSessionKeyForCard(card);
+      if (this.pinnedSessionModels.get(key) === model) {
+        pinned.push(card.id);
+        continue;
+      }
+      try {
+        await this.call("sessions.patch", { key, model });
+        this.pinnedSessionModels.set(key, model);
+        pinned.push(card.id);
+      } catch (error) {
+        this.pinnedSessionModels.delete(key);
+        failures.push({ cardId: card.id, title: card.title, error: `Night Shift model ${model} could not be set on the card's session: ${error?.message ?? error}` });
+      }
+    }
+    return { cardIds: pinned, failures };
+  }
+
+  // With the Gateway's default modelSelectionScope ("effective"), a model an
+  // admin client selects on a session is also written to the agent's or the
+  // global default model. Night Shift connects as an admin, so pinning there
+  // would move V's own default to Night Shift's model. Refuse unless selections
+  // stay on the session, as V configures it.
+  async assertSessionScopedModelSelection() {
+    if (!this.configPath) throw new Error("OPENCLAW_CONFIG_PATH is required to set Night Shift's model");
+    const config = JSON.parse(await readFile(this.configPath, "utf8"));
+    const scope = config.agents?.defaults?.modelSelectionScope;
+    if (scope !== "session") {
+      throw new Error(`Night Shift model needs agents.defaults.modelSelectionScope "session" on the Gateway (found ${JSON.stringify(scope ?? null)}); otherwise pinning a card's session would also change the Gateway's default model`);
+    }
   }
 
   reserveStartBudget(requested) {
